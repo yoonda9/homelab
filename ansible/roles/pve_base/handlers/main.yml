@@ -1,0 +1,43 @@
+---
+- name: restart_pveproxy
+  ansible.builtin.service:
+    name: pveproxy
+    state: restarted
+
+- name: restart_sshd
+  ansible.builtin.service:
+    name: ssh
+    state: restarted
+
+- name: restart_fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
+
+- name: update_initramfs
+  ansible.builtin.shell: "update-initramfs -u"
+
+- name: restart_prometheus
+  ansible.builtin.service:
+    name: prometheus
+    state: restarted
+
+- name: restart_telegraf
+  ansible.builtin.service:
+    name: telegraf
+    state: restarted
+
+- name: restart_loki
+  ansible.builtin.service:
+    name: loki
+    state: restarted
+
+- name: restart_promtail
+  ansible.builtin.service:
+    name: promtail
+    state: restarted
+
+- name: restart_grafana
+  ansible.builtin.service:
+    name: grafana-server
+    state: restarted

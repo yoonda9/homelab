@@ -1,0 +1,17 @@
+---
+- name: Test Proxmox API Connection
+  hosts: proxmox_hosts
+  gather_facts: false
+  tasks:
+    - name: Get Proxmox nodes
+      community.proxmox.proxmox_node_info:
+        api_host: "{{ ansible_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        validate_certs: false
+      register: node_info
+
+    - name: Display node info
+      ansible.builtin.debug:
+        var: node_info

@@ -1,0 +1,7 @@
+---
+- name: Bootstrap Proxmox Core Services
+  hosts: proxmox_hosts
+  gather_facts: false
+  roles:
+    - pve_base
+    - pve_provision

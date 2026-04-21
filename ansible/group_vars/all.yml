@@ -1,0 +1,109 @@
+---
+# Proxmox API Authentication Settings
+# Initial setup uses root password to generate the token.
+# After generation, store the token values securely and update these variables.
+
+pve_host: "pve.example.com"
+pve_root_password: ""
+
+# These should be populated after token generation
+pve_token_id: "root@pam!ansible-token"
+pve_token_secret: ""
+
+# Token ID Name (e.g. 'ansible-token')
+pve_token_id_name: "ansible-token"
+
+# Debian Release (e.g. 'bookworm' for PVE 8, 'trixie' for PVE 9)
+pve_debian_release: "trixie"
+
+# Hardware Optimization
+pve_zfs_arc_max: 2147483648 # 2GB in bytes
+pve_cpu_governor: "performance"
+pve_mgmt_ips: "192.168.1.0/24"
+
+# Bridge Configuration
+pve_bridge_name: "vmbr0"
+pve_bridge_ports: "eno1"
+pve_bridge_cidr: "192.168.1.100/24"
+
+# Image Sync Configuration
+pve_storage: "local"
+pve_lxc_templates:
+  - "debian-12-standard_12.7-1_amd64.tar.zst"
+  - "ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+pve_iso_urls:
+  - "https://releases.ubuntu.com/24.04/ubuntu-24.04.2-live-server-amd64.iso"
+  - "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.10.0-amd64-netinst.iso"
+
+# SDN Configuration
+pve_sdn_zone_name: "dmz"
+pve_sdn_vnet_name: "vnet-dmz"
+# pve_sdn_tag is intentionally omitted so default(omit) works.
+# Set pve_sdn_tag to a VLAN ID integer when needed.
+
+# Cloud Image Templates
+pve_cloud_images:
+  - name: "ubuntu-24.04-cloud"
+    url: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    vmid: 9000
+  - name: "debian-12-cloud"
+    url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    vmid: 9001
+
+# Plex LXC Configuration
+plex_vmid: 110
+plex_memory: 2048
+plex_disk: 32
+plex_storage: "local-lvm"
+plex_ostemplate: "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+
+# Pi-hole LXC Configuration
+pihole_vmid: 111
+pihole_memory: 512
+pihole_disk: 8
+pihole_storage: "local-lvm"
+pihole_ostemplate: "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+pihole_dns_upstream: "1.1.1.1 9.9.9.9"
+
+# Traefik VM Configuration
+traefik_vmid: 200
+traefik_memory: 1024
+traefik_clone_vmid: 9000
+
+# Bitwarden VM Configuration
+bitwarden_vmid: 201
+bitwarden_memory: 4096
+bitwarden_clone_vmid: 9000
+
+# Backup Schedule Configuration
+backup_schedule_hour: 2
+backup_schedule_minute: 0
+backup_storage: "pbs"
+backup_retention_daily: 7
+backup_retention_weekly: 4
+backup_retention_monthly: 3
+
+# Prometheus Configuration
+prometheus_port: 9090
+prometheus_scrape_interval: "15s"
+
+# Telegraf Configuration
+telegraf_output_port: 9273
+telegraf_collection_interval: "10s"
+telegraf_flush_interval: "10s"
+
+# Loki & Promtail Configuration
+loki_http_port: 3100
+loki_retention_period: "168h"
+promtail_http_port: 9080
+
+# Uptime Kuma LXC Configuration
+uptimekuma_vmid: 112
+uptimekuma_memory: 512
+uptimekuma_disk: 8
+uptimekuma_storage: "local-lvm"
+uptimekuma_ostemplate: "local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+
+# Grafana Configuration
+grafana_http_port: 3000
+grafana_admin_password: "changeme"
