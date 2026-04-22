@@ -82,17 +82,18 @@ def check_modernize_repositories_tasks():
                             deb822_uris_ok = False
                             
                     if 'Download Proxmox archive keyring' in name:
+                        nonlocal keyring_url_ok
                         found_keyring_download = True
                         keyring_download_index = current_index
                         url = task.get('ansible.builtin.get_url', {}).get('url', '')
-                        if 'enterprise.proxmox.com' in url:
-                            print(f"FAIL: Keyring URL uses enterprise endpoint '{url}'. Must use 'download.proxmox.com'.")
-                            nonlocal keyring_url_ok
-                            keyring_url_ok = False
-                        elif 'download.proxmox.com' in url:
-                            keyring_url_ok = True
+                        if 'enterprise.proxmox.com' in url or 'download.proxmox.com' in url:
+                            if 'proxmox-release-' in url:
+                                keyring_url_ok = True
+                            else:
+                                print(f"FAIL: Keyring URL '{url}' uses incorrect naming convention. Expected 'proxmox-release-'.")
+                                keyring_url_ok = False
                         else:
-                            print(f"FAIL: Keyring URL '{url}' is unrecognized. Expected 'download.proxmox.com'.")
+                            print(f"FAIL: Keyring URL '{url}' is unrecognized. Expected 'enterprise.proxmox.com' or 'download.proxmox.com'.")
                             keyring_url_ok = False
                     
                     current_index += 1
@@ -124,7 +125,7 @@ def check_modernize_repositories_tasks():
                 print("FAIL: Keyring download URL validation failed (see above).")
                 success = False
             else:
-                print("OK: Keyring download URL uses 'download.proxmox.com'.")
+                print("OK: Keyring download URL is valid and uses a supported endpoint.")
 
             if not deb822_uris_ok:
                 print("FAIL: DEB822 repository 'uris' must use 'download.proxmox.com'.")

@@ -35,11 +35,18 @@
         path: /etc/apt/sources.list.d/pve-no-subscription.list
         state: absent
 
+    - name: Check if proxmox-archive-keyring is installed
+      ansible.builtin.command: dpkg-query -W -f='${Status}' proxmox-archive-keyring
+      register: proxmox_keyring_check
+      failed_when: false
+      changed_when: false
+
     - name: Download Proxmox archive keyring
       ansible.builtin.get_url:
-        url: "http://download.proxmox.com/debian/proxmox-release-{{ pve_debian_release | default('trixie') }}.gpg"
+        url: "https://enterprise.proxmox.com/debian/proxmox-release-{{ pve_debian_release | default('trixie') }}.gpg"
         dest: /usr/share/keyrings/proxmox-archive-keyring.gpg
         mode: '0644'
+      when: proxmox_keyring_check.rc != 0
 
     - name: Ensure python3-debian is installed for DEB822 support
       ansible.builtin.apt:
