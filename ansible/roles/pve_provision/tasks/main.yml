@@ -4,9 +4,9 @@
     api_user: "{{ pve_api_user | default('root@pam') }}"
     api_token_id: "{{ pve_token_id }}"
     api_token_secret: "{{ pve_token_secret }}"
-    api_host: "{{ pve_host }}"
+    api_host: "{{ ansible_host }}"
     validate_certs: false
-    node: "{{ inventory_hostname }}"
+    node: "{{ ansible_hostname }}"
     vmid: "{{ plex_vmid | default(110) }}"
     hostname: "plex"
     ostemplate: "{{ plex_ostemplate | default('local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst') }}"
@@ -29,9 +29,9 @@
     api_user: "{{ pve_api_user | default('root@pam') }}"
     api_token_id: "{{ pve_token_id }}"
     api_token_secret: "{{ pve_token_secret }}"
-    api_host: "{{ pve_host }}"
+    api_host: "{{ ansible_host }}"
     validate_certs: false
-    node: "{{ inventory_hostname }}"
+    node: "{{ ansible_hostname }}"
     vmid: "{{ pihole_vmid | default(111) }}"
     hostname: "pihole"
     ostemplate: "{{ pihole_ostemplate | default('local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst') }}"
@@ -52,9 +52,9 @@
     api_user: "{{ pve_api_user | default('root@pam') }}"
     api_token_id: "{{ pve_token_id }}"
     api_token_secret: "{{ pve_token_secret }}"
-    api_host: "{{ pve_host }}"
+    api_host: "{{ ansible_host }}"
     validate_certs: false
-    node: "{{ inventory_hostname }}"
+    node: "{{ ansible_hostname }}"
     vmid: "{{ traefik_vmid | default(200) }}"
     name: "traefik"
     clone: "{{ traefik_clone_vmid | default(9000) }}"
@@ -72,9 +72,9 @@
     api_user: "{{ pve_api_user | default('root@pam') }}"
     api_token_id: "{{ pve_token_id }}"
     api_token_secret: "{{ pve_token_secret }}"
-    api_host: "{{ pve_host }}"
+    api_host: "{{ ansible_host }}"
     validate_certs: false
-    node: "{{ inventory_hostname }}"
+    node: "{{ ansible_hostname }}"
     vmid: "{{ bitwarden_vmid | default(201) }}"
     name: "bitwarden"
     clone: "{{ bitwarden_clone_vmid | default(9000) }}"
@@ -92,9 +92,9 @@
     api_user: "{{ pve_api_user | default('root@pam') }}"
     api_token_id: "{{ pve_token_id }}"
     api_token_secret: "{{ pve_token_secret }}"
-    api_host: "{{ pve_host }}"
+    api_host: "{{ ansible_host }}"
     validate_certs: false
-    node: "{{ inventory_hostname }}"
+    node: "{{ ansible_hostname }}"
     vmid: "{{ uptimekuma_vmid | default(112) }}"
     hostname: "uptimekuma"
     ostemplate: "{{ uptimekuma_ostemplate | default('local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst') }}"
@@ -147,4 +147,3 @@
       }
     dest: "/etc/pve/snippets/uptimekuma-monitors.json"
     mode: "0644"
-  delegate_to: localhost

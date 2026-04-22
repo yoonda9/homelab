@@ -17,9 +17,10 @@ def check_stability_tasks():
             
             found_dist_upgrade = False
             found_firmware = False
+            success = True
             
             def find_tasks(task_list):
-                nonlocal found_dist_upgrade, found_firmware
+                nonlocal found_dist_upgrade, found_firmware, success
                 for task in task_list:
                     if not isinstance(task, dict):
                         continue
@@ -34,6 +35,14 @@ def check_stability_tasks():
                             print("OK: 'fwupd' package installation found.")
                         if 'fwupdmgr' in str(task.get('ansible.builtin.shell', {}).get('cmd', '')):
                             print("OK: 'fwupdmgr' update command found.")
+                        
+                        apt_names = str(task.get('ansible.builtin.apt', {}).get('name', ''))
+                        if 'intel-microcode' in apt_names and 'amd64-microcode' in apt_names:
+                            if 'processor' in apt_names and 'join' in apt_names:
+                                print("OK: Microcode detection logic correctly searches the full processor list.")
+                            else:
+                                print("FAIL: Microcode detection logic is broken or uses the wrong facts.")
+                                success = False
                     
                     if 'block' in task:
                         find_tasks(task.get('block', []))
@@ -42,7 +51,6 @@ def check_stability_tasks():
 
             find_tasks(tasks)
             
-            success = True
             if not found_dist_upgrade:
                 print("FAIL: Stability Updates (dist-upgrade) task missing.")
                 success = False
