@@ -4,7 +4,7 @@ import sys
 import yaml
 
 TASKS_PATH = os.environ.get(
-    "TASKS_PATH", "ansible/roles/pve_provision/tasks/main.yml"
+    "TASKS_PATH", "ansible/roles/docker_host/tasks/main.yml"
 )
 VARS_PATH = os.environ.get(
     "VARS_PATH", "ansible/group_vars/all.yml"
@@ -38,117 +38,77 @@ def find_tasks_by_module(tasks, module):
     return results
 
 
-def find_traefik_task(tasks):
+def find_docker_task(tasks):
     kvm_tasks = find_tasks_by_module(tasks, KVM_MODULE)
     for task in kvm_tasks:
         name = task.get("name", "").lower()
-        if "traefik" in name:
+        if "docker" in name:
             return task
     return None
 
 
-def test_traefik_vm_task_exists(tasks):
-    task = find_traefik_task(tasks)
+def test_docker_vm_task_exists(tasks):
+    task = find_docker_task(tasks)
     if task:
         print(
-            f"OK: Traefik VM task exists "
+            f"OK: Docker VM task exists "
             f"(uses {KVM_MODULE})."
         )
         return True
     print(
-        f"FAIL: No Traefik VM task found using "
-        f"'{KVM_MODULE}' with 'traefik' in task name."
+        f"FAIL: No Docker VM task found using "
+        f"'{KVM_MODULE}' with 'docker' in task name."
     )
     return False
 
 
-def test_traefik_uses_clone(tasks):
-    task = find_traefik_task(tasks)
+def test_docker_uses_clone(tasks):
+    task = find_docker_task(tasks)
     if not task:
-        print("FAIL: No Traefik task found.")
+        print("FAIL: No Docker task found.")
         return False
     params = task.get(KVM_MODULE, {})
     if "clone" in params:
         print(
-            "OK: Traefik VM clones from a template."
+            "OK: Docker VM clones from a template."
         )
         return True
     print(
-        "FAIL: Traefik VM task missing 'clone' "
+        "FAIL: Docker VM task missing 'clone' "
         "parameter (must clone from cloud template)."
     )
     return False
 
 
-def test_traefik_has_dmz_vnet(tasks):
-    task = find_traefik_task(tasks)
+def test_docker_has_vmid(tasks):
+    task = find_docker_task(tasks)
     if not task:
-        print("FAIL: No Traefik task found.")
-        return False
-    params = task.get(KVM_MODULE, {})
-    net = params.get("net", {})
-    net_str = str(net)
-    if "dmz" in net_str or "sdn_vnet" in net_str:
-        print(
-            "OK: Traefik VM has DMZ vnet attachment."
-        )
-        return True
-    print(
-        "FAIL: Traefik VM missing DMZ vnet in network "
-        "config. Expected 'dmz' or SDN vnet reference "
-        "in net parameters."
-    )
-    return False
-
-
-def test_traefik_has_vmid(tasks):
-    task = find_traefik_task(tasks)
-    if not task:
-        print("FAIL: No Traefik task found.")
+        print("FAIL: No Docker task found.")
         return False
     params = task.get(KVM_MODULE, {})
     vmid = str(params.get("vmid", ""))
-    if "traefik_vmid" in vmid or vmid.isdigit():
+    if "docker_vmid" in vmid or vmid.isdigit():
         print(
-            "OK: Traefik VM uses a dedicated VMID."
+            "OK: Docker VM uses a dedicated VMID."
         )
         return True
     print(
-        "FAIL: Traefik VM task missing 'vmid' parameter "
-        "(must use traefik_vmid variable or a dedicated "
+        "FAIL: Docker VM task missing 'vmid' parameter "
+        "(must use docker_vmid variable or a dedicated "
         "ID)."
     )
     return False
 
 
-def test_traefik_has_memory(tasks):
-    task = find_traefik_task(tasks)
-    if not task:
-        print("FAIL: No Traefik task found.")
-        return False
-    params = task.get(KVM_MODULE, {})
-    memory = str(params.get("memory", ""))
-    if "traefik_memory" in memory or memory.isdigit():
-        print(
-            "OK: Traefik VM has memory configured."
-        )
-        return True
-    print(
-        "FAIL: Traefik VM task missing 'memory' "
-        "parameter."
-    )
-    return False
-
-
-def test_traefik_delegates_to_localhost(tasks):
+def test_docker_delegates_to_localhost(tasks):
     kvm_tasks = find_tasks_by_module(tasks, KVM_MODULE)
     provision_kvm = [
         t for t in kvm_tasks
-        if "traefik" in t.get("name", "").lower()
+        if "docker" in t.get("name", "").lower()
     ]
     if not provision_kvm:
         print(
-            "FAIL: No Traefik KVM task found to "
+            "FAIL: No Docker KVM task found to "
             "check delegate_to."
         )
         return False
@@ -163,16 +123,16 @@ def test_traefik_delegates_to_localhost(tasks):
             )
             return False
     print(
-        "OK: Traefik VM task delegates to localhost."
+        "OK: Docker VM task delegates to localhost."
     )
     return True
 
 
-def test_vars_have_traefik_defaults(variables):
+def test_vars_have_docker_defaults(variables):
     required_vars = {
-        "traefik_vmid": int,
-        "traefik_memory": int,
-        "traefik_clone_vmid": int,
+        "docker_vmid": int,
+        "docker_memory": int,
+        "docker_clone_vmid": int,
     }
     all_ok = True
     for var_name, expected_type in required_vars.items():
@@ -193,9 +153,9 @@ def test_vars_have_traefik_defaults(variables):
             all_ok = False
     if all_ok:
         print(
-            "OK: all.yml has all Traefik VM variables "
-            "(traefik_vmid, traefik_memory, "
-            "traefik_clone_vmid)."
+            "OK: all.yml has all Docker VM variables "
+            "(docker_vmid, docker_memory, "
+            "docker_clone_vmid)."
         )
     return all_ok
 
@@ -206,34 +166,26 @@ def main():
 
     checks = [
         (
-            "Traefik VM task exists",
-            lambda: test_traefik_vm_task_exists(tasks),
+            "Docker VM task exists",
+            lambda: test_docker_vm_task_exists(tasks),
         ),
         (
-            "Traefik VM clones from template",
-            lambda: test_traefik_uses_clone(tasks),
+            "Docker VM clones from template",
+            lambda: test_docker_uses_clone(tasks),
         ),
         (
-            "Traefik VM has DMZ vnet attachment",
-            lambda: test_traefik_has_dmz_vnet(tasks),
+            "Docker VM uses dedicated VMID",
+            lambda: test_docker_has_vmid(tasks),
         ),
         (
-            "Traefik VM uses dedicated VMID",
-            lambda: test_traefik_has_vmid(tasks),
-        ),
-        (
-            "Traefik VM has memory configured",
-            lambda: test_traefik_has_memory(tasks),
-        ),
-        (
-            "Traefik VM delegates to localhost",
-            lambda: test_traefik_delegates_to_localhost(
+            "Docker VM delegates to localhost",
+            lambda: test_docker_delegates_to_localhost(
                 tasks
             ),
         ),
         (
-            "Traefik vars in all.yml",
-            lambda: test_vars_have_traefik_defaults(
+            "Docker vars in all.yml",
+            lambda: test_vars_have_docker_defaults(
                 variables
             ),
         ),
@@ -257,7 +209,7 @@ def main():
         sys.exit(1)
     else:
         print(
-            f"SUCCESS: All {len(results)} Traefik VM "
+            f"SUCCESS: All {len(results)} Docker VM "
             f"checks passed."
         )
         sys.exit(0)

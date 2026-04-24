@@ -8,6 +8,6 @@
     - pve_base
     - plex
     - pihole
+    - docker_host
     - traefik
-    - bitwarden
     - uptimekuma

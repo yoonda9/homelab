@@ -60,15 +60,10 @@ pihole_storage: "local-lvm"
 pihole_ostemplate: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 pihole_dns_upstream: "1.1.1.1 9.9.9.9"
 
-# Traefik VM Configuration
-traefik_vmid: 200
-traefik_memory: 1024
-traefik_clone_vmid: 9000
-
-# Bitwarden VM Configuration
-bitwarden_vmid: 201
-bitwarden_memory: 4096
-bitwarden_clone_vmid: 9000
+# Docker Host VM Configuration
+docker_vmid: 200
+docker_memory: 4096
+docker_clone_vmid: 9000
 
 # Backup Schedule Configuration
 backup_schedule_hour: 2

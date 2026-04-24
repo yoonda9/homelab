@@ -1,20 +1,20 @@
 ---
-- name: Deploy Traefik VM (cloned from cloud template)
-  community.proxmox.proxmox_kvm:
-    api_token_id: "{{ pve_token_id }}"
-    api_token_secret: "{{ pve_token_secret }}"
-    api_host: "{{ ansible_host }}"
-    validate_certs: false
-    node: "{{ ansible_facts['hostname'] }}"
-    vmid: "{{ traefik_vmid | default(200) }}"
-    name: "traefik"
-    clone: "{{ traefik_clone_vmid | default(9000) }}"
-    full: true
-    memory: "{{ traefik_memory | default(1024) }}"
-    cores: 2
-    agent: 1
-    net:
-      net0: "virtio,bridge={{ pve_sdn_vnet_name | default('vnetdmz') }}"
-    description: "Traefik reverse proxy (DMZ network)"
+- name: Ensure Docker network for Traefik exists
+  community.docker.docker_network:
+    name: traefik-public
+    state: present
+
+- name: Deploy Traefik Docker Container
+  community.docker.docker_container:
+    name: traefik
+    image: "traefik:v3.0"
     state: started
-  delegate_to: localhost
+    restart_policy: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - name: traefik-public
