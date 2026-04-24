@@ -1,0 +1,55 @@
+---
+- name: Enable Cluster Firewall (Drop by default)
+  ansible.builtin.command:
+    cmd: >
+      pvesh set /cluster/firewall/options
+      --enable 1
+      --ebtables 1
+      --policy_in DROP
+      --policy_out ACCEPT
+  changed_when: true
+
+- name: Enable Host Firewall
+  ansible.builtin.command:
+    cmd: >
+      pvesh set /nodes/{{ ansible_facts['hostname'] }}/firewall/options
+      --enable 1
+  changed_when: true
+
+- name: Configure Proxmox Firewall Alias for Management IPs
+  community.proxmox.proxmox_firewall:
+    api_user: "{{ pve_api_user | default('root@pam') }}"
+    api_token_id: "{{ pve_token_id }}"
+    api_token_secret: "{{ pve_token_secret }}"
+    api_host: "{{ ansible_host }}"
+    validate_certs: false
+    level: cluster
+    state: present
+    aliases:
+      - name: mgmt_ips
+        cidr: "{{ pve_mgmt_ips | default('192.168.1.0/24') }}"
+
+- name: Configure Proxmox Firewall Rule for Management SSH/UI
+  community.proxmox.proxmox_firewall:
+    api_user: "{{ pve_api_user | default('root@pam') }}"
+    api_token_id: "{{ pve_token_id }}"
+    api_token_secret: "{{ pve_token_secret }}"
+    api_host: "{{ ansible_host }}"
+    validate_certs: false
+    level: cluster
+    state: present
+    rules:
+      - pos: 1
+        type: in
+        action: ACCEPT
+        source: mgmt_ips
+        dport: "8006"
+        proto: tcp
+        enable: true
+      - pos: 2
+        type: in
+        action: ACCEPT
+        source: mgmt_ips
+        dport: "22"
+        proto: tcp
+        enable: true

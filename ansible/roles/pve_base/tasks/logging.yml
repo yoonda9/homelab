@@ -1,0 +1,155 @@
+---
+- name: Install Telegraf
+  ansible.builtin.apt:
+    name:
+      - telegraf
+    state: present
+    update_cache: true
+
+- name: Deploy Telegraf configuration
+  ansible.builtin.copy:
+    dest: /etc/telegraf/telegraf.conf
+    content: |
+      [global_tags]
+        host = "{{ ansible_facts['hostname'] }}"
+
+      [agent]
+        interval = "{{ telegraf_collection_interval | default('10s') }}"
+        round_interval = true
+        flush_interval = "{{ telegraf_flush_interval | default('10s') }}"
+        hostname = "{{ ansible_facts['hostname'] }}"
+
+      [[outputs.prometheus_client]]
+        listen = ":{{ telegraf_output_port | default(9273) }}"
+        metric_version = 2
+
+      [[inputs.cpu]]
+        percpu = true
+        totalcpu = true
+
+      [[inputs.mem]]
+
+      [[inputs.disk]]
+        ignore_fs = ["tmpfs", "devtmpfs", "devfs", "iso9660", "overlay", "aufs", "squashfs"]
+
+      [[inputs.diskio]]
+
+      [[inputs.system]]
+
+      [[inputs.net]]
+    mode: '0644'
+  notify: Restart Telegraf
+
+- name: Ensure Telegraf service is enabled and started
+  ansible.builtin.systemd_service:
+    name: telegraf
+    enabled: true
+    state: started
+
+- name: Install Loki
+  ansible.builtin.apt:
+    name:
+      - loki
+    state: present
+    update_cache: true
+
+- name: Deploy Loki configuration
+  ansible.builtin.copy:
+    dest: /etc/loki/loki-local-config.yaml
+    content: |
+      auth_enabled: false
+
+      server:
+        http_listen_port: {{ loki_http_port | default(3100) }}
+
+      common:
+        path_prefix: /var/lib/loki
+        storage:
+          filesystem:
+            chunks_directory: /var/lib/loki/chunks
+            rules_directory: /var/lib/loki/rules
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+
+      schema_config:
+        configs:
+          - from: "2020-10-24"
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+
+      storage_config:
+        filesystem:
+          directory: /var/lib/loki/chunks
+
+      limits_config:
+        retention_period: {{ loki_retention_period | default('168h') }}
+    mode: '0644'
+  notify: Restart Loki
+
+- name: Ensure Loki service is enabled and started
+  ansible.builtin.systemd_service:
+    name: loki
+    enabled: true
+    state: started
+
+- name: Install Promtail
+  ansible.builtin.apt:
+    name:
+      - promtail
+    state: present
+    update_cache: true
+
+- name: Deploy Promtail configuration
+  ansible.builtin.copy:
+    dest: /etc/promtail/promtail-local-config.yaml
+    content: |
+      server:
+        http_listen_port: {{ promtail_http_port | default(9080) }}
+
+      positions:
+        filename: /var/lib/promtail/positions.yaml
+
+      clients:
+        - url: http://localhost:{{ loki_http_port | default(3100) }}/loki/api/v1/push
+
+      scrape_configs:
+        - job_name: syslog
+          static_configs:
+            - targets:
+                - localhost
+              labels:
+                job: syslog
+                host: {{ ansible_facts['hostname'] }}
+                __path__: /var/log/syslog
+
+        - job_name: auth
+          static_configs:
+            - targets:
+                - localhost
+              labels:
+                job: auth
+                host: {{ ansible_facts['hostname'] }}
+                __path__: /var/log/auth.log
+
+        - job_name: pveproxy
+          static_configs:
+            - targets:
+                - localhost
+              labels:
+                job: pveproxy
+                host: {{ ansible_facts['hostname'] }}
+                __path__: /var/log/pveproxy/*.log
+    mode: '0644'
+  notify: Restart Promtail
+
+- name: Ensure Promtail service is enabled and started
+  ansible.builtin.systemd_service:
+    name: promtail
+    enabled: true
+    state: started

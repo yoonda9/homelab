@@ -1,0 +1,32 @@
+---
+- name: InfluxData GPG Key
+  ansible.builtin.get_url:
+    url: https://repos.influxdata.com/influxdata-archive.key
+    dest: /usr/share/keyrings/influxdata-archive-keyring.gpg
+    mode: '0644'
+
+- name: InfluxData Repository (Legacy format for trusted=yes support)
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/usr/share/keyrings/influxdata-archive-keyring.gpg trusted=yes]
+      https://repos.influxdata.com/debian
+      {{ 'bookworm' if pve_debian_release | default('trixie') == 'trixie' else pve_debian_release | default('bookworm') }}
+      stable
+    state: present
+    filename: influxdata
+
+- name: Grafana GPG Key
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg.key
+    dest: /usr/share/keyrings/grafana-archive-keyring.gpg
+    mode: '0644'
+
+- name: Grafana DEB822 Repository
+  ansible.builtin.deb822_repository:
+    name: grafana
+    types: deb
+    uris: https://apt.grafana.com
+    suites: stable
+    components: main
+    signed_by: /usr/share/keyrings/grafana-archive-keyring.gpg
+    state: present

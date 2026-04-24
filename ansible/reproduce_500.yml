@@ -1,0 +1,27 @@
+---
+- name: Reproduce Proxmox 500 Error
+  hosts: localhost
+  vars:
+    ansible_python_interpreter: "{{ lookup('env', 'VIRTUAL_ENV') }}/bin/python3"
+  tasks:
+    - name: Try minimal LXC creation
+      community.proxmox.proxmox:
+        api_user: "root@pam"
+        api_token_id: "{{ lookup('env', 'PROXMOX_TOKEN_ID') }}"
+        api_token_secret: "{{ lookup('env', 'PROXMOX_TOKEN_SECRET') }}"
+        api_host: "pve.home.arpa"
+        validate_certs: false
+        node: "pve"
+        vmid: 110
+        hostname: "reproduce-500"
+        ostemplate: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
+        storage: "local-lvm"
+        memory: 512
+        disk: 4
+        unprivileged: true
+        state: present
+      register: result
+
+    - name: Show result
+      ansible.builtin.debug:
+        var: result

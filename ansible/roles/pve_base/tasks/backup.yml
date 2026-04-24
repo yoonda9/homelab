@@ -1,0 +1,29 @@
+---
+- name: Configure Vzdump Backup Schedule (Nightly)
+  ansible.builtin.cron:
+    name: "vzdump nightly backup"
+    minute: "{{ backup_schedule_minute | default(0) }}"
+    hour: "{{ backup_schedule_hour | default(2) }}"
+    job: >-
+      vzdump --all --mode snapshot
+      --storage {{ backup_storage | default('pbs') }}
+      --prune-backups {{ [
+        'keep-daily=' ~ (backup_retention_daily | default(7)),
+        'keep-weekly=' ~ (backup_retention_weekly | default(4)),
+        'keep-monthly=' ~ (backup_retention_monthly | default(3))
+      ] | join(',') }}
+      --mailnotification failure
+      --quiet 1
+
+- name: Configure Vzdump Backup Retention Defaults
+  ansible.builtin.copy:
+    dest: /etc/vzdump.conf
+    content: |
+      storage: {{ backup_storage | default('pbs') }}
+      prune-backups: {{ [
+        'keep-daily=' ~ (backup_retention_daily | default(7)),
+        'keep-weekly=' ~ (backup_retention_weekly | default(4)),
+        'keep-monthly=' ~ (backup_retention_monthly | default(3))
+      ] | join(',') }}
+      mode: snapshot
+    mode: '0644'

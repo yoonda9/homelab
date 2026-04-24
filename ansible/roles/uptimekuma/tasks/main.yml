@@ -1,0 +1,70 @@
+---
+- name: Check if Uptime Kuma LXC Container exists
+  ansible.builtin.command: "pct status {{ uptimekuma_vmid | default(112) }}"
+  register: uptimekuma_status
+  failed_when: false
+  changed_when: false
+
+- name: Deploy Uptime Kuma LXC Container (via pct)
+  ansible.builtin.command:
+    cmd: >
+      pct create {{ uptimekuma_vmid | default(112) }}
+      {{ uptimekuma_ostemplate | default('local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst') }}
+      --hostname uptimekuma
+      --storage {{ uptimekuma_storage | default('local-lvm') }}
+      --memory {{ uptimekuma_memory | default(512) }}
+      --rootfs {{ uptimekuma_storage | default('local-lvm') }}:{{ uptimekuma_disk | default(8) }}
+      --net0 name=eth0,bridge=vmbr0,ip=dhcp
+      --unprivileged 1
+      --features nesting=1
+      --description "Uptime Kuma availability monitoring"
+  when: uptimekuma_status.rc != 0
+  changed_when: true
+
+- name: Start Uptime Kuma LXC Container
+  ansible.builtin.command: "pct start {{ uptimekuma_vmid | default(112) }}"
+  register: uptimekuma_start
+  changed_when: "'already running' not in uptimekuma_start.stderr"
+  failed_when:
+    - uptimekuma_start.rc != 0
+    - "'already running' not in uptimekuma_start.stderr"
+
+- name: Deploy Uptime Kuma monitors configuration
+  ansible.builtin.shell:
+    cmd: |
+      cat <<EOF > /etc/pve/snippets/uptimekuma-monitors.json
+      {
+        "version": "1.21.3",
+        "notificationList": [],
+        "monitorList": [
+          {
+            "name": "Plex",
+            "type": "http",
+            "url": "{{ uptimekuma_monitor_plex_url | default('http://plex.local:32400/web') }}",
+            "interval": 60,
+            "maxretries": 3,
+            "notificationIDList": [],
+            "active": true
+          },
+          {
+            "name": "Bitwarden",
+            "type": "http",
+            "url": "{{ uptimekuma_monitor_bitwarden_url | default('https://bitwarden.local') }}",
+            "interval": 60,
+            "maxretries": 3,
+            "notificationIDList": [],
+            "active": true
+          },
+          {
+            "name": "Pi-hole",
+            "type": "http",
+            "url": "{{ uptimekuma_monitor_pihole_url | default('http://pihole.local/admin') }}",
+            "interval": 60,
+            "maxretries": 3,
+            "notificationIDList": [],
+            "active": true
+          }
+        ]
+      }
+      EOF
+  changed_when: true

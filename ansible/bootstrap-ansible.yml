@@ -1,0 +1,42 @@
+---
+- name: Bootstrap Ansible Virtual Environment with uv
+  hosts: proxmox_hosts
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    uv_bin_path: /usr/local/bin/uv
+    ansible_venv_path: /opt/ansible-venv
+    python_version: "3.12"
+  tasks:
+    - name: Check if uv is installed
+      ansible.builtin.stat:
+        path: "{{ uv_bin_path }}"
+      register: uv_stat
+
+    - name: Install uv standalone # noqa: command-instead-of-module
+      ansible.builtin.shell:
+        cmd: set -o pipefail && curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+      when: not uv_stat.stat.exists
+      changed_when: true
+
+    - name: Ensure Python 3.12 is installed via uv
+      ansible.builtin.command:
+        cmd: "{{ uv_bin_path }} python install {{ python_version }}"
+      changed_when: false
+
+    - name: Create Ansible virtual environment
+      ansible.builtin.command:
+        cmd: "{{ uv_bin_path }} venv {{ ansible_venv_path }} --python {{ python_version }}"
+        creates: "{{ ansible_venv_path }}/bin/python3"
+
+    - name: Install Ansible dependencies in venv
+      ansible.builtin.command:
+        cmd: "{{ uv_bin_path }} pip install {{ item }}"
+        chdir: "{{ ansible_venv_path }}"
+      loop:
+        - ipaddress
+        - packaging
+        - proxmoxer>=2.0
+        - python-debian
+        - requests
+      changed_when: true

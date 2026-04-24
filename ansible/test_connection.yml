@@ -7,8 +7,8 @@
       community.proxmox.proxmox_node_info:
         api_host: "{{ ansible_host }}"
         api_user: "{{ pve_api_user }}"
-        api_token_id: "{{ pve_api_token_id }}"
-        api_token_secret: "{{ pve_api_token_secret }}"
+        api_token_id: "{{ pve_token_id }}"
+        api_token_secret: "{{ pve_token_secret }}"
         validate_certs: false
       register: node_info
 

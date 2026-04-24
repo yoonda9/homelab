@@ -1,0 +1,155 @@
+---
+- name: Install Grafana
+  ansible.builtin.apt:
+    name:
+      - grafana
+    state: present
+    update_cache: true
+
+- name: Deploy Grafana datasource provisioning
+  ansible.builtin.copy:
+    dest: /etc/grafana/provisioning/datasources/datasources.yaml
+    content: |
+      apiVersion: 1
+
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://localhost:{{ prometheus_port | default(9090) }}
+          isDefault: true
+          editable: false
+
+        - name: Loki
+          type: loki
+          access: proxy
+          url: http://localhost:{{ loki_http_port | default(3100) }}
+          editable: false
+    mode: '0640'
+    owner: grafana
+    group: grafana
+  notify: Restart Grafana
+
+- name: Deploy Grafana dashboard provider configuration
+  ansible.builtin.copy:
+    dest: /etc/grafana/provisioning/dashboards/dashboards.yaml
+    content: |
+      apiVersion: 1
+
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards
+            foldersFromFilesStructure: false
+    mode: '0640'
+    owner: grafana
+    group: grafana
+  notify: Restart Grafana
+
+- name: Ensure Grafana dashboards directory exists
+  ansible.builtin.file:
+    path: /var/lib/grafana/dashboards
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: '0755'
+
+- name: Deploy Grafana unified dashboard
+  ansible.builtin.copy:
+    dest: /var/lib/grafana/dashboards/proxmox-overview.json
+    content: |
+      {
+        "dashboard": {
+          "id": null,
+          "uid": "proxmox-overview",
+          "title": "Proxmox Overview",
+          "tags": ["proxmox", "overview"],
+          "timezone": "browser",
+          "panels": [
+            {
+              "id": 1,
+              "title": "CPU Usage",
+              "type": "timeseries",
+              "datasource": "Prometheus",
+              "targets": [
+                {
+                  "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+                  "legendFormat": "CPU %"
+                }
+              ],
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+            },
+            {
+              "id": 2,
+              "title": "Memory Usage",
+              "type": "timeseries",
+              "datasource": "Prometheus",
+              "targets": [
+                {
+                  "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+                  "legendFormat": "Used Memory"
+                }
+              ],
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+            },
+            {
+              "id": 3,
+              "title": "System Logs",
+              "type": "logs",
+              "datasource": "Loki",
+              "targets": [
+                {
+                  "expr": "{job=\"syslog\"}"
+                }
+              ],
+              "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+            },
+            {
+              "id": 4,
+              "title": "Auth Logs",
+              "type": "logs",
+              "datasource": "Loki",
+              "targets": [
+                {
+                  "expr": "{job=\"auth\"}"
+                }
+              ],
+              "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+            }
+          ],
+          "schemaVersion": 39,
+          "version": 1
+        }
+      }
+    mode: '0644'
+    owner: grafana
+    group: grafana
+  notify: Restart Grafana
+
+- name: Deploy Grafana server configuration
+  ansible.builtin.copy:
+    dest: /etc/grafana/grafana.ini
+    content: |
+      [server]
+      http_port = {{ grafana_http_port | default(3000) }}
+
+      [security]
+      admin_password = {{ grafana_admin_password | default('admin') }}
+
+      [auth.anonymous]
+      enabled = false
+    mode: '0640'
+    owner: grafana
+    group: grafana
+  notify: Restart Grafana
+
+- name: Ensure Grafana service is enabled and started
+  ansible.builtin.systemd_service:
+    name: grafana-server
+    enabled: true
+    state: started

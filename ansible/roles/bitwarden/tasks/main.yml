@@ -1,0 +1,36 @@
+---
+- name: Deploy Bitwarden Cloud-Init Snippet
+  ansible.builtin.shell:
+    cmd: |
+      cat <<EOF > /etc/pve/snippets/bitwarden-cloud-init.yml
+      #cloud-config
+      package_update: true
+      package_upgrade: true
+      packages:
+        - qemu-guest-agent
+        - docker.io
+        - docker-compose-v2
+      runcmd:
+        - systemctl enable --now qemu-guest-agent
+      EOF
+  changed_when: true
+
+- name: Deploy Bitwarden VM (cloned from cloud template)
+  community.proxmox.proxmox_kvm:
+    api_token_id: "{{ pve_token_id }}"
+    api_token_secret: "{{ pve_token_secret }}"
+    api_host: "{{ ansible_host }}"
+    validate_certs: false
+    node: "{{ ansible_facts['hostname'] }}"
+    vmid: "{{ bitwarden_vmid | default(201) }}"
+    name: "bitwarden"
+    clone: "{{ bitwarden_clone_vmid | default(9000) }}"
+    full: true
+    memory: "{{ bitwarden_memory | default(4096) }}"
+    cores: 2
+    agent: 1
+    ciuser: "{{ bitwarden_ciuser | default('bitwarden') }}"
+    cicustom: "vendor=local:snippets/bitwarden-cloud-init.yml"
+    description: "Bitwarden on-premise (Docker Compose via cloud-init)"
+    state: started
+  delegate_to: localhost

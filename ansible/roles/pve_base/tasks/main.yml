@@ -2,26 +2,27 @@
 - name: Proxmox API Authentication Configuration
   block:
     - name: Check for existing Proxmox API Token
-      ansible.builtin.shell: "pveum user token list {{ pve_api_user }} --output-format json"
-      register: pve_token_list_output
+      ansible.builtin.command: "pveum user token list {{ pve_api_user }} --output-format json"
+      register: pve_base_token_list_output
       changed_when: false
-      when: pve_api_token_id | default('') == "" or pve_api_token_secret | default('') == ""
+      when: pve_token_id | default('') == "" or pve_token_secret | default('') == ""
 
     - name: Generate Proxmox API Token
-      ansible.builtin.shell: "pveum user token add {{ pve_api_user }} {{ pve_token_id_name | default('ansible-token') }} --privsep 0 --output-format json"
-      register: pve_token_create_output
-      when: 
-        - (pve_api_token_id | default('') == "" or pve_api_token_secret | default('') == "")
-        - pve_token_id_name | default('ansible-token') not in (pve_token_list_output.stdout | from_json | map(attribute='tokenid') | list)
+      ansible.builtin.command: "pveum user token add {{ pve_api_user }} {{ pve_token_id }} --privsep 0 --output-format json"
+      register: pve_base_token_create_output
+      when:
+        - (pve_token_id | default('') == "" or pve_token_secret | default('') == "")
+        - pve_token_id not in (pve_base_token_list_output.stdout | from_json | map(attribute='tokenid') | list)
+      changed_when: true
 
-    - name: Display Generated API Token (Action Required)
+    - name: Display Generated API Token (Action Required) # noqa: no-handler
       ansible.builtin.debug:
         msg: |
           PROXMOX API TOKEN GENERATED:
-          Token ID: {{ pve_api_user }}!{{ pve_token_id_name | default('ansible-token') }}
-          Token Secret: {{ (pve_token_create_output.stdout | from_json).value }}
+          Token ID: {{ pve_api_user }}!{{ pve_token_id }}
+          Token Secret: {{ (pve_base_token_create_output.stdout | from_json).value }}
           PLEASE STORE THESE SAFELY!
-      when: pve_token_create_output is changed
+      when: pve_base_token_create_output is changed
 
 - name: Modernize Repositories (DEB822)
   block:
@@ -30,14 +31,14 @@
         path: /etc/apt/sources.list.d/pve-enterprise.list
         state: absent
 
-    - name: Disable Legacy Proxmox No-Subscription Repository (pve-no-subscription.list)
+    - name: Disable Legacy Proxmox No-Subscription Repository (pve-no-subscription.sources)
       ansible.builtin.file:
-        path: /etc/apt/sources.list.d/pve-no-subscription.list
+        path: /etc/apt/sources.list.d/pve-no-subscription.sources
         state: absent
 
     - name: Check if proxmox-archive-keyring is installed
       ansible.builtin.command: dpkg-query -W -f='${Status}' proxmox-archive-keyring
-      register: proxmox_keyring_check
+      register: pve_base_proxmox_keyring_check
       failed_when: false
       changed_when: false
 
@@ -46,13 +47,12 @@
         url: "https://enterprise.proxmox.com/debian/proxmox-release-{{ pve_debian_release | default('trixie') }}.gpg"
         dest: /usr/share/keyrings/proxmox-archive-keyring.gpg
         mode: '0644'
-      when: proxmox_keyring_check.rc != 0
+      when: pve_base_proxmox_keyring_check.rc != 0
 
     - name: Ensure python3-debian is installed for DEB822 support
       ansible.builtin.apt:
         name: python3-debian
-        state: present
-        update_cache: yes
+        state: absent # We now use the version in /opt/ansible-venv/
 
     - name: Enable Proxmox No-Subscription Repository (DEB822)
       ansible.builtin.deb822_repository:
@@ -69,8 +69,8 @@
     path: /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
     regexp: 'res\.data\.status\.toLowerCase\(\) !== [''"]active[''"]'
     replace: 'false'
-    backup: yes
-  notify: restart_pveproxy
+    backup: true
+  notify: Restart PVEproxy
 
 - name: Ensure Proxmox Snippets Directory Exists
   ansible.builtin.file:
@@ -83,20 +83,20 @@
     - name: Ensure all packages are up to date (dist-upgrade)
       ansible.builtin.apt:
         upgrade: dist
-        update_cache: yes
+        update_cache: true
 
     - name: Install CPU Microcode and fwupd
       ansible.builtin.apt:
-        name: 
+        name:
           - "{{ 'intel-microcode' if ansible_facts['processor'] | join(' ') | lower is search('intel') else 'amd64-microcode' }}"
           - fwupd
         state: present
 
     - name: Update Firmware with fwupd
-      ansible.builtin.shell: 
-        cmd: "fwupdmgr refresh --force && fwupdmgr get-updates -y && fwupdmgr update -y"
-      register: fwupdmgr_output
-      changed_when: "'Updates successfully applied' in fwupdmgr_output.stdout"
+      ansible.builtin.shell:
+        cmd: "set -o pipefail && fwupdmgr refresh --force && fwupdmgr get-updates -y && fwupdmgr update -y"
+      register: pve_base_fwupdmgr_output
+      changed_when: "'Updates successfully applied' in pve_base_fwupdmgr_output.stdout"
       failed_when: false # It might fail if no updates are found or if hardware doesn't support it
 
 - name: Hardened SSH Configuration
@@ -107,7 +107,7 @@
         regexp: '^#?PermitRootLogin'
         line: 'PermitRootLogin prohibit-password'
         state: present
-      notify: restart_sshd
+      notify: Restart SSHD
 
     - name: Disable PasswordAuthentication
       ansible.builtin.lineinfile:
@@ -115,259 +115,30 @@
         regexp: '^#?PasswordAuthentication'
         line: 'PasswordAuthentication no'
         state: present
-      notify: restart_sshd
+      notify: Restart SSHD
 
-- name: Fail2Ban Configuration
-  block:
-    - name: Install Fail2Ban
-      ansible.builtin.apt:
-        name: fail2ban
-        state: present
-
-    - name: Configure Fail2Ban (SSH and Proxmox UI Jails)
-      ansible.builtin.copy:
-        dest: /etc/fail2ban/jail.local
-        content: |
-          [sshd]
-          enabled = true
-          port = ssh
-          filter = sshd
-          logpath = /var/log/auth.log
-          maxretry = 3
-          bantime = 1h
-
-          [proxmox]
-          enabled = true
-          port = 8006
-          filter = proxmox
-          logpath = /var/log/pveproxy/access.log
-          maxretry = 3
-          bantime = 1h
-        mode: '0644'
-      notify: restart_fail2ban
-
-    - name: Create Fail2Ban Filter for Proxmox UI
-      ansible.builtin.copy:
-        dest: /etc/fail2ban/filter.d/proxmox.conf
-        content: |
-          [Definition]
-          failregex = pveproxy\[.*\]: auth failure;.*remote_ip=<HOST>
-          ignoreregex =
-        mode: '0644'
-      notify: restart_fail2ban
+- name: Install Fail2Ban
+  when: fail2ban_enabled is defined and fail2ban_enabled
+  ansible.builtin.include_tasks: fail2ban.yml
 
 - name: Proxmox Firewall Configuration
-  block:
-    - name: Enable Cluster Firewall (Drop by default)
-      ansible.builtin.shell:
-        cmd: >
-          pvesh set /cluster/firewall/options
-          --enable 1
-          --ebtables 1
-          --policy_in DROP
-          --policy_out ACCEPT
-      changed_when: true
+  when: pve_firewall_enabled is defined and pve_firewall_enabled
+  ansible.builtin.include_tasks: firewall.yml
 
-    - name: Enable Host Firewall
-      ansible.builtin.shell:
-        cmd: >
-          pvesh set /nodes/{{ ansible_hostname }}/firewall/options
-          --enable 1
-      changed_when: true
+- name: Virtual Networking
+  ansible.builtin.include_tasks: networking.yml
 
-    - name: Configure Proxmox Firewall Alias for Management IPs
-      community.proxmox.proxmox_firewall:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        level: cluster
-        state: present
-        aliases:
-          - name: mgmt_ips
-            cidr: "{{ pve_mgmt_ips | default('192.168.1.0/24') }}"
-      delegate_to: localhost
+- name: Image Sync
+  ansible.builtin.include_tasks: templates.yml
 
-    - name: Configure Proxmox Firewall Rule for Management SSH/UI
-      community.proxmox.proxmox_firewall:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        level: cluster
-        state: present
-        rules:
-          - type: in
-            action: ACCEPT
-            source: mgmt_ips
-            dport: "8006"
-            proto: tcp
-            enable: true
-          - type: in
-            action: ACCEPT
-            source: mgmt_ips
-            dport: "22"
-            proto: tcp
-            enable: true
-      delegate_to: localhost
-
-- name: Virtual Networking (Step 4)
-  block:
-    - name: Configure vmbr0 Bridge
-      community.proxmox.proxmox_node_network:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        node: "{{ ansible_hostname }}"
-        name: "{{ pve_bridge_name | default('vmbr0') }}"
-        type: bridge
-        cidr: "{{ pve_bridge_cidr | default('192.168.1.100/24') }}"
-        bridge_ports: "{{ pve_bridge_ports | default('eno1') }}"
-        autostart: true
-        state: present
-      delegate_to: localhost
-
-    - name: Apply Network Configuration
-      community.proxmox.proxmox_node_network:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        node: "{{ ansible_hostname }}"
-        state: apply
-      delegate_to: localhost
-
-- name: Image Sync (Step 4)
-  block:
-    - name: Download LXC Templates
-      community.proxmox.proxmox_template:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        node: "{{ ansible_hostname }}"
-        storage: "{{ pve_storage | default('local') }}"
-        content_type: vztmpl
-        template: "{{ item }}"
-        state: present
-      loop: "{{ pve_lxc_templates }}"
-      delegate_to: localhost
-
-    - name: Download ISOs
-      community.proxmox.proxmox_template:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        node: "{{ ansible_hostname }}"
-        storage: "{{ pve_storage | default('local') }}"
-        content_type: iso
-        src: "{{ item }}"
-        state: present
-      loop: "{{ pve_iso_urls }}"
-      delegate_to: localhost
-
-- name: Cloud Image Template Provisioning (Step 4)
-  block:
-    - name: Download Cloud Images
-      ansible.builtin.get_url:
-        url: "{{ item.url }}"
-        dest: "/tmp/{{ item.name }}.qcow2"
-        mode: '0644'
-      loop: "{{ pve_cloud_images }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: Create VM Shell for Cloud Image
-      community.proxmox.proxmox_kvm:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        node: "{{ ansible_hostname }}"
-        vmid: "{{ item.vmid }}"
-        name: "{{ item.name }}"
-        memory: 2048
-        cores: 2
-        scsihw: virtio-scsi-pci
-        net:
-          net0: "virtio,bridge=vmbr0"
-        state: present
-      loop: "{{ pve_cloud_images }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: localhost
-
-    - name: Import Cloud Image Disk
-      ansible.builtin.shell:
-        cmd: "qm disk import {{ item.vmid }} /tmp/{{ item.name }}.qcow2 {{ pve_storage | default('local') }}"
-      loop: "{{ pve_cloud_images }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: disk_import_output
-      changed_when: "'Successfully imported' in disk_import_output.stdout"
-
-    - name: Convert VM to Template
-      community.proxmox.proxmox_kvm:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        node: "{{ ansible_hostname }}"
-        vmid: "{{ item.vmid }}"
-        name: "{{ item.name }}"
-        template: true
-        update: true
-        state: present
-      loop: "{{ pve_cloud_images }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: localhost
-
-- name: SDN Zones and Vnets (Step 4)
-  block:
-    - name: Create SDN Simple Zone
-      community.proxmox.proxmox_zone:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        zone: "{{ pve_sdn_zone_name | default('dmz') }}"
-        type: simple
-        state: present
-      delegate_to: localhost
-
-    - name: Create SDN DMZ Vnet
-      community.proxmox.proxmox_vnet:
-        api_user: "{{ pve_api_user | default('root@pam') }}"
-        api_token_id: "{{ pve_token_id }}"
-        api_token_secret: "{{ pve_token_secret }}"
-        api_host: "{{ ansible_host }}"
-        validate_certs: false
-        vnet: "{{ pve_sdn_vnet_name | default('vnet-dmz') }}"
-        zone: "{{ pve_sdn_zone_name | default('dmz') }}"
-        tag: "{{ pve_sdn_tag | default(omit) }}"
-        state: present
-      delegate_to: localhost
-
-- name: Hardware Optimization (Step 3)
+- name: Hardware Optimization
   block:
     - name: Configure ZFS ARC Limit
       ansible.builtin.copy:
         dest: /etc/modprobe.d/zfs.conf
         content: "options zfs zfs_arc_max={{ pve_zfs_arc_max | default(2147483648) }}"
         mode: '0644'
-      notify: update_initramfs
+      notify: Update Initramfs
 
     - name: Ensure cpupowerutils is installed
       ansible.builtin.apt:
@@ -375,10 +146,10 @@
         state: present
 
     - name: Configure CPU Governor
-      ansible.builtin.shell: "cpupower frequency-set -g {{ pve_cpu_governor | default('performance') }}"
-      register: cpupower_output
-      changed_when: "'Setting' in cpupower_output.stdout"
-      failed_when: false # Might fail if hardware doesn't support the governor or cpupower is not working in the environment
+      ansible.builtin.command: "cpupower frequency-set -g {{ pve_cpu_governor | default('performance') }}"
+      register: pve_base_cpupower_output
+      changed_when: "'Setting' in pve_base_cpupower_output.stdout"
+      failed_when: false # Might fail if hardware doesn't support the governor or cpupower is not working
 
     - name: Make CPU Governor persistent (via cron)
       ansible.builtin.cron:
@@ -386,384 +157,19 @@
         special_time: reboot
         job: "cpupower frequency-set -g {{ pve_cpu_governor | default('performance') }}"
 
-- name: vzdump Backup Schedule (Step 6)
-  block:
-    - name: Configure vzdump backup schedule (nightly)
-      ansible.builtin.cron:
-        name: "vzdump nightly backup"
-        minute: "{{ backup_schedule_minute | default(0) }}"
-        hour: "{{ backup_schedule_hour | default(2) }}"
-        job: >-
-          vzdump --all --mode snapshot
-          --storage {{ backup_storage | default('pbs') }}
-          --prune-backups keep-daily={{ backup_retention_daily | default(7) }},keep-weekly={{ backup_retention_weekly | default(4) }},keep-monthly={{ backup_retention_monthly | default(3) }}
-          --mailnotification failure
-          --quiet 1
+- name: Backup Schedule
+  when: pve_backup_enabled is defined and pve_backup_enabled
+  ansible.builtin.include_tasks: backup.yml
 
-    - name: Configure vzdump backup retention defaults
-      ansible.builtin.copy:
-        dest: /etc/vzdump.conf
-        content: |
-          storage: {{ backup_storage | default('pbs') }}
-          prune-backups: keep-daily={{ backup_retention_daily | default(7) }},keep-weekly={{ backup_retention_weekly | default(4) }},keep-monthly={{ backup_retention_monthly | default(3) }}
-          mode: snapshot
-        mode: '0644'
+- name: Prometheus
+  ansible.builtin.include_tasks: prometheus.yml
 
-- name: Prometheus & Proxmox Exporter (Step 6)
-  block:
-    - name: Install Prometheus
-      ansible.builtin.apt:
-        name:
-          - prometheus
-        state: present
-        update_cache: yes
+- name: Third-Party Repositories (Telegraf, Grafana)
+  ansible.builtin.include_tasks: third_party_repos.yml
 
-    - name: Install prometheus-pve-exporter via pip
-      ansible.builtin.pip:
-        name: prometheus-pve-exporter
-        state: present
+- name: Logging and Metrics
+  ansible.builtin.include_tasks: logging.yml
 
-    - name: Deploy Prometheus scrape configuration
-      ansible.builtin.copy:
-        dest: /etc/prometheus/prometheus.yml
-        content: |
-          global:
-            scrape_interval: {{ prometheus_scrape_interval | default('15s') }}
-            evaluation_interval: {{ prometheus_scrape_interval | default('15s') }}
-
-          scrape_configs:
-            - job_name: 'prometheus'
-              static_configs:
-                - targets: ['localhost:{{ prometheus_port | default(9090) }}']
-
-            - job_name: 'pve'
-              static_configs:
-                - targets: ['localhost:9221']
-              metrics_path: /pve
-              params:
-                module: [default]
-                target: ['{{ ansible_host }}']
-        mode: '0644'
-      notify: restart_prometheus
-
-    - name: Ensure Prometheus service is enabled and started
-      ansible.builtin.systemd_service:
-        name: prometheus
-        enabled: true
-        state: started
-
-- name: Telegraf System Metrics (Step 6)
-  block:
-    - name: Install Telegraf
-      ansible.builtin.apt:
-        name:
-          - telegraf
-        state: present
-        update_cache: yes
-
-    - name: Deploy Telegraf configuration
-      ansible.builtin.copy:
-        dest: /etc/telegraf/telegraf.conf
-        content: |
-          [global_tags]
-            host = "{{ ansible_hostname }}"
-
-          [agent]
-            interval = "{{ telegraf_collection_interval | default('10s') }}"
-            round_interval = true
-            flush_interval = "{{ telegraf_flush_interval | default('10s') }}"
-            hostname = "{{ ansible_hostname }}"
-
-          [[outputs.prometheus_client]]
-            listen = ":{{ telegraf_output_port | default(9273) }}"
-            metric_version = 2
-
-          [[inputs.cpu]]
-            percpu = true
-            totalcpu = true
-
-          [[inputs.mem]]
-
-          [[inputs.disk]]
-            ignore_fs = ["tmpfs", "devtmpfs", "devfs", "iso9660", "overlay", "aufs", "squashfs"]
-
-          [[inputs.diskio]]
-
-          [[inputs.system]]
-
-          [[inputs.net]]
-        mode: '0644'
-      notify: restart_telegraf
-
-    - name: Ensure Telegraf service is enabled and started
-      ansible.builtin.systemd_service:
-        name: telegraf
-        enabled: true
-        state: started
-
-- name: Loki & Promtail Log Aggregation (Step 6)
-  block:
-    - name: Install Loki
-      ansible.builtin.apt:
-        name:
-          - loki
-        state: present
-        update_cache: yes
-
-    - name: Deploy Loki configuration
-      ansible.builtin.copy:
-        dest: /etc/loki/loki-local-config.yaml
-        content: |
-          auth_enabled: false
-
-          server:
-            http_listen_port: {{ loki_http_port | default(3100) }}
-
-          common:
-            path_prefix: /var/lib/loki
-            storage:
-              filesystem:
-                chunks_directory: /var/lib/loki/chunks
-                rules_directory: /var/lib/loki/rules
-            replication_factor: 1
-            ring:
-              kvstore:
-                store: inmemory
-
-          schema_config:
-            configs:
-              - from: "2020-10-24"
-                store: tsdb
-                object_store: filesystem
-                schema: v13
-                index:
-                  prefix: index_
-                  period: 24h
-
-          storage_config:
-            filesystem:
-              directory: /var/lib/loki/chunks
-
-          limits_config:
-            retention_period: {{ loki_retention_period | default('168h') }}
-        mode: '0644'
-      notify: restart_loki
-
-    - name: Ensure Loki service is enabled and started
-      ansible.builtin.systemd_service:
-        name: loki
-        enabled: true
-        state: started
-
-    - name: Install Promtail
-      ansible.builtin.apt:
-        name:
-          - promtail
-        state: present
-        update_cache: yes
-
-    - name: Deploy Promtail configuration
-      ansible.builtin.copy:
-        dest: /etc/promtail/promtail-local-config.yaml
-        content: |
-          server:
-            http_listen_port: {{ promtail_http_port | default(9080) }}
-
-          positions:
-            filename: /var/lib/promtail/positions.yaml
-
-          clients:
-            - url: http://localhost:{{ loki_http_port | default(3100) }}/loki/api/v1/push
-
-          scrape_configs:
-            - job_name: syslog
-              static_configs:
-                - targets:
-                    - localhost
-                  labels:
-                    job: syslog
-                    host: {{ ansible_hostname }}
-                    __path__: /var/log/syslog
-
-            - job_name: auth
-              static_configs:
-                - targets:
-                    - localhost
-                  labels:
-                    job: auth
-                    host: {{ ansible_hostname }}
-                    __path__: /var/log/auth.log
-
-            - job_name: pveproxy
-              static_configs:
-                - targets:
-                    - localhost
-                  labels:
-                    job: pveproxy
-                    host: {{ ansible_hostname }}
-                    __path__: /var/log/pveproxy/*.log
-        mode: '0644'
-      notify: restart_promtail
-
-    - name: Ensure Promtail service is enabled and started
-      ansible.builtin.systemd_service:
-        name: promtail
-        enabled: true
-        state: started
-
-- name: Grafana Visualization Service (Step 6)
-  block:
-    - name: Install Grafana
-      ansible.builtin.apt:
-        name:
-          - grafana
-        state: present
-        update_cache: yes
-
-    - name: Deploy Grafana datasource provisioning
-      ansible.builtin.copy:
-        dest: /etc/grafana/provisioning/datasources/datasources.yaml
-        content: |
-          apiVersion: 1
-
-          datasources:
-            - name: Prometheus
-              type: prometheus
-              access: proxy
-              url: http://localhost:{{ prometheus_port | default(9090) }}
-              isDefault: true
-              editable: false
-
-            - name: Loki
-              type: loki
-              access: proxy
-              url: http://localhost:{{ loki_http_port | default(3100) }}
-              editable: false
-        mode: '0640'
-        owner: grafana
-        group: grafana
-      notify: restart_grafana
-
-    - name: Deploy Grafana dashboard provider configuration
-      ansible.builtin.copy:
-        dest: /etc/grafana/provisioning/dashboards/dashboards.yaml
-        content: |
-          apiVersion: 1
-
-          providers:
-            - name: 'default'
-              orgId: 1
-              folder: ''
-              type: file
-              disableDeletion: false
-              updateIntervalSeconds: 30
-              options:
-                path: /var/lib/grafana/dashboards
-                foldersFromFilesStructure: false
-        mode: '0640'
-        owner: grafana
-        group: grafana
-      notify: restart_grafana
-
-    - name: Ensure Grafana dashboards directory exists
-      ansible.builtin.file:
-        path: /var/lib/grafana/dashboards
-        state: directory
-        owner: grafana
-        group: grafana
-        mode: '0755'
-
-    - name: Deploy Grafana unified dashboard
-      ansible.builtin.copy:
-        dest: /var/lib/grafana/dashboards/proxmox-overview.json
-        content: |
-          {
-            "dashboard": {
-              "id": null,
-              "uid": "proxmox-overview",
-              "title": "Proxmox Overview",
-              "tags": ["proxmox", "overview"],
-              "timezone": "browser",
-              "panels": [
-                {
-                  "id": 1,
-                  "title": "CPU Usage",
-                  "type": "timeseries",
-                  "datasource": "Prometheus",
-                  "targets": [
-                    {
-                      "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
-                      "legendFormat": "CPU %"
-                    }
-                  ],
-                  "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
-                },
-                {
-                  "id": 2,
-                  "title": "Memory Usage",
-                  "type": "timeseries",
-                  "datasource": "Prometheus",
-                  "targets": [
-                    {
-                      "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
-                      "legendFormat": "Used Memory"
-                    }
-                  ],
-                  "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
-                },
-                {
-                  "id": 3,
-                  "title": "System Logs",
-                  "type": "logs",
-                  "datasource": "Loki",
-                  "targets": [
-                    {
-                      "expr": "{job=\"syslog\"}"
-                    }
-                  ],
-                  "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
-                },
-                {
-                  "id": 4,
-                  "title": "Auth Logs",
-                  "type": "logs",
-                  "datasource": "Loki",
-                  "targets": [
-                    {
-                      "expr": "{job=\"auth\"}"
-                    }
-                  ],
-                  "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
-                }
-              ],
-              "schemaVersion": 39,
-              "version": 1
-            }
-          }
-        mode: '0644'
-        owner: grafana
-        group: grafana
-      notify: restart_grafana
-
-    - name: Deploy Grafana server configuration
-      ansible.builtin.copy:
-        dest: /etc/grafana/grafana.ini
-        content: |
-          [server]
-          http_port = {{ grafana_http_port | default(3000) }}
-
-          [security]
-          admin_password = {{ grafana_admin_password | default('admin') }}
-
-          [auth.anonymous]
-          enabled = false
-        mode: '0640'
-        owner: grafana
-        group: grafana
-      notify: restart_grafana
-
-    - name: Ensure Grafana service is enabled and started
-      ansible.builtin.systemd_service:
-        name: grafana-server
-        enabled: true
-        state: started
+- name: Grafana Visualization Service
+  when: grafana_enabled is defined and grafana_enabled
+  ansible.builtin.include_tasks: grafana.yml

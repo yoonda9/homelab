@@ -1,0 +1,41 @@
+---
+- name: Install Prometheus
+  ansible.builtin.apt:
+    name:
+      - prometheus
+    state: present
+    update_cache: true
+
+- name: Install prometheus-pve-exporter via uv pip
+  ansible.builtin.command:
+    cmd: "/usr/local/bin/uv pip install --python /opt/ansible-venv/bin/python3 prometheus-pve-exporter"
+  changed_when: true
+
+- name: Deploy Prometheus scrape configuration
+  ansible.builtin.copy:
+    dest: /etc/prometheus/prometheus.yml
+    content: |
+      global:
+        scrape_interval: {{ prometheus_scrape_interval | default('15s') }}
+        evaluation_interval: {{ prometheus_scrape_interval | default('15s') }}
+
+      scrape_configs:
+        - job_name: 'prometheus'
+          static_configs:
+            - targets: ['localhost:{{ prometheus_port | default(9090) }}']
+
+        - job_name: 'pve'
+          static_configs:
+            - targets: ['localhost:9221']
+          metrics_path: /pve
+          params:
+            module: [default]
+            target: ['{{ ansible_host }}']
+    mode: '0644'
+  notify: Restart Prometheus
+
+- name: Ensure Prometheus service is enabled and started
+  ansible.builtin.systemd_service:
+    name: prometheus
+    enabled: true
+    state: started

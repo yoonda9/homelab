@@ -61,11 +61,11 @@ def test_bridge_name(tasks):
         return False
     for task in bridge_tasks:
         params = task.get(EXPECTED_MODULE, {})
-        name = params.get("name", "")
+        name = params.get("iface", "")
         name_str = str(name)
         if name_str == EXPECTED_BRIDGE_NAME:
             print(
-                f"OK: Bridge task uses name '{name}'."
+                f"OK: Bridge task uses iface '{name}'."
             )
             return True
         if "pve_bridge_name" in name_str:
@@ -87,7 +87,7 @@ def test_bridge_name(tasks):
             )
             return True
     print(
-        f"FAIL: No bridge task sets name to "
+        f"FAIL: No bridge task sets iface to "
         f"'{EXPECTED_BRIDGE_NAME}' or uses "
         f"pve_bridge_name variable."
     )
@@ -100,14 +100,14 @@ def test_bridge_type(tasks):
         return False
     for task in bridge_tasks:
         params = task.get(EXPECTED_MODULE, {})
-        iface_type = params.get("type", "")
+        iface_type = params.get("iface_type", "")
         if iface_type == EXPECTED_TYPE:
             print(f"OK: Bridge task type is '{EXPECTED_TYPE}'.")
             return True
     print(
-        f"FAIL: No bridge task sets type to '{EXPECTED_TYPE}'. "
+        f"FAIL: No bridge task sets iface_type to '{EXPECTED_TYPE}'. "
         f"Found types: "
-        f"{[t.get(EXPECTED_MODULE, {}).get('type', '') for t in bridge_tasks]}"
+        f"{[t.get(EXPECTED_MODULE, {}).get('iface_type', '') for t in bridge_tasks]}"
     )
     return False
 
