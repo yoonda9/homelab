@@ -1,0 +1,36 @@
+---
+# pve_vms — list of VM specs to provision via DHCP cloud-init clone.
+# Each entry is a dict with the following keys:
+#   name:             (required) VM display name on the node
+#   vmid:             (required) numeric VMID for the new guest
+#   clone_from_vmid:  (required) source cloud-init template VMID
+#                     (see pve_cloud_images in group_vars/all.yml)
+#   memory:           (optional) RAM in MB,    default 2048
+#   cores:            (optional) vCPU cores,   default 2
+#   bridge:           (optional) Linux bridge, default pve_bridge_name
+#   description:      (optional) free-text notes shown in the PVE UI
+#
+# DHCP networking (ipconfig0=ip=dhcp,ip6=auto) is enforced by the role
+# itself — do not override it here; that is what this role is for.
+pve_vms: []
+
+# pve_windows_vms — list of Windows 11 ISO-based VM shells to provision.
+# Windows cannot clone a cloud-init template, so these are fresh shells the
+# operator finishes installing manually after the role creates them.
+# Each entry is a dict with the following keys:
+#   name:        (required) VM display name on the node
+#   vmid:        (required) numeric VMID for the new guest
+#   install_iso: (required) full path to the pre-staged Windows 11 ISO on
+#                the Proxmox node (e.g. /var/lib/vz/template/iso/Win11.iso)
+#   virtio_iso:  (required) full path to the pre-staged virtio-win drivers
+#                ISO on the node (needed during install for the SCSI driver)
+#   memory:      (optional) RAM in MB,    default 8192
+#   cores:       (optional) vCPU cores,   default 4
+#   disk_size:   (optional) primary disk size in GB, default 64
+#   bridge:      (optional) Linux bridge, default pve_bridge_name
+#   storage:     (optional) PVE storage,  default pve_vm_storage
+#   description: (optional) free-text notes shown in the PVE UI
+#
+# DHCP for Windows is provided by the guest OS itself once installed; the
+# role does NOT set ipconfig0 on this branch (cloud-init is not in play).
+pve_windows_vms: []

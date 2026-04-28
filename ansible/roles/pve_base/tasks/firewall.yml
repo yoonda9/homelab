@@ -19,8 +19,8 @@
 - name: Configure Proxmox Firewall Alias for Management IPs
   community.proxmox.proxmox_firewall:
     api_user: "{{ pve_api_user | default('root@pam') }}"
-    api_token_id: "{{ pve_token_id }}"
-    api_token_secret: "{{ pve_token_secret }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
     api_host: "{{ ansible_host }}"
     validate_certs: false
     level: cluster
@@ -32,8 +32,8 @@
 - name: Configure Proxmox Firewall Rule for Management SSH/UI
   community.proxmox.proxmox_firewall:
     api_user: "{{ pve_api_user | default('root@pam') }}"
-    api_token_id: "{{ pve_token_id }}"
-    api_token_secret: "{{ pve_token_secret }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
     api_host: "{{ ansible_host }}"
     validate_certs: false
     level: cluster

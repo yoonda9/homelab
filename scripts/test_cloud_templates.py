@@ -4,7 +4,7 @@ import sys
 import yaml
 
 TASKS_PATH = os.environ.get(
-    "TASKS_PATH", "ansible/roles/pve_base/tasks/main.yml"
+    "TASKS_PATH", "ansible/roles/pve_base/tasks/templates.yml"
 )
 VARS_PATH = os.environ.get(
     "VARS_PATH", "ansible/group_vars/all.yml"

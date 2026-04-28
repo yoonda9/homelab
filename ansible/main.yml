@@ -1,13 +1,6 @@
 ---
-- name: Bootstrap Ansible Python Environment
-  ansible.builtin.import_playbook: bootstrap-ansible.yml
+- name: Bootstrap Proxmox
+  ansible.builtin.import_playbook: bootstrap-proxmox.yml
 
-- name: Bootstrap Proxmox Core Services
-  hosts: proxmox_hosts
-  roles:
-    - pve_base
-    - plex
-    - pihole
-    - docker_host
-    - traefik
-    - uptimekuma
+- name: Deploy services
+  ansible.builtin.import_playbook: services.yml

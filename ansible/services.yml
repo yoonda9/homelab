@@ -1,0 +1,8 @@
+---
+- name: Deploy Proxmox VMs and Core Services
+  hosts: proxmox_hosts
+  roles:
+    - pve_vm_deploy
+    - plex
+    - pihole
+    - uptimekuma

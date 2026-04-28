@@ -8,8 +8,8 @@ pve_host: "pve.example.com"
 pve_root_password: ""
 
 # These should be populated after token generation
-pve_token_id: "ansible-token"
-pve_token_secret: ""
+pve_api_token_id: "ansible-token"
+pve_api_token_secret: ""
 
 # Debian Release (e.g. 'bookworm' for PVE 8, 'trixie' for PVE 9)
 pve_debian_release: "trixie"
@@ -31,6 +31,7 @@ pve_lxc_templates:
   - "ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 pve_iso_urls:
   - "https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
+  - "https://releases.ubuntu.com/26.04/ubuntu-26.04-live-server-amd64.iso"
   - "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.4.0-amd64-netinst.iso"
 
 # SDN Configuration
@@ -44,6 +45,39 @@ pve_cloud_images:
   - name: "ubuntu-24.04-cloud"
     url: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
     vmid: 9000
+  - name: "ubuntu-26.04-cloud"
+    url: "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img"
+    vmid: 9001
+  - name: "centos-stream-10-cloud"
+    url: "https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2"
+    vmid: 9002
+
+# Proxmox VM Deployments (consumed by the pve_vm_deploy role).
+# Each entry clones a cloud-init template and gets DHCP via the role.
+pve_vms:
+  - name: "ubuntu26-test"
+    vmid: 300
+    clone_from_vmid: 9001
+    memory: 2048
+    cores: 2
+  - name: "centos10-test"
+    vmid: 301
+    clone_from_vmid: 9002
+    memory: 2048
+    cores: 2
+
+# Windows 11 ISO-based deployments (consumed by the pve_vm_deploy role).
+# ISOs must be pre-staged on the Proxmox node by the operator; the role
+# does NOT download them. After the shell is created, the operator boots
+# the VM and runs the Windows installer manually.
+pve_windows_vms:
+  - name: "win11-test"
+    vmid: 302
+    install_iso: "/var/lib/vz/template/iso/Win11_24H2_English_x64.iso"
+    virtio_iso: "/var/lib/vz/template/iso/virtio-win.iso"
+    memory: 8192
+    cores: 4
+    disk_size: 64
 
 # Plex LXC Configuration
 plex_vmid: 110

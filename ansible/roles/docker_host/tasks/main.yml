@@ -5,14 +5,13 @@
     api_password: "{{ pve_api_password | default(omit) }}"
     api_token_id: "{{ pve_api_token_id | default(omit) }}"
     api_token_secret: "{{ pve_api_token_secret | default(omit) }}"
-    api_host: "{{ inventory_hostname }}"
-    node: "{{ inventory_hostname }}"
+    api_host: "{{ pve_host }}"
+    node: "{{ ansible_facts['hostname'] }}"
     vmid: "{{ docker_vmid | default(200) }}"
-    name: "docker-host"
+    name: "docker-services"
     clone: "{{ docker_clone_vmid | default(9000) }}"
     net:
       net0: "virtio,bridge=vmbr0,firewall=1"
     memory: "{{ docker_memory | default(4096) }}"
     description: "Docker App VM"
     state: present
-  delegate_to: localhost

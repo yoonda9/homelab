@@ -2,8 +2,8 @@
 - name: Download LXC Templates
   community.proxmox.proxmox_template:
     api_user: "{{ pve_api_user | default('root@pam') }}"
-    api_token_id: "{{ pve_token_id }}"
-    api_token_secret: "{{ pve_token_secret }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
     api_host: "{{ ansible_host }}"
     validate_certs: false
     node: "{{ ansible_facts['hostname'] }}"
@@ -32,8 +32,8 @@
 - name: Create VM Shell for Cloud Image
   community.proxmox.proxmox_kvm:
     api_user: "{{ pve_api_user | default('root@pam') }}"
-    api_token_id: "{{ pve_token_id }}"
-    api_token_secret: "{{ pve_token_secret }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
     api_host: "{{ ansible_host }}"
     validate_certs: false
     node: "{{ ansible_facts['hostname'] }}"
@@ -46,12 +46,13 @@
     net:
       net0: "virtio,bridge=vmbr0"
     state: present
+  delegate_to: localhost
   loop: "{{ pve_cloud_images }}"
   loop_control:
     label: "{{ item.name }}"
 
 - name: Import Cloud Image Disk
-  ansible.builtin.command:
+  ansible.builtin.shell:
     cmd: "qm disk import {{ item.vmid }} /tmp/{{ item.name }}.qcow2 {{ pve_vm_storage | default('local-lvm') }}"
   loop: "{{ pve_cloud_images }}"
   loop_control:
@@ -77,8 +78,8 @@
 - name: Convert VM to Template
   community.proxmox.proxmox_kvm:
     api_user: "{{ pve_api_user | default('root@pam') }}"
-    api_token_id: "{{ pve_token_id }}"
-    api_token_secret: "{{ pve_token_secret }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
     api_host: "{{ ansible_host }}"
     validate_certs: false
     node: "{{ ansible_facts['hostname'] }}"
@@ -87,6 +88,7 @@
     template: true
     update: true
     state: present
+  delegate_to: localhost
   loop: "{{ pve_cloud_images }}"
   loop_control:
     label: "{{ item.name }}"

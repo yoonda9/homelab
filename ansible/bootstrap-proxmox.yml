@@ -1,0 +1,10 @@
+---
+- name: Bootstrap Ansible Python Environment
+  ansible.builtin.import_playbook: bootstrap-ansible.yml
+
+- name: Bootstrap Proxmox
+  hosts: proxmox_hosts
+  roles:
+    - pve_base
+    - docker_host
+    - traefik
