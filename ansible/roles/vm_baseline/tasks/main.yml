@@ -1,0 +1,22 @@
+---
+# vm_baseline: minimal idempotent baseline for Tofu-provisioned guests.
+# Step 4 deliverable — proves the OpenTofu → Ansible bridge works
+# end-to-end. Heavier post-config (Docker, Traefik, etc.) stays in the
+# existing service roles (docker_host, traefik) and is not Step 4 scope.
+
+- name: Ensure python3 is installed (Ansible needs it on the target)
+  ansible.builtin.package:
+    name: python3
+    state: present
+
+- name: Write /etc/ralph-banner identifying the host
+  ansible.builtin.copy:
+    dest: /etc/ralph-banner
+    mode: "0644"
+    owner: root
+    group: root
+    content: |
+      Provisioned by OpenTofu, configured by Ansible.
+      hostname: {{ inventory_hostname }}
+      vmid:     {{ vmid | default('unknown') }}
+      node:     {{ node_name | default('unknown') }}

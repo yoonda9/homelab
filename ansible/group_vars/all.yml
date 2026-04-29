@@ -52,32 +52,12 @@ pve_cloud_images:
     url: "https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2"
     vmid: 9002
 
-# Proxmox VM Deployments (consumed by the pve_vm_deploy role).
-# Each entry clones a cloud-init template and gets DHCP via the role.
-pve_vms:
-  - name: "ubuntu26-test"
-    vmid: 300
-    clone_from_vmid: 9001
-    memory: 2048
-    cores: 2
-  - name: "centos10-test"
-    vmid: 301
-    clone_from_vmid: 9002
-    memory: 2048
-    cores: 2
-
-# Windows 11 ISO-based deployments (consumed by the pve_vm_deploy role).
-# ISOs must be pre-staged on the Proxmox node by the operator; the role
-# does NOT download them. After the shell is created, the operator boots
-# the VM and runs the Windows installer manually.
-pve_windows_vms:
-  - name: "win11-test"
-    vmid: 302
-    install_iso: "/var/lib/vz/template/iso/Win11_24H2_English_x64.iso"
-    virtio_iso: "/var/lib/vz/template/iso/virtio-win.iso"
-    memory: 8192
-    cores: 4
-    disk_size: 64
+# Proxmox VM provisioning is now owned by OpenTofu under tofu/.
+# Linux guest VM definitions (vmid, clone_from, memory, cores, bridge)
+# live in tofu/main.tf via the reusable tofu/modules/vm/ module; ansible
+# configures the running guests through ansible/configure-vms.yml.
+# Windows ISO-based provisioning is not currently supported by the Tofu
+# module — see code-assist:tofu-ansible-pve:followup:windows-vm-tofu.
 
 # Plex LXC Configuration
 plex_vmid: 110

@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: vm_baseline
+  author: homelab
+  description: Minimal idempotent baseline for OpenTofu-provisioned Proxmox guests.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - all
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - baseline
+    - proxmox
+
+dependencies: []

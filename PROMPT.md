@@ -1,6 +1,7 @@
-# Role to deploy VMs
+# Use OpenTofu and Ansible to deploy VMs to Proxmox
 
-Objective is to deploy a VM on Proxmox with DHCP enabled using Ansible.
+Objective: Automatically deploy and provision VMs with OpenTofu and Ansible
 
-We will want to deploy a variety of VMs such as Ubuntu 26, CentOS stream, and perhaps even Windows 11.
+- Use OpenTofu to provision the resources on Proxmox.
+- Use Ansible to configure the deployed resources.
 

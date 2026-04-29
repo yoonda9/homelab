@@ -1,8 +1,10 @@
 ---
-- name: Deploy Proxmox VMs and Core Services
+# VM provisioning has moved to OpenTofu (tofu/) plus
+# ansible/configure-vms.yml. This playbook now only wires the
+# LXC-hosted services that run from a Proxmox host context.
+- name: Deploy LXC-hosted Core Services
   hosts: proxmox_hosts
   roles:
-    - pve_vm_deploy
     - plex
     - pihole
     - uptimekuma
