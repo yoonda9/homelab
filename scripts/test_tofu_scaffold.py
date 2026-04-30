@@ -1,7 +1,7 @@
 """Adversarial smoke test for the OpenTofu scaffold under `tofu/`.
 
 Mirrors the shape of the other `scripts/test_tofu_*.py` scripts (e.g.
-`scripts/test_tofu_vm_module.py`): load the artifact, assert key
+`scripts/test_tofu_linux_vm_module.py`): load the artifact, assert key
 declarations are present, fail with a precise message otherwise.
 Intentionally text-based so we don't add an HCL parser dependency for a
 one-step scaffold check.

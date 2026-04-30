@@ -1,7 +1,7 @@
 """Adversarial smoke test for the Step 3 multi-VM declarations + ansible_inventory output.
 
 Mirrors the shape of `scripts/test_tofu_scaffold.py` and
-`scripts/test_tofu_vm_module.py`: load the artifact, assert key
+`scripts/test_tofu_linux_vm_module.py`: load the artifact, assert key
 declarations are present, fail with a precise message otherwise.
 Intentionally text-based so we don't add an HCL parser dependency for
 a focused multi-VM/output check.
@@ -40,7 +40,7 @@ def _module_blocks(text):
 
     Tolerates one level of brace nesting inside the body, which matches
     the current root config shape (clone {...}, cpu {...}, etc. live
-    inside modules/vm/main.tf, not the root, but defensive anyway).
+    inside modules/linux_vm/main.tf, not the root, but defensive anyway).
     """
     return re.findall(
         r'module\s+"(?P<label>[^"]+)"\s*\{'
@@ -77,14 +77,14 @@ def test_root_main_declares_two_vm_module_blocks():
     vm_blocks = [
         (label, body)
         for label, body in blocks
-        if re.search(r'source\s*=\s*"\./modules/vm"', body)
+        if re.search(r'source\s*=\s*"\./modules/linux_vm"', body)
     ]
     if len(vm_blocks) < 2:
         print(
             f"FAIL: '{ROOT_MAIN_PATH}' must contain at least two distinct "
-            f"module \"...\" blocks whose source = \"./modules/vm\" "
+            f"module \"...\" blocks whose source = \"./modules/linux_vm\" "
             f"(Step 3 declares Ubuntu 26 + CentOS Stream guests via the "
-            f"vm module); found {len(vm_blocks)}."
+            f"linux_vm module); found {len(vm_blocks)}."
         )
         return False
     labels = [label for label, _ in vm_blocks]
@@ -96,7 +96,7 @@ def test_root_main_declares_two_vm_module_blocks():
         return False
     print(
         f"OK: '{ROOT_MAIN_PATH}' declares {len(vm_blocks)} distinct "
-        f"module blocks sourced from ./modules/vm "
+        f"module blocks sourced from ./modules/linux_vm "
         f"({', '.join(labels)})."
     )
     return True
@@ -108,11 +108,11 @@ def test_root_main_clones_ubuntu26_and_centos_stream():
         print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
         return False
     blocks = _module_blocks(text)
-    # Map module label -> body for vm-module callers.
+    # Map module label -> body for linux_vm-module callers.
     vm_blocks = {
         label: body
         for label, body in blocks
-        if re.search(r'source\s*=\s*"\./modules/vm"', body)
+        if re.search(r'source\s*=\s*"\./modules/linux_vm"', body)
     }
     expected = {
         "ubuntu26_test": UBUNTU_26_TEMPLATE_VMID,

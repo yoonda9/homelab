@@ -54,7 +54,7 @@ pve_cloud_images:
 
 # Proxmox VM provisioning is now owned by OpenTofu under tofu/.
 # Linux guest VM definitions (vmid, clone_from, memory, cores, bridge)
-# live in tofu/main.tf via the reusable tofu/modules/vm/ module; ansible
+# live in tofu/main.tf via the reusable tofu/modules/linux_vm/ module; ansible
 # configures the running guests through ansible/configure-vms.yml.
 # Windows ISO-based provisioning is not currently supported by the Tofu
 # module — see code-assist:tofu-ansible-pve:followup:windows-vm-tofu.

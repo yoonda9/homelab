@@ -1,7 +1,7 @@
 """Adversarial smoke test for the Step 4 Tofu→Ansible inventory bridge.
 
 Mirrors the shape of `scripts/test_tofu_scaffold.py`,
-`scripts/test_tofu_vm_module.py`, and `scripts/test_tofu_inventory_output.py`:
+`scripts/test_tofu_linux_vm_module.py`, and `scripts/test_tofu_inventory_output.py`:
 exercise the artifact, assert key declarations are present, fail with a
 precise message otherwise. Plain main runner — no pytest.
 
