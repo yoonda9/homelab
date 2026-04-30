@@ -70,7 +70,7 @@ resource "proxmox_virtual_environment_vm" "this" {
   disk {
     interface    = "scsi0"
     datastore_id = "local-lvm"
-    size         = "${var.disk_gb}G"
+    size         = var.disk_gb
     discard      = "on"
     ssd          = true
   }

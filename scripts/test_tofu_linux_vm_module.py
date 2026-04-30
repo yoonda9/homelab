@@ -160,11 +160,11 @@ def test_module_main_disk_uses_disk_gb_var():
     if text is None:
         print(f"FAIL: '{MODULE_MAIN_PATH}' is missing.")
         return False
-    # Body capture can't naively `[^{}]*` because the size value
-    # `"${var.disk_gb}G"` contains literal `{` and `}` from the HCL
-    # interpolation. Anchor on the opening `disk {` line and assert the
-    # required attributes appear before the matching closing brace
-    # (located by scanning for the first un-nested `}` on its own line).
+    # Anchor on the opening `disk {` line and its matching closing brace
+    # on its own line (the disk block body is flat — no nested blocks —
+    # so the first un-nested `}` ends it). Anchoring on the block body
+    # rather than the file body is what discriminates the Number form
+    # from a comment or unrelated occurrence elsewhere.
     open_match = re.search(r"^\s*disk\s*\{\s*$", text, flags=re.MULTILINE)
     if not open_match:
         print(
@@ -181,11 +181,20 @@ def test_module_main_disk_uses_disk_gb_var():
         )
         return False
     body = after[: close_match.start()]
-    if not re.search(r'size\s*=\s*"\$\{var\.disk_gb\}G"', body):
+    # Number-form assertion: `size = var.disk_gb` (no quotes, no `G`
+    # suffix). The string-with-G form `size = "${var.disk_gb}G"` passes
+    # `tofu validate` but fails `tofu plan` on bpg/proxmox v0.104.0 with
+    # "Inappropriate value for attribute 'size': a number is required."
+    # (per mem-1777494071-85b5). The regex requires `var` to follow `=`
+    # directly (no opening quote), which the string form cannot satisfy.
+    if not re.search(r"size\s*=\s*var\.disk_gb\b", body):
         print(
             f"FAIL: '{MODULE_MAIN_PATH}' disk block must set "
-            f"size = \"${{var.disk_gb}}G\" "
-            f"(boot disk size driven by the disk_gb input)."
+            f"size = var.disk_gb (Number, GB), not "
+            f"\"${{var.disk_gb}}G\" (string with G suffix). "
+            f"bpg/proxmox v0.104.0 declares "
+            f"proxmox_virtual_environment_vm.disk.size as a Number; "
+            f"the string form passes validate but fails plan."
         )
         return False
     if not re.search(r'discard\s*=\s*"on"', body):
@@ -196,8 +205,8 @@ def test_module_main_disk_uses_disk_gb_var():
         )
         return False
     print(
-        f"OK: '{MODULE_MAIN_PATH}' disk block uses size=\"${{var.disk_gb}}G\" "
-        f"and discard=\"on\"."
+        f"OK: '{MODULE_MAIN_PATH}' disk block uses "
+        f"size = var.disk_gb (Number form) and discard=\"on\"."
     )
     return True
 
@@ -472,7 +481,8 @@ def main():
             test_module_main_wires_ip_config_dhcp_or_static,
         ),
         (
-            "module main.tf disk block uses ${var.disk_gb}G + discard=on",
+            "module main.tf disk block uses size = var.disk_gb "
+            "(Number) + discard=on",
             test_module_main_disk_uses_disk_gb_var,
         ),
         (
