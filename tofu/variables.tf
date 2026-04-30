@@ -19,3 +19,20 @@ variable "pve_insecure" {
   type        = bool
   default     = false
 }
+
+variable "default_user" {
+  description = "Daily-driver username created on every dev VM via cloud-init (Linux + Windows once Step 2 lands). Replaces image defaults like ubuntu/cloud-user with one uniform 'user'."
+  type        = string
+  default     = "user"
+}
+
+variable "default_password" {
+  description = "Password for default_user (and the Windows Administrator account in Step 2). Dev-only; these VMs are not exposed externally. Sensitive to keep it out of plan output and state diffs."
+  type        = string
+  sensitive   = true
+}
+
+variable "ssh_authorized_keys" {
+  description = "List of SSH public keys to authorize on default_user via cloud-init. Empty list disables key-based auth (password still works)."
+  type        = list(string)
+}

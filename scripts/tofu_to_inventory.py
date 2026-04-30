@@ -4,31 +4,30 @@ Usage:
     tofu output -json ansible_inventory | python3 scripts/tofu_to_inventory.py
     python3 scripts/tofu_to_inventory.py --input inv.json --output ansible/inventory/tofu_generated.yml
 
-Reads the JSON value of the Step 3 `ansible_inventory` output (a mapping
-of group → {hosts, vars}). Writes a real Ansible YAML inventory:
+Reads the JSON value of the `ansible_inventory` output (a mapping of
+group → {hosts, vars}). Writes a real Ansible YAML inventory:
 
     proxmox_vms:
       hosts:
-        ubuntu26-test:
+        ubuntu26-dev:
           ansible_host: 192.168.50.10
-          vmid: 300
+          vmid: 310
           node_name: pve-01
-          ansible_user: ubuntu
-        centos10-test:
+        centos10-dev:
           ansible_host: 192.168.50.11
-          vmid: 301
+          vmid: 311
           node_name: pve-01
-          ansible_user: cloud-user
       vars:
-        ansible_user: ubuntu
+        ansible_user: user
 
 Hosts whose ansible_host is null (DHCP not yet leased) are skipped with a
 stderr warning naming each one so pre-apply runs don't silently drop hosts.
 
-Per-host ansible_user override:
-- ubuntu* → ubuntu
-- centos* → cloud-user
-- otherwise → unchanged (group-level vars apply)
+There is NO per-host `ansible_user` override. Every guest is reachable as
+the uniform `default_user` ('user') the linux_vm cloud-init drops in via
+`initialization.user_account`. Group-level `proxmox_vms.vars.ansible_user`
+(emitted by `tofu/outputs.tf` from `var.default_user`) is the single
+source of truth.
 
 Stdlib only (no PyYAML) to keep the runtime footprint minimal and dependency-free.
 """
@@ -103,18 +102,14 @@ def validate_inventory_shape(data: dict[str, Any]) -> None:
     sys.exit(5)
 
 
-def ansible_user_for(hostname: str) -> str | None:
-    """Per-host ansible_user override based on hostname prefix."""
-    lower = hostname.lower()
-    if lower.startswith("ubuntu"):
-        return "ubuntu"
-    if lower.startswith("centos"):
-        return "cloud-user"
-    return None
-
-
 def transform_group(group_name: str, group: dict[str, Any]) -> dict[str, Any]:
-    """Filter out null-ansible_host hosts and add per-host ansible_user override."""
+    """Filter out null-ansible_host hosts; preserve group-level vars verbatim.
+
+    No per-host `ansible_user` override is applied — the legacy
+    hostname-prefix dispatch (`ubuntu*`/`centos*`) is gone in Step 1b.
+    The single uniform `ansible_user: user` lives on the group's
+    `vars` and is emitted from `var.default_user` by `tofu/outputs.tf`.
+    """
     src_hosts = group.get("hosts", {}) or {}
     out_hosts: dict[str, Any] = {}
     for host, attrs in src_hosts.items():
@@ -130,11 +125,7 @@ def transform_group(group_name: str, group: dict[str, Any]) -> dict[str, Any]:
                 f"ansible_host is null (DHCP lease not yet observed).\n"
             )
             continue
-        entry = dict(attrs)
-        override = ansible_user_for(host)
-        if override is not None:
-            entry["ansible_user"] = override
-        out_hosts[host] = entry
+        out_hosts[host] = dict(attrs)
     out: dict[str, Any] = {"hosts": out_hosts}
     if isinstance(group.get("vars"), dict):
         out["vars"] = dict(group["vars"])

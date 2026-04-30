@@ -1,0 +1,16 @@
+# Redacted example for tofu/terraform.tfvars (gitignored). Copy to
+# `tofu/terraform.tfvars` and replace the placeholder values with the
+# real ones; the real file is never tracked in git.
+#
+# Schema mirrors `tofu/variables.tf`. Sensitive entries (pve_api_token,
+# default_password, ssh_authorized_keys) MUST stay redacted here.
+
+pve_api_endpoint = "https://pve.home.arpa:8006/"
+pve_api_token    = "ansible-token@pam!ansible-token=<secret>"
+pve_node_name    = "pve-01"
+pve_insecure     = true
+
+default_password = "password"
+ssh_authorized_keys = [
+  "ssh-ed25519 AAAA... user@workstation",
+]

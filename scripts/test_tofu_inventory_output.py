@@ -1,10 +1,21 @@
-"""Adversarial smoke test for the Step 3 multi-VM declarations + ansible_inventory output.
+"""Adversarial smoke test for the root `tofu/outputs.tf` ansible_inventory
+aggregation.
 
-Mirrors the shape of `scripts/test_tofu_scaffold.py` and
-`scripts/test_tofu_linux_vm_module.py`: load the artifact, assert key
-declarations are present, fail with a precise message otherwise.
-Intentionally text-based so we don't add an HCL parser dependency for
-a focused multi-VM/output check.
+Step 1b pivoted root `main.tf` from per-VM module blocks to a single
+`module "linux_vm" { for_each = local.linux_vms ... }`. The associated
+`output "ansible_inventory"` rewrites itself as a for-expression over
+`module.linux_vm[*]`. The legacy per-module-block assertions live in
+`scripts/test_dev_vms_main.py` now (which inspects `local.linux_vms` and
+the for_each module). This file's job is the OUTPUTS half:
+
+- root `outputs.tf` declares `output "ansible_inventory"`.
+- the value contains a `proxmox_vms` group with a `hosts` map.
+- the `hosts` map is built by a `for k, v in module.linux_vm` expression
+  whose value sets `ansible_host`, `vmid`, and `node_name`.
+- the group's `vars.ansible_user` references `var.default_user`
+  (no hard-coded "user" literal — keeps the username overridable).
+
+Text-based — no HCL parser dependency.
 """
 
 import os
@@ -12,20 +23,12 @@ import re
 import sys
 
 TOFU_DIR = os.environ.get("TOFU_DIR", "tofu")
-ROOT_MAIN_PATH = os.environ.get(
-    "ROOT_MAIN_PATH", os.path.join(TOFU_DIR, "main.tf")
-)
 ROOT_OUTPUTS_PATH = os.environ.get(
     "ROOT_OUTPUTS_PATH", os.path.join(TOFU_DIR, "outputs.tf")
 )
 
-# Cloud-image template vmids from
-# ansible/group_vars/all.yml (pve_cloud_images).
-UBUNTU_26_TEMPLATE_VMID = 9001
-CENTOS_STREAM_TEMPLATE_VMID = 9002
-
 EXPECTED_GROUP_KEY = "proxmox_vms"
-EXPECTED_MODULE_NAMES = ("ubuntu26_test", "centos10_test")
+EXPECTED_HOST_ATTRS = ("ansible_host", "vmid", "node_name")
 
 
 def read_text(path):
@@ -35,115 +38,21 @@ def read_text(path):
         return f.read()
 
 
-def _module_blocks(text):
-    """Return [(label, body)] for every top-level module "label" {...} block.
+def _for_expression_body(text):
+    """Return the body of `for k, v in module.linux_vm : k => { ... }`.
 
-    Tolerates one level of brace nesting inside the body, which matches
-    the current root config shape (clone {...}, cpu {...}, etc. live
-    inside modules/linux_vm/main.tf, not the root, but defensive anyway).
+    Tolerates whitespace/newlines and any single-letter key/value names.
+    Returns None if the for-expression is missing (e.g. someone reverted
+    to per-module-block aggregation).
     """
-    return re.findall(
-        r'module\s+"(?P<label>[^"]+)"\s*\{'
-        r"(?P<body>[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}",
+    match = re.search(
+        r"for\s+(?P<k>\w+)\s*,\s*(?P<v>\w+)\s+in\s+module\.linux_vm"
+        r"\s*:\s*(?P=k)\s*=>\s*\{"
+        r"(?P<body>(?:[^{}]|\{[^{}]*\})*)"
+        r"\}",
         text,
     )
-
-
-def _host_block_for(text, module_name):
-    """Return the body of the (module.<module_name>.name) = { ... } host
-    block from outputs.tf, or None if not present.
-
-    Matches: `(module.<name>.name) = { ... }` and tolerates one level of
-    brace nesting inside the body. Per-host extraction is required so a
-    Step 3 mutation that only breaks ONE host can't slip through a
-    file-global substring check (gap surfaced by Finalizer Step 3).
-    """
-    pattern = (
-        r"\(\s*module\."
-        + re.escape(module_name)
-        + r"\.name\s*\)\s*=\s*\{"
-        + r"(?P<body>[^{}]*(?:\{[^{}]*\}[^{}]*)*)\}"
-    )
-    match = re.search(pattern, text)
     return match.group("body") if match else None
-
-
-def test_root_main_declares_two_vm_module_blocks():
-    text = read_text(ROOT_MAIN_PATH)
-    if text is None:
-        print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
-        return False
-    blocks = _module_blocks(text)
-    vm_blocks = [
-        (label, body)
-        for label, body in blocks
-        if re.search(r'source\s*=\s*"\./modules/linux_vm"', body)
-    ]
-    if len(vm_blocks) < 2:
-        print(
-            f"FAIL: '{ROOT_MAIN_PATH}' must contain at least two distinct "
-            f"module \"...\" blocks whose source = \"./modules/linux_vm\" "
-            f"(Step 3 declares Ubuntu 26 + CentOS Stream guests via the "
-            f"linux_vm module); found {len(vm_blocks)}."
-        )
-        return False
-    labels = [label for label, _ in vm_blocks]
-    if len(set(labels)) != len(labels):
-        print(
-            f"FAIL: '{ROOT_MAIN_PATH}' module labels must be distinct; "
-            f"got {labels}."
-        )
-        return False
-    print(
-        f"OK: '{ROOT_MAIN_PATH}' declares {len(vm_blocks)} distinct "
-        f"module blocks sourced from ./modules/linux_vm "
-        f"({', '.join(labels)})."
-    )
-    return True
-
-
-def test_root_main_clones_ubuntu26_and_centos_stream():
-    text = read_text(ROOT_MAIN_PATH)
-    if text is None:
-        print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
-        return False
-    blocks = _module_blocks(text)
-    # Map module label -> body for linux_vm-module callers.
-    vm_blocks = {
-        label: body
-        for label, body in blocks
-        if re.search(r'source\s*=\s*"\./modules/linux_vm"', body)
-    }
-    expected = {
-        "ubuntu26_test": UBUNTU_26_TEMPLATE_VMID,
-        "centos10_test": CENTOS_STREAM_TEMPLATE_VMID,
-    }
-    missing = []
-    for name, vmid in expected.items():
-        body = vm_blocks.get(name)
-        if body is None:
-            missing.append(
-                f"module \"{name}\" (clone_from = {vmid})"
-            )
-            continue
-        if not re.search(r"clone_from\s*=\s*" + str(vmid) + r"\b", body):
-            missing.append(
-                f"module \"{name}\" must set clone_from = {vmid}"
-            )
-    if missing:
-        print(
-            f"FAIL: '{ROOT_MAIN_PATH}' multi-VM declaration incomplete: "
-            f"{'; '.join(missing)} "
-            f"(canonical Tofu test fleet: ubuntu26-test vmid 300 clone "
-            f"9001, centos10-test vmid 301 clone 9002)."
-        )
-        return False
-    print(
-        f"OK: '{ROOT_MAIN_PATH}' declares ubuntu26_test "
-        f"(clone_from = {UBUNTU_26_TEMPLATE_VMID}) and centos10_test "
-        f"(clone_from = {CENTOS_STREAM_TEMPLATE_VMID})."
-    )
-    return True
 
 
 def test_root_outputs_declares_ansible_inventory():
@@ -151,7 +60,7 @@ def test_root_outputs_declares_ansible_inventory():
     if text is None:
         print(
             f"FAIL: '{ROOT_OUTPUTS_PATH}' is missing "
-            f"(Step 3 must add a top-level outputs.tf with "
+            f"(root outputs.tf must declare "
             f"output \"ansible_inventory\")."
         )
         return False
@@ -159,7 +68,7 @@ def test_root_outputs_declares_ansible_inventory():
         print(
             f"FAIL: '{ROOT_OUTPUTS_PATH}' must declare a top-level "
             f"output \"ansible_inventory\" block "
-            f"(consumed by the Step 4 inventory generator)."
+            f"(consumed by scripts/tofu_to_inventory.py)."
         )
         return False
     print(
@@ -197,76 +106,71 @@ def test_ansible_inventory_has_group_with_hosts_map():
     return True
 
 
-def test_ansible_inventory_hosts_reference_per_module():
+def test_hosts_built_via_module_linux_vm_for_expression():
     text = read_text(ROOT_OUTPUTS_PATH)
     if text is None:
         print(f"FAIL: '{ROOT_OUTPUTS_PATH}' is missing.")
         return False
-    # Per-host check (tightened in Step 4): extract each
-    # (module.<name>.name) = { ... } block and assert ansible_host AND
-    # vmid live INSIDE that specific block. A file-global substring
-    # check would let a mutation that only breaks ONE host (e.g.
-    # rename ansible_host → remote_addr on ubuntu26_test only) slip
-    # through, as Finalizer Step 3 demonstrated.
-    for name in EXPECTED_MODULE_NAMES:
-        body = _host_block_for(text, name)
-        if body is None:
-            print(
-                f"FAIL: '{ROOT_OUTPUTS_PATH}' ansible_inventory hosts "
-                f"map missing per-host block "
-                f"(module.{name}.name) = {{ ... }} "
-                f"(each guest must be keyed by its module's name "
-                f"attribute)."
-            )
-            return False
-        if not re.search(r"\bansible_host\s*=", body):
-            print(
-                f"FAIL: '{ROOT_OUTPUTS_PATH}' host block for "
-                f"module \"{name}\" is missing 'ansible_host = ...' "
-                f"INSIDE the host body (per-host check). "
-                f"Ansible's reserved connection-target hostvar must "
-                f"be set on every host entry."
-            )
-            return False
-        # Either a literal vmid attribute or a reference to the
-        # module's vmid/ipv4_address outputs is acceptable; both
-        # express per-host identity.
-        per_host_module_attrs = re.findall(
-            r"module\." + re.escape(name) + r"\.(\w+)", body
+    body = _for_expression_body(text)
+    if body is None:
+        print(
+            f"FAIL: '{ROOT_OUTPUTS_PATH}' must build "
+            f"proxmox_vms.hosts via a for-expression "
+            f"`for k, v in module.linux_vm : k => {{ ... }}` "
+            f"(Step 1b aggregates over the for_each-induced map; "
+            f"per-module-block aggregation is gone)."
         )
-        has_id = (
-            re.search(r"\bvmid\s*=", body) is not None
-            or any(
-                a in per_host_module_attrs
-                for a in ("vmid", "ipv4_address")
-            )
+        return False
+    missing = [a for a in EXPECTED_HOST_ATTRS if not re.search(
+        r"\b" + re.escape(a) + r"\s*=", body
+    )]
+    if missing:
+        print(
+            f"FAIL: for-expression in '{ROOT_OUTPUTS_PATH}' is missing "
+            f"attribute(s): {missing}. Each host entry must set "
+            f"{EXPECTED_HOST_ATTRS} (per-host inventory shape consumed "
+            f"by scripts/tofu_to_inventory.py)."
         )
-        if not has_id:
-            print(
-                f"FAIL: '{ROOT_OUTPUTS_PATH}' host block for "
-                f"module \"{name}\" must include 'vmid = ...' or "
-                f"reference module.{name}.vmid/.ipv4_address "
-                f"(currently references: "
-                f"{', '.join(per_host_module_attrs) or '<none>'})."
-            )
-            return False
+        return False
+    if not re.search(r"try\s*\(\s*\w+\.ipv4_address\s*,\s*null\s*\)", body):
+        print(
+            f"FAIL: for-expression in '{ROOT_OUTPUTS_PATH}' must wrap "
+            f"`<v>.ipv4_address` in try(..., null) so plan stays valid "
+            f"before the qemu-guest-agent reports a lease."
+        )
+        return False
     print(
-        f"OK: '{ROOT_OUTPUTS_PATH}' per-host blocks each set "
-        f"ansible_host and a vmid/ip identity inside the host body."
+        f"OK: '{ROOT_OUTPUTS_PATH}' builds proxmox_vms.hosts via "
+        f"`for k, v in module.linux_vm` and sets "
+        f"{EXPECTED_HOST_ATTRS} on every entry."
+    )
+    return True
+
+
+def test_group_vars_ansible_user_references_default_user_var():
+    text = read_text(ROOT_OUTPUTS_PATH)
+    if text is None:
+        print(f"FAIL: '{ROOT_OUTPUTS_PATH}' is missing.")
+        return False
+    if not re.search(
+        r"ansible_user\s*=\s*var\.default_user\b", text
+    ):
+        print(
+            f"FAIL: '{ROOT_OUTPUTS_PATH}' must set "
+            f"`vars.ansible_user = var.default_user` "
+            f"(uniform username plumbed from var.default_user; "
+            f"no hard-coded literal — keeps it overridable in tfvars)."
+        )
+        return False
+    print(
+        f"OK: '{ROOT_OUTPUTS_PATH}' group vars.ansible_user references "
+        f"var.default_user."
     )
     return True
 
 
 def main():
     checks = [
-        (
-            "root main.tf declares two vm-module blocks",
-            test_root_main_declares_two_vm_module_blocks,
-        ),
-        (
-            "root main.tf clones Ubuntu 26 + CentOS Stream templates",
-            test_root_main_clones_ubuntu26_and_centos_stream,
-        ),
         (
             "root outputs.tf declares output \"ansible_inventory\"",
             test_root_outputs_declares_ansible_inventory,
@@ -276,9 +180,12 @@ def main():
             test_ansible_inventory_has_group_with_hosts_map,
         ),
         (
-            "ansible_inventory hosts reference per-module name + "
-            "ansible_host/vmid",
-            test_ansible_inventory_hosts_reference_per_module,
+            "hosts map built via for k, v in module.linux_vm",
+            test_hosts_built_via_module_linux_vm_for_expression,
+        ),
+        (
+            "group vars.ansible_user references var.default_user",
+            test_group_vars_ansible_user_references_default_user_var,
         ),
     ]
     results = [(label, fn()) for label, fn in checks]

@@ -1,44 +1,43 @@
-# Invoke the parameterized linux_vm module twice to clone one Ubuntu 26
-# guest and one CentOS Stream 10 guest from their respective cloud-init
-# templates. The pair (vmid 300/301, clone 9001/9002) is the canonical
-# test fleet for the Tofu/Ansible split — Tofu owns provisioning and
-# ansible/configure-vms.yml owns post-boot configuration.
-#
-# These ubuntu26-test / centos10-test entries are temporary scaffolding;
-# Step 1b pivots `tofu/main.tf` to the two-map for_each shape with
-# ubuntu26-dev / centos10-dev as the canonical dev fleet, and the
-# default_* and ssh_authorized_keys inputs become root-level variables.
+# Two-map for_each shape from § "Architecture / tofu/main.tf" of the
+# dev-vms-design spec. Adding or removing a Linux dev VM is a single map
+# entry in `local.linux_vms`; new distros are a single entry in
+# `local.cloud_templates`. The Windows half (`local.windows_vms` +
+# `module "windows_vm"`) lands in Step 2.
 
-module "ubuntu26_test" {
-  source = "./modules/linux_vm"
+locals {
+  # Cloud-init template vmids managed by `pve_base`. Keys are the
+  # human-readable distro slugs referenced by `local.linux_vms` entries.
+  cloud_templates = {
+    ubuntu-24-04     = 9000
+    ubuntu-26-04     = 9001
+    centos-stream-10 = 9002
+  }
 
-  name                = "ubuntu26-test"
-  vmid                = 300
-  clone_from          = 9001
-  memory              = 2048
-  cores               = 2
-  bridge              = "vmbr0"
-  template_node       = var.pve_node_name
-  tags                = ["ubuntu", "tofu"]
-  disk_gb             = 32
-  default_user        = "user"
-  default_password    = "changeme"
-  ssh_authorized_keys = []
+  # Canonical dev fleet. Required per-entry keys: vmid, template,
+  # memory, cores, disk_gb. Optional: static_ip, gateway (must be set
+  # together — half-configured fails plan via the module precondition).
+  linux_vms = {
+    ubuntu26-dev = { vmid = 310, template = "ubuntu-26-04", memory = 4096, cores = 2, disk_gb = 120 }
+    centos10-dev = { vmid = 311, template = "centos-stream-10", memory = 4096, cores = 2, disk_gb = 120 }
+  }
 }
 
-module "centos10_test" {
-  source = "./modules/linux_vm"
+module "linux_vm" {
+  for_each = local.linux_vms
 
-  name                = "centos10-test"
-  vmid                = 301
-  clone_from          = 9002
-  memory              = 2048
-  cores               = 2
+  source              = "./modules/linux_vm"
+  name                = each.key
+  vmid                = each.value.vmid
+  clone_from          = local.cloud_templates[each.value.template]
+  memory              = each.value.memory
+  cores               = each.value.cores
+  disk_gb             = each.value.disk_gb
+  static_ip           = try(each.value.static_ip, null)
+  gateway             = try(each.value.gateway, null)
   bridge              = "vmbr0"
   template_node       = var.pve_node_name
-  tags                = ["centos", "tofu"]
-  disk_gb             = 32
-  default_user        = "user"
-  default_password    = "changeme"
-  ssh_authorized_keys = []
+  default_user        = var.default_user
+  default_password    = var.default_password
+  ssh_authorized_keys = var.ssh_authorized_keys
+  tags                = ["linux", "dev", "tofu"]
 }

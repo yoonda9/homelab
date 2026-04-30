@@ -375,6 +375,12 @@ def test_module_outputs_file_exists():
 
 
 def test_root_main_calls_linux_vm_module_for_ubuntu26():
+    """Step 1b indirected `clone_from` through `local.cloud_templates[...]`,
+    so the legacy literal `clone_from = 9001` test no longer applies. The
+    new shape: a `module "linux_vm"` block sets
+    `clone_from = local.cloud_templates[each.value.template]`, and the
+    Ubuntu 26 vmid (9001) lives in the `local.cloud_templates` map.
+    Both halves must be present for the wiring to work end-to-end."""
     text = read_text(ROOT_MAIN_PATH)
     if text is None:
         print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
@@ -404,24 +410,48 @@ def test_root_main_calls_linux_vm_module_for_ubuntu26():
             f"{MODULE_SOURCE_PATH})."
         )
         return False
-    if not any(
-        re.search(
-            r"clone_from\s*=\s*" + str(UBUNTU_26_TEMPLATE_VMID) + r"\b",
-            body,
-        )
-        for body in linux_vm_module_blocks
-    ):
+    direct = re.compile(
+        r"clone_from\s*=\s*" + str(UBUNTU_26_TEMPLATE_VMID) + r"\b"
+    )
+    indirect = re.compile(
+        r"clone_from\s*=\s*local\.cloud_templates\[each\.value\.template\]"
+    )
+    direct_match = any(direct.search(body) for body in linux_vm_module_blocks)
+    indirect_match = any(
+        indirect.search(body) for body in linux_vm_module_blocks
+    )
+    if not (direct_match or indirect_match):
         print(
             f"FAIL: '{ROOT_MAIN_PATH}' must invoke the linux_vm module "
-            f"with clone_from = {UBUNTU_26_TEMPLATE_VMID} "
-            f"(Ubuntu 26 cloud-image template vmid from "
-            f"ansible/group_vars/all.yml)."
+            f"with either `clone_from = {UBUNTU_26_TEMPLATE_VMID}` "
+            f"(literal) OR "
+            f"`clone_from = local.cloud_templates[each.value.template]` "
+            f"(Step 1b indirection); neither was found in any "
+            f"linux_vm module block."
         )
         return False
+    if indirect_match:
+        # Confirm the cloud_templates local pins ubuntu-26-04 to 9001 so
+        # the indirection actually resolves to the Ubuntu 26 template.
+        if not re.search(
+            r'"?ubuntu-26-04"?\s*=\s*'
+            + str(UBUNTU_26_TEMPLATE_VMID)
+            + r"\b",
+            text,
+        ):
+            print(
+                f"FAIL: '{ROOT_MAIN_PATH}' uses indirected "
+                f"`clone_from = local.cloud_templates[each.value.template]` "
+                f"but `local.cloud_templates` is missing "
+                f"`ubuntu-26-04 = {UBUNTU_26_TEMPLATE_VMID}` "
+                f"(the indirection target)."
+            )
+            return False
     print(
         f"OK: '{ROOT_MAIN_PATH}' invokes the linux_vm module "
-        f"(source={MODULE_SOURCE_PATH}) and clones from vmid "
-        f"{UBUNTU_26_TEMPLATE_VMID} (Ubuntu 26)."
+        f"(source={MODULE_SOURCE_PATH}) and resolves to vmid "
+        f"{UBUNTU_26_TEMPLATE_VMID} (Ubuntu 26) "
+        f"{'directly' if direct_match else 'via local.cloud_templates'}."
     )
     return True
 

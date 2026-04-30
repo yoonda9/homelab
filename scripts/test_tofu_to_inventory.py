@@ -45,22 +45,30 @@ VM_BASELINE_TASKS = os.path.join(
 
 
 def _fixture_inventory():
-    """Canonical Step 3 ansible_inventory output value, post-apply shape."""
+    """Step 1b ansible_inventory output value, post-apply shape.
+
+    Hostnames pivot to the dev fleet (ubuntu26-dev / centos10-dev) and
+    the group-level ansible_user is the single uniform 'user' that the
+    cloud-init `default_user` provisions on every guest. There is NO
+    per-host ansible_user override anymore — that legacy behaviour
+    (`ubuntu*` → ubuntu, `centos*` → cloud-user) is gone with the
+    `ansible_user_for` function.
+    """
     return {
         "proxmox_vms": {
             "hosts": {
-                "ubuntu26-test": {
+                "ubuntu26-dev": {
                     "ansible_host": "192.168.50.10",
-                    "vmid": 300,
+                    "vmid": 310,
                     "node_name": "pve-01",
                 },
-                "centos10-test": {
+                "centos10-dev": {
                     "ansible_host": "192.168.50.11",
-                    "vmid": 301,
+                    "vmid": 311,
                     "node_name": "pve-01",
                 },
             },
-            "vars": {"ansible_user": "ubuntu"},
+            "vars": {"ansible_user": "user"},
         }
     }
 
@@ -108,7 +116,7 @@ def test_generator_produces_per_host_inventory():
                 f"mapping; got {type(hosts).__name__}."
             )
             return False
-        for host in ("ubuntu26-test", "centos10-test"):
+        for host in ("ubuntu26-dev", "centos10-dev"):
             entry = hosts.get(host)
             if not isinstance(entry, dict):
                 print(
@@ -124,27 +132,38 @@ def test_generator_produces_per_host_inventory():
                         f"shape required."
                     )
                     return False
-        # Per-host ansible_user override: ubuntu* → ubuntu, centos* → cloud-user.
-        if hosts["ubuntu26-test"].get("ansible_user") != "ubuntu":
+            # No per-host ansible_user override anymore (Step 1b drops
+            # `ansible_user_for`). The single uniform 'user' lives on
+            # the group-level vars instead.
+            if "ansible_user" in entry:
+                print(
+                    f"FAIL: per-host ansible_user override leaked back "
+                    f"into '{host}': got "
+                    f"ansible_user={entry['ansible_user']!r}. The "
+                    f"generator must drop the legacy ansible_user_for "
+                    f"override; group-level "
+                    f"proxmox_vms.vars.ansible_user is the only source."
+                )
+                return False
+        group_vars = doc["proxmox_vms"].get("vars") or {}
+        if group_vars.get("ansible_user") != "user":
             print(
-                f"FAIL: ubuntu26-test must have ansible_user='ubuntu' "
-                f"(per-host override); got {hosts['ubuntu26-test'].get('ansible_user')!r}."
+                f"FAIL: proxmox_vms.vars.ansible_user must be 'user' "
+                f"(uniform default_user across Linux + Windows dev VMs); "
+                f"got {group_vars.get('ansible_user')!r}."
             )
             return False
-        if hosts["centos10-test"].get("ansible_user") != "cloud-user":
-            print(
-                f"FAIL: centos10-test must have ansible_user='cloud-user' "
-                f"(CentOS Stream cloud images use cloud-user, not ubuntu); "
-                f"got {hosts['centos10-test'].get('ansible_user')!r}."
-            )
-            return False
-    print("OK: generator emits per-host ansible_host/vmid/node_name + ansible_user override.")
+    print(
+        "OK: generator emits per-host ansible_host/vmid/node_name with "
+        "no per-host ansible_user override; group-level "
+        "proxmox_vms.vars.ansible_user='user'."
+    )
     return True
 
 
 def test_generator_skips_null_ansible_host_with_warning():
     inv = _fixture_inventory()
-    inv["proxmox_vms"]["hosts"]["centos10-test"]["ansible_host"] = None
+    inv["proxmox_vms"]["hosts"]["centos10-dev"]["ansible_host"] = None
     with tempfile.TemporaryDirectory() as tmp:
         in_path = os.path.join(tmp, "inv.json")
         out_path = os.path.join(tmp, "out.yml")
@@ -158,25 +177,25 @@ def test_generator_skips_null_ansible_host_with_warning():
                 f"stderr={result.stderr!r}."
             )
             return False
-        if "centos10-test" not in result.stderr:
+        if "centos10-dev" not in result.stderr:
             print(
                 f"FAIL: generator must emit a stderr warning naming the "
-                f"skipped host 'centos10-test'; stderr={result.stderr!r}."
+                f"skipped host 'centos10-dev'; stderr={result.stderr!r}."
             )
             return False
         with open(out_path, "r", encoding="utf-8") as f:
             doc = yaml.safe_load(f)
         hosts = doc["proxmox_vms"]["hosts"]
-        if "centos10-test" in hosts:
+        if "centos10-dev" in hosts:
             print(
-                f"FAIL: 'centos10-test' must be omitted from generated "
+                f"FAIL: 'centos10-dev' must be omitted from generated "
                 f"inventory when ansible_host is null; got hosts={list(hosts)}."
             )
             return False
-        if "ubuntu26-test" not in hosts:
+        if "ubuntu26-dev" not in hosts:
             print(
-                f"FAIL: 'ubuntu26-test' should remain when only "
-                f"'centos10-test' has null ansible_host; got hosts={list(hosts)}."
+                f"FAIL: 'ubuntu26-dev' should remain when only "
+                f"'centos10-dev' has null ansible_host; got hosts={list(hosts)}."
             )
             return False
     print("OK: hosts with ansible_host=null are skipped with stderr warning.")
