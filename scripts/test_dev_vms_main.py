@@ -39,6 +39,17 @@ EXPECTED_LINUX_VMS = {
 REQUIRED_LINUX_VM_KEYS = ("vmid", "template", "memory", "cores", "disk_gb")
 FORBIDDEN_LEGACY_LABELS = ("ubuntu26_test", "centos10_test")
 
+# Step 2 — Windows half. Vmids 320 / 321 keep the dev fleet's number
+# space tidy: 9000-series for cloud-init templates, 310-series for
+# Linux dev VMs, 320-series for Windows dev VMs. ISO substrings (`Win10`
+# / `Win11`) defend against an accidental swap of the iso filenames in
+# `local.windows_vms`.
+EXPECTED_WINDOWS_VMS = {
+    "win10-dev": {"vmid": 320, "iso_substring": "Win10"},
+    "win11-dev": {"vmid": 321, "iso_substring": "Win11"},
+}
+REQUIRED_WINDOWS_VM_KEYS = ("vmid", "iso", "memory", "cores", "disk_gb")
+
 
 def read_text(path):
     if not os.path.exists(path):
@@ -257,6 +268,125 @@ def test_module_linux_vm_uses_for_each_local_linux_vms():
     return True
 
 
+def test_windows_vms_local_map_with_required_keys():
+    text = read_text(ROOT_MAIN_PATH)
+    if text is None:
+        print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
+        return False
+    locals_body = _extract_block(text, r"locals")
+    if locals_body is None:
+        print(f"FAIL: '{ROOT_MAIN_PATH}' has no 'locals {{}}' block.")
+        return False
+    map_body = _extract_named_map(locals_body, "windows_vms")
+    if map_body is None:
+        print(
+            f"FAIL: '{ROOT_MAIN_PATH}' locals block must declare "
+            f"'windows_vms = {{ ... }}' map "
+            f"(named exactly 'windows_vms'; the module \"windows_vm\" "
+            f"for_each must reference local.windows_vms)."
+        )
+        return False
+    for host, expected in EXPECTED_WINDOWS_VMS.items():
+        entry_pattern = (
+            r'"?'
+            + re.escape(host)
+            + r'"?\s*=\s*\{'
+            + r"(?P<body>[^{}]*)"
+            + r"\}"
+        )
+        match = re.search(entry_pattern, map_body)
+        if match is None:
+            print(
+                f"FAIL: '{ROOT_MAIN_PATH}' local.windows_vms missing "
+                f"entry for '{host}' (Step 2 dev fleet uses "
+                f"win10-dev / win11-dev exclusively)."
+            )
+            return False
+        entry_body = match.group("body")
+        for key in REQUIRED_WINDOWS_VM_KEYS:
+            if not re.search(re.escape(key) + r"\s*=\s*", entry_body):
+                print(
+                    f"FAIL: '{ROOT_MAIN_PATH}' "
+                    f"local.windows_vms[{host!r}] missing required key "
+                    f"'{key}' (every Windows dev VM must declare "
+                    f"{REQUIRED_WINDOWS_VM_KEYS})."
+                )
+                return False
+        # vmid pin: defends against accidental collision with the
+        # 310-series Linux vmids or the 9000-series template vmids.
+        vmid_pattern = (
+            r"vmid\s*=\s*" + str(expected["vmid"]) + r"\b"
+        )
+        if not re.search(vmid_pattern, entry_body):
+            print(
+                f"FAIL: '{ROOT_MAIN_PATH}' "
+                f"local.windows_vms[{host!r}] must set "
+                f"vmid = {expected['vmid']} "
+                f"(reserved Windows dev-VM vmid range)."
+            )
+            return False
+        # iso substring: defends against an accidental swap of the
+        # Win10 / Win11 install ISO filenames between map entries.
+        iso_block = re.search(r'iso\s*=\s*"([^"]*)"', entry_body)
+        if iso_block is None:
+            print(
+                f"FAIL: '{ROOT_MAIN_PATH}' "
+                f"local.windows_vms[{host!r}].iso must be a "
+                f"quoted string referencing the install ISO filename."
+            )
+            return False
+        if expected["iso_substring"] not in iso_block.group(1):
+            print(
+                f"FAIL: '{ROOT_MAIN_PATH}' "
+                f"local.windows_vms[{host!r}].iso "
+                f"= \"{iso_block.group(1)}\" does not contain expected "
+                f"substring '{expected['iso_substring']}' "
+                f"(suggests an accidental Win10/Win11 swap)."
+            )
+            return False
+    print(
+        f"OK: '{ROOT_MAIN_PATH}' local.windows_vms declares "
+        f"{', '.join(EXPECTED_WINDOWS_VMS)} with required keys "
+        f"{REQUIRED_WINDOWS_VM_KEYS} and Win10/Win11 iso pins."
+    )
+    return True
+
+
+def test_module_windows_vm_uses_for_each_local_windows_vms():
+    text = read_text(ROOT_MAIN_PATH)
+    if text is None:
+        print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
+        return False
+    body = _extract_block(text, r'module\s+"windows_vm"')
+    if body is None:
+        print(
+            f"FAIL: '{ROOT_MAIN_PATH}' must declare a "
+            f"'module \"windows_vm\" {{ ... }}' block "
+            f"(parallel to module \"linux_vm\")."
+        )
+        return False
+    if not re.search(r"for_each\s*=\s*local\.windows_vms\b", body):
+        print(
+            f"FAIL: 'module \"windows_vm\"' in '{ROOT_MAIN_PATH}' must "
+            f"use for_each = local.windows_vms (renaming the local map "
+            f"breaks the wiring; this assertion catches that)."
+        )
+        return False
+    if not re.search(r'source\s*=\s*"\./modules/windows_vm"', body):
+        print(
+            f"FAIL: 'module \"windows_vm\"' in '{ROOT_MAIN_PATH}' must "
+            f"set source = \"./modules/windows_vm\" "
+            f"(matches the new module's path)."
+        )
+        return False
+    print(
+        f"OK: '{ROOT_MAIN_PATH}' declares "
+        f"'module \"windows_vm\" {{ for_each = local.windows_vms ... }}' "
+        f"sourced from ./modules/windows_vm."
+    )
+    return True
+
+
 def test_legacy_labels_absent():
     text = read_text(ROOT_MAIN_PATH)
     if text is None:
@@ -303,6 +433,14 @@ def main():
         (
             "module \"linux_vm\" uses for_each = local.linux_vms",
             test_module_linux_vm_uses_for_each_local_linux_vms,
+        ),
+        (
+            "local.windows_vms declares win10-dev/win11-dev with required keys",
+            test_windows_vms_local_map_with_required_keys,
+        ),
+        (
+            "module \"windows_vm\" uses for_each = local.windows_vms",
+            test_module_windows_vm_uses_for_each_local_windows_vms,
         ),
         (
             "legacy ubuntu26_test/centos10_test labels absent",

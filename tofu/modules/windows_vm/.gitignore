@@ -1,0 +1,4 @@
+# Per-VM local-exec artifacts: rendered autounattend XML + the ISO
+# baked from it. Both are generated on `tofu apply` and have no place
+# in version control.
+build/
