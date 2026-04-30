@@ -45,14 +45,18 @@ VM_BASELINE_TASKS = os.path.join(
 
 
 def _fixture_inventory():
-    """Step 1b ansible_inventory output value, post-apply shape.
+    """Step 2 ansible_inventory output value, post-apply shape.
 
-    Hostnames pivot to the dev fleet (ubuntu26-dev / centos10-dev) and
-    the group-level ansible_user is the single uniform 'user' that the
-    cloud-init `default_user` provisions on every guest. There is NO
-    per-host ansible_user override anymore — that legacy behaviour
-    (`ubuntu*` → ubuntu, `centos*` → cloud-user) is gone with the
-    `ansible_user_for` function.
+    Hostnames pivot to the dev fleet and the group-level ansible_user
+    is the uniform 'user' the cloud-init `default_user` provisions.
+    There is NO per-host ansible_user override anymore — that legacy
+    behaviour (`ubuntu*` → ubuntu, `centos*` → cloud-user) is gone.
+
+    Step 2 added the sibling `windows_dev_vms` group emitted by
+    `tofu/outputs.tf`. Step 3's generator reshapes it into
+    `proxmox_vms.children.windows.{hosts,vars}` with
+    `ansible_shell_type: powershell` so Linux + Windows hosts share
+    inherited group-level `ansible_user: user`.
     """
     return {
         "proxmox_vms": {
@@ -69,7 +73,22 @@ def _fixture_inventory():
                 },
             },
             "vars": {"ansible_user": "user"},
-        }
+        },
+        "windows_dev_vms": {
+            "hosts": {
+                "win10-dev": {
+                    "ansible_host": "192.168.50.20",
+                    "vmid": 320,
+                    "node_name": "pve-01",
+                },
+                "win11-dev": {
+                    "ansible_host": "192.168.50.21",
+                    "vmid": 321,
+                    "node_name": "pve-01",
+                },
+            },
+            "vars": {"ansible_user": "user"},
+        },
     }
 
 
@@ -202,6 +221,218 @@ def test_generator_skips_null_ansible_host_with_warning():
     return True
 
 
+def test_generator_reshapes_windows_into_proxmox_vms_children():
+    """Windows hosts land at proxmox_vms.children.windows.hosts.
+
+    Walks the parsed YAML structure (PyYAML, not regex on the file
+    body) so a cross-swap of Linux/Windows host blocks is caught
+    (mem-1777521206-b3c1).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = os.path.join(tmp, "inv.json")
+        out_path = os.path.join(tmp, "tofu_generated.yml")
+        with open(in_path, "w", encoding="utf-8") as f:
+            json.dump(_fixture_inventory(), f)
+        result = _run_generator(in_path, out_path)
+        if result.returncode != 0:
+            print(
+                f"FAIL: generator exited {result.returncode} with the "
+                f"two-group fixture; stderr={result.stderr!r}."
+            )
+            return False
+        with open(out_path, "r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+    if not isinstance(doc, dict):
+        print(f"FAIL: generated YAML must be a mapping; got {type(doc).__name__}.")
+        return False
+    if "windows_dev_vms" in doc:
+        print(
+            f"FAIL: 'windows_dev_vms' must NOT be a top-level group in "
+            f"the generated inventory — it must be reshaped into "
+            f"proxmox_vms.children.windows. Got top-level keys={list(doc)}."
+        )
+        return False
+    proxmox = doc.get("proxmox_vms") or {}
+    proxmox_hosts = proxmox.get("hosts") or {}
+    for win_host in ("win10-dev", "win11-dev"):
+        if win_host in proxmox_hosts:
+            print(
+                f"FAIL: '{win_host}' must NOT be at proxmox_vms.hosts "
+                f"(would pull in vm_baseline). It must land at "
+                f"proxmox_vms.children.windows.hosts instead. Got "
+                f"proxmox_vms.hosts keys={list(proxmox_hosts)}."
+            )
+            return False
+    children = proxmox.get("children") or {}
+    if "windows" not in children:
+        print(
+            f"FAIL: generated YAML must contain "
+            f"proxmox_vms.children.windows (reshaped from "
+            f"windows_dev_vms). Got children keys={list(children)}."
+        )
+        return False
+    win_group = children["windows"]
+    win_hosts = win_group.get("hosts") or {}
+    for win_host, expected_vmid in (("win10-dev", 320), ("win11-dev", 321)):
+        entry = win_hosts.get(win_host)
+        if not isinstance(entry, dict):
+            print(
+                f"FAIL: proxmox_vms.children.windows.hosts.{win_host} "
+                f"missing or not a mapping; got "
+                f"hosts={list(win_hosts)}."
+            )
+            return False
+        for attr in ("ansible_host", "vmid", "node_name"):
+            if attr not in entry:
+                print(
+                    f"FAIL: proxmox_vms.children.windows.hosts.{win_host} "
+                    f"missing '{attr}' (entry={entry!r})."
+                )
+                return False
+        if entry.get("vmid") != expected_vmid:
+            print(
+                f"FAIL: proxmox_vms.children.windows.hosts.{win_host} "
+                f"vmid mismatch — expected {expected_vmid}, got "
+                f"{entry.get('vmid')!r}. Cross-swap with Linux hosts "
+                f"would mismatch here."
+            )
+            return False
+        if "ansible_user" in entry:
+            print(
+                f"FAIL: per-host ansible_user override leaked into "
+                f"Windows host '{win_host}'. ansible_user must live at "
+                f"the parent proxmox_vms.vars only."
+            )
+            return False
+    print(
+        "OK: windows_dev_vms reshaped into proxmox_vms.children.windows; "
+        "win10-dev/win11-dev land in the windows child with correct vmids."
+    )
+    return True
+
+
+def test_generator_emits_powershell_shell_type_on_windows_child():
+    """proxmox_vms.children.windows.vars.ansible_shell_type == 'powershell'."""
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = os.path.join(tmp, "inv.json")
+        out_path = os.path.join(tmp, "out.yml")
+        with open(in_path, "w", encoding="utf-8") as f:
+            json.dump(_fixture_inventory(), f)
+        result = _run_generator(in_path, out_path)
+        if result.returncode != 0:
+            print(
+                f"FAIL: generator exited {result.returncode}; "
+                f"stderr={result.stderr!r}."
+            )
+            return False
+        with open(out_path, "r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+    win_vars = (
+        (doc.get("proxmox_vms") or {})
+        .get("children", {})
+        .get("windows", {})
+        .get("vars")
+        or {}
+    )
+    if win_vars.get("ansible_shell_type") != "powershell":
+        print(
+            f"FAIL: proxmox_vms.children.windows.vars.ansible_shell_type "
+            f"must be 'powershell'; got "
+            f"{win_vars.get('ansible_shell_type')!r}."
+        )
+        return False
+    # Windows child vars must NOT carry its own ansible_user — it's
+    # inherited from proxmox_vms.vars.ansible_user. Carrying both is
+    # redundant; the spec says "ansible_shell_type lives on the windows
+    # child's vars only".
+    if "ansible_user" in win_vars:
+        print(
+            f"FAIL: proxmox_vms.children.windows.vars must not redefine "
+            f"ansible_user (inherited from proxmox_vms.vars); got "
+            f"ansible_user={win_vars['ansible_user']!r}."
+        )
+        return False
+    # Top-level ansible_user must remain 'user' (covers Windows via
+    # group inheritance).
+    parent_vars = (doc.get("proxmox_vms") or {}).get("vars") or {}
+    if parent_vars.get("ansible_user") != "user":
+        print(
+            f"FAIL: proxmox_vms.vars.ansible_user must be 'user' "
+            f"(inherited by both Linux hosts and the windows child); "
+            f"got {parent_vars.get('ansible_user')!r}."
+        )
+        return False
+    print(
+        "OK: proxmox_vms.children.windows.vars carries only "
+        "ansible_shell_type=powershell; ansible_user inherited from parent."
+    )
+    return True
+
+
+def test_generator_skips_null_windows_ansible_host_with_warning():
+    """A DHCP-pending Windows host (ansible_host = null) is skipped + warned."""
+    inv = _fixture_inventory()
+    inv["windows_dev_vms"]["hosts"]["win10-dev"]["ansible_host"] = None
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = os.path.join(tmp, "inv.json")
+        out_path = os.path.join(tmp, "out.yml")
+        with open(in_path, "w", encoding="utf-8") as f:
+            json.dump(inv, f)
+        result = _run_generator(in_path, out_path)
+        if result.returncode != 0:
+            print(
+                f"FAIL: generator exited {result.returncode} when "
+                f"win10-dev had ansible_host=null but other hosts "
+                f"remained valid; stderr={result.stderr!r}."
+            )
+            return False
+        if "win10-dev" not in result.stderr:
+            print(
+                f"FAIL: generator must emit a stderr warning naming "
+                f"the skipped Windows host 'win10-dev'; "
+                f"stderr={result.stderr!r}."
+            )
+            return False
+        with open(out_path, "r", encoding="utf-8") as f:
+            doc = yaml.safe_load(f)
+    win_hosts = (
+        (doc.get("proxmox_vms") or {})
+        .get("children", {})
+        .get("windows", {})
+        .get("hosts")
+        or {}
+    )
+    if "win10-dev" in win_hosts:
+        print(
+            f"FAIL: 'win10-dev' must be omitted from "
+            f"proxmox_vms.children.windows.hosts when its ansible_host "
+            f"is null; got hosts={list(win_hosts)}."
+        )
+        return False
+    if "win11-dev" not in win_hosts:
+        print(
+            f"FAIL: 'win11-dev' should remain in "
+            f"proxmox_vms.children.windows.hosts when only 'win10-dev' "
+            f"has null ansible_host; got hosts={list(win_hosts)}."
+        )
+        return False
+    # And the Linux hosts should be untouched.
+    linux_hosts = ((doc.get("proxmox_vms") or {}).get("hosts")) or {}
+    for linux_host in ("ubuntu26-dev", "centos10-dev"):
+        if linux_host not in linux_hosts:
+            print(
+                f"FAIL: Linux host '{linux_host}' lost from "
+                f"proxmox_vms.hosts when only Windows DHCP was pending; "
+                f"got hosts={list(linux_hosts)}."
+            )
+            return False
+    print(
+        "OK: DHCP-pending Windows host is skipped with stderr warning; "
+        "win11-dev + Linux hosts remain."
+    )
+    return True
+
+
 def test_generator_rejects_malformed_json():
     with tempfile.TemporaryDirectory() as tmp:
         in_path = os.path.join(tmp, "broken.json")
@@ -249,44 +480,104 @@ def test_generator_rejects_missing_inventory_shape():
     return True
 
 
+def _role_names(play):
+    roles = play.get("roles") or []
+    return [
+        (r if isinstance(r, str) else r.get("role") or r.get("name"))
+        for r in roles
+    ]
+
+
 def test_configure_vms_play_shape():
+    """Two-play structure: Linux-only first, Windows second.
+
+    Step 3 split the original single play into two so Linux and
+    Windows guests can use different roles and connection settings.
+    First play: hosts: 'proxmox_vms:!windows' with vm_baseline (the
+    `:!windows` selector is the safety net if a Windows host slips
+    into proxmox_vms directly). Second play: hosts: 'windows' with
+    windows_baseline and no `become` (Windows has no sudo).
+    """
     if not os.path.exists(CONFIGURE_PLAY):
         print(f"FAIL: '{CONFIGURE_PLAY}' is missing.")
         return False
     with open(CONFIGURE_PLAY, "r", encoding="utf-8") as f:
         doc = yaml.safe_load(f)
-    if not isinstance(doc, list) or not doc:
+    if not isinstance(doc, list) or len(doc) < 2:
         print(
-            f"FAIL: '{CONFIGURE_PLAY}' must be a YAML list of plays; "
-            f"got {type(doc).__name__}."
+            f"FAIL: '{CONFIGURE_PLAY}' must be a YAML list of at least "
+            f"2 plays (Linux + Windows split); got "
+            f"{len(doc) if isinstance(doc, list) else type(doc).__name__}."
         )
         return False
-    play = doc[0]
-    if play.get("hosts") != "proxmox_vms":
+
+    linux_play = doc[0]
+    if linux_play.get("hosts") != "proxmox_vms:!windows":
         print(
             f"FAIL: '{CONFIGURE_PLAY}' first play must target "
-            f"hosts: proxmox_vms (matches generator group key); "
-            f"got hosts={play.get('hosts')!r}."
+            f"hosts: 'proxmox_vms:!windows' (the :!windows selector is "
+            f"the safety net against a Windows host accidentally "
+            f"landing in proxmox_vms.hosts); got "
+            f"hosts={linux_play.get('hosts')!r}."
         )
         return False
-    if play.get("become") is not True:
+    if linux_play.get("become") is not True:
         print(
             f"FAIL: '{CONFIGURE_PLAY}' first play must set become: true "
-            f"(cloud-init users need sudo); got become={play.get('become')!r}."
+            f"(cloud-init users need sudo); got "
+            f"become={linux_play.get('become')!r}."
         )
         return False
-    roles = play.get("roles") or []
-    role_names = [
-        (r if isinstance(r, str) else r.get("role") or r.get("name"))
-        for r in roles
-    ]
-    if "vm_baseline" not in role_names:
+    linux_roles = _role_names(linux_play)
+    if "vm_baseline" not in linux_roles:
         print(
-            f"FAIL: '{CONFIGURE_PLAY}' must include 'vm_baseline' in "
-            f"roles list; got roles={role_names}."
+            f"FAIL: '{CONFIGURE_PLAY}' first play must include "
+            f"'vm_baseline' in roles list; got roles={linux_roles}."
         )
         return False
-    print("OK: configure-vms.yml targets proxmox_vms, become=true, applies vm_baseline.")
+    if "windows_baseline" in linux_roles:
+        print(
+            f"FAIL: '{CONFIGURE_PLAY}' first play (Linux) must NOT "
+            f"include 'windows_baseline'; got roles={linux_roles}."
+        )
+        return False
+
+    win_play = doc[1]
+    if win_play.get("hosts") != "windows":
+        print(
+            f"FAIL: '{CONFIGURE_PLAY}' second play must target "
+            f"hosts: 'windows' (matches the proxmox_vms.children.windows "
+            f"group emitted by the generator); got "
+            f"hosts={win_play.get('hosts')!r}."
+        )
+        return False
+    # become must NOT be true on Windows (no sudo).
+    if win_play.get("become") is True:
+        print(
+            f"FAIL: '{CONFIGURE_PLAY}' second play (Windows) must NOT "
+            f"set become: true — Windows hosts have no sudo. Use "
+            f"become: false or omit the key entirely. Got "
+            f"become={win_play.get('become')!r}."
+        )
+        return False
+    win_roles = _role_names(win_play)
+    if "windows_baseline" not in win_roles:
+        print(
+            f"FAIL: '{CONFIGURE_PLAY}' second play must include "
+            f"'windows_baseline' in roles list; got roles={win_roles}."
+        )
+        return False
+    if "vm_baseline" in win_roles:
+        print(
+            f"FAIL: '{CONFIGURE_PLAY}' second play (Windows) must NOT "
+            f"include 'vm_baseline' (Linux-only); got roles={win_roles}."
+        )
+        return False
+    print(
+        "OK: configure-vms.yml has two plays — Linux-only "
+        "proxmox_vms:!windows + vm_baseline + become; "
+        "Windows-only windows + windows_baseline + no become."
+    )
     return True
 
 
@@ -374,9 +665,12 @@ def main():
     checks = [
         ("generator emits per-host inventory entries", test_generator_produces_per_host_inventory),
         ("generator skips null ansible_host with warning", test_generator_skips_null_ansible_host_with_warning),
+        ("generator reshapes windows_dev_vms into proxmox_vms.children.windows", test_generator_reshapes_windows_into_proxmox_vms_children),
+        ("generator emits ansible_shell_type=powershell on windows child", test_generator_emits_powershell_shell_type_on_windows_child),
+        ("generator skips null Windows ansible_host with warning", test_generator_skips_null_windows_ansible_host_with_warning),
         ("generator rejects malformed JSON", test_generator_rejects_malformed_json),
         ("generator rejects missing ansible_inventory shape", test_generator_rejects_missing_inventory_shape),
-        ("configure-vms.yml has correct play shape", test_configure_vms_play_shape),
+        ("configure-vms.yml has two-play Linux+Windows shape", test_configure_vms_play_shape),
         ("vm_baseline role ensures python3", test_vm_baseline_role_has_python3_task),
         ("configure-vms.yml passes ansible-playbook --syntax-check", test_configure_vms_syntax_check),
     ]

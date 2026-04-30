@@ -1,7 +1,11 @@
 ---
 # Configure the OpenTofu-provisioned Proxmox guests.
-# Targets the `proxmox_vms` group emitted by scripts/tofu_to_inventory.py
-# (which reads `tofu output -json ansible_inventory`).
+# Two-play split: Linux guests under `proxmox_vms:!windows`, Windows
+# guests under the `windows` child group. The `:!windows` selector is
+# the safety net — if a Windows host accidentally lands in
+# proxmox_vms.hosts directly (rather than under
+# proxmox_vms.children.windows), it would otherwise pull in
+# vm_baseline's apt/copy tasks, which would fail or no-op.
 #
 # Usage:
 #   tofu -chdir=tofu output -json ansible_inventory \
@@ -9,9 +13,16 @@
 #   .venv/bin/ansible-playbook -i ansible/inventory/tofu_generated.yml \
 #     ansible/configure-vms.yml
 
-- name: Configure Tofu-provisioned guest VMs
-  hosts: proxmox_vms
+- name: Configure Tofu-provisioned Linux guest VMs
+  hosts: proxmox_vms:!windows
   gather_facts: true
   become: true
   roles:
     - vm_baseline
+
+- name: Configure Tofu-provisioned Windows guest VMs
+  hosts: windows
+  gather_facts: true
+  become: false
+  roles:
+    - windows_baseline

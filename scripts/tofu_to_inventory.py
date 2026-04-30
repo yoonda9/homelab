@@ -5,7 +5,7 @@ Usage:
     python3 scripts/tofu_to_inventory.py --input inv.json --output ansible/inventory/tofu_generated.yml
 
 Reads the JSON value of the `ansible_inventory` output (a mapping of
-group → {hosts, vars}). Writes a real Ansible YAML inventory:
+group → {hosts, vars}) and writes a real Ansible YAML inventory:
 
     proxmox_vms:
       hosts:
@@ -13,23 +13,32 @@ group → {hosts, vars}). Writes a real Ansible YAML inventory:
           ansible_host: 192.168.50.10
           vmid: 310
           node_name: pve-01
-        centos10-dev:
-          ansible_host: 192.168.50.11
-          vmid: 311
-          node_name: pve-01
+        centos10-dev: { ... }
+      children:
+        windows:
+          hosts:
+            win10-dev: { ansible_host: ..., vmid: 320, node_name: pve-01 }
+            win11-dev: { ... }
+          vars:
+            ansible_shell_type: powershell
       vars:
         ansible_user: user
 
-Hosts whose ansible_host is null (DHCP not yet leased) are skipped with a
-stderr warning naming each one so pre-apply runs don't silently drop hosts.
+The Tofu-side output emits `windows_dev_vms` as a sibling top-level
+group; this generator reshapes it into `proxmox_vms.children.windows`
+so the group-level `ansible_user: user` flows through Ansible's group
+inheritance to both Linux hosts and the Windows child. The Windows
+child carries `ansible_shell_type: powershell` so Ansible drives the
+ansible.windows.* modules over WinRM/PowerShell.
 
-There is NO per-host `ansible_user` override. Every guest is reachable as
-the uniform `default_user` ('user') the linux_vm cloud-init drops in via
-`initialization.user_account`. Group-level `proxmox_vms.vars.ansible_user`
-(emitted by `tofu/outputs.tf` from `var.default_user`) is the single
-source of truth.
+Hosts whose ansible_host is null (DHCP not yet leased, or Windows
+install still running) are skipped with a stderr warning naming each.
 
-Stdlib only (no PyYAML) to keep the runtime footprint minimal and dependency-free.
+There is NO per-host `ansible_user` override on either Linux or
+Windows hosts. Group-level `proxmox_vms.vars.ansible_user` (emitted
+from `var.default_user`) is the single source of truth.
+
+Stdlib only (no PyYAML) to keep the runtime footprint minimal.
 """
 
 from __future__ import annotations
@@ -41,6 +50,14 @@ import sys
 from typing import Any
 
 DEFAULT_OUTPUT = os.path.join("ansible", "inventory", "tofu_generated.yml")
+
+# The Tofu-side `ansible_inventory` output emits Windows hosts as a
+# sibling top-level `windows_dev_vms` group. The generator reshapes
+# that into `proxmox_vms.children.windows` so Linux + Windows guests
+# share the inherited `ansible_user: user`.
+WINDOWS_GROUP_KEY = "windows_dev_vms"
+PARENT_GROUP_KEY = "proxmox_vms"
+WINDOWS_CHILD_KEY = "windows"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -133,15 +150,46 @@ def transform_group(group_name: str, group: dict[str, Any]) -> dict[str, Any]:
 
 
 def transform(data: dict[str, Any]) -> dict[str, Any]:
+    """Build the YAML-shaped inventory.
+
+    Special handling for the Windows sibling group: rather than emit
+    `windows_dev_vms` as a peer of `proxmox_vms` (which would lose the
+    inherited `ansible_user`), reshape it into
+    `proxmox_vms.children.windows` and stamp
+    `ansible_shell_type: powershell` on the child group's vars. The
+    parent `ansible_user` then flows through to Windows hosts via
+    Ansible group inheritance, matching the spec's "single uniform
+    `user`" intent.
+    """
     result: dict[str, Any] = {}
     any_remaining = False
     for group_name, group in data.items():
         if not isinstance(group, dict):
             continue
+        if group_name == WINDOWS_GROUP_KEY:
+            continue  # handled separately below
         transformed = transform_group(group_name, group)
         result[group_name] = transformed
         if transformed["hosts"]:
             any_remaining = True
+
+    win_group = data.get(WINDOWS_GROUP_KEY)
+    if isinstance(win_group, dict):
+        win_transformed = transform_group(WINDOWS_GROUP_KEY, win_group)
+        # Drop ansible_user from the Windows child's vars — it lives
+        # on the parent proxmox_vms.vars and is inherited. Stamp
+        # ansible_shell_type=powershell so Ansible drives win_*
+        # modules over PowerShell.
+        win_vars = win_transformed.get("vars", {}) or {}
+        win_vars.pop("ansible_user", None)
+        win_vars["ansible_shell_type"] = "powershell"
+        win_child = {"hosts": win_transformed["hosts"], "vars": win_vars}
+        parent = result.setdefault(PARENT_GROUP_KEY, {"hosts": {}})
+        children = parent.setdefault("children", {})
+        children[WINDOWS_CHILD_KEY] = win_child
+        if win_transformed["hosts"]:
+            any_remaining = True
+
     if not any_remaining:
         sys.stderr.write(
             "ERROR: every host was skipped (all ansible_host values were "

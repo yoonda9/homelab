@@ -1,0 +1,49 @@
+---
+# windows_baseline: minimal idempotent baseline for Tofu-provisioned
+# Windows guests. Mirrors `vm_baseline`'s shape but uses
+# `ansible.windows.*` modules. Heavier post-config (Chocolatey, IDEs)
+# stays out of scope per the dev-vms-design spec § Non-goals.
+
+- name: Write C:\ProgramData\ralph-banner.txt identifying the host
+  ansible.windows.win_copy:
+    dest: C:\ProgramData\ralph-banner.txt
+    content: |
+      Provisioned by OpenTofu, configured by Ansible.
+      hostname: {{ inventory_hostname }}
+      vmid:     {{ vmid | default('unknown') }}
+      node:     {{ node_name | default('unknown') }}
+
+# Optional static IP block. Tofu host_vars set `static_ip` (and
+# `gateway`) when the dev VM declares one in tofu/main.tf's
+# `local.windows_vms`. For DHCP hosts the keys are absent and this
+# block is skipped. The PowerShell script short-circuits when
+# Get-NetIPAddress already reports the desired IP — without the probe,
+# repeated runs would log "MSFT_NetIPAddress already exists" and fail.
+- name: Apply static IP via PowerShell (idempotent)
+  when: static_ip is defined
+  ansible.windows.win_powershell:
+    parameters:
+      DesiredIp: "{{ static_ip }}"
+      DesiredGateway: "{{ gateway }}"
+      DesiredDns: "{{ dns_servers | default(['1.1.1.1', '8.8.8.8']) | join(',') }}"
+    script: |
+      param(
+          [Parameter(Mandatory=$true)] [string] $DesiredIp,
+          [Parameter(Mandatory=$true)] [string] $DesiredGateway,
+          [Parameter(Mandatory=$true)] [string] $DesiredDns
+      )
+      $ErrorActionPreference = "Stop"
+      $iface = (Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | Select-Object -First 1).ifIndex
+      $current = Get-NetIPAddress -InterfaceIndex $iface -AddressFamily IPv4 -ErrorAction SilentlyContinue
+      if ($current -and $current.IPAddress -eq $DesiredIp) {
+          $Ansible.Changed = $false
+          return
+      }
+      Get-NetIPAddress -InterfaceIndex $iface -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+          Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+      Get-NetRoute -InterfaceIndex $iface -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+          Where-Object DestinationPrefix -eq '0.0.0.0/0' |
+          Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+      New-NetIPAddress -InterfaceIndex $iface -IPAddress $DesiredIp -PrefixLength 24 -DefaultGateway $DesiredGateway | Out-Null
+      Set-DnsClientServerAddress -InterfaceIndex $iface -ServerAddresses ($DesiredDns -split ',')
+      $Ansible.Changed = $true
