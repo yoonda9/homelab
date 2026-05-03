@@ -1,0 +1,29 @@
+# Packer
+packer/packer_cache/
+**/.packer.d/
+**/*.pkrvars.hcl
+!packer/common.pkrvars.hcl
+
+# OpenTofu / Terraform
+tofu/.terraform/
+tofu/*.tfstate
+tofu/*.tfstate.backup
+tofu/.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars
+
+# direnv local override
+.envrc.local
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Untracked spec source (kept under .agents/)
+PROMPT.md
