@@ -1,0 +1,13 @@
+#cloud-config
+# Ubuntu 26.04 developer-template cloud-init user-data.
+# Uploaded to PVE local:snippets and bound to the ubuntu-26.04-cloud
+# template via `qm set <vmid> --cicustom user=local:snippets/<file>`.
+package_update: true
+package_upgrade: true
+packages:
+  - git
+  - build-essential
+  - vim
+  - docker.io
+  - python3-pip
+  - nodejs

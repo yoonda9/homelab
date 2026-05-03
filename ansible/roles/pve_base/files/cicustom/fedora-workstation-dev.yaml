@@ -1,0 +1,8 @@
+#cloud-config
+# Fedora Workstation developer-template cloud-init user-data.
+# Uploaded to PVE local:snippets and bound to the fedora-cloud-base
+# template via `qm set <vmid> --cicustom user=local:snippets/<file>`.
+package_update: true
+runcmd:
+  - dnf -y group install '@workstation-product-environment'
+  - dnf -y install git vim podman nodejs python3-pip

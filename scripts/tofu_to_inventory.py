@@ -13,7 +13,7 @@ group → {hosts, vars}) and writes a real Ansible YAML inventory:
           ansible_host: 192.168.50.10
           vmid: 310
           node_name: pve-01
-        centos10-dev: { ... }
+        fedora-workstation-dev: { ... }
       children:
         windows:
           hosts:

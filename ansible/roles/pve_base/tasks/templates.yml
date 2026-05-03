@@ -29,6 +29,16 @@
   loop_control:
     label: "{{ item.name }}"
 
+- name: Upload Cloud-Init Custom Snippet
+  ansible.builtin.copy:
+    src: "cicustom/{{ item.cicustom }}"
+    dest: "/var/lib/vz/snippets/{{ item.cicustom }}"
+    mode: '0644'
+  loop: "{{ pve_cloud_images }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.cicustom is defined
+
 - name: Create VM Shell for Cloud Image
   community.proxmox.proxmox_kvm:
     api_user: "{{ pve_api_user | default('root@pam') }}"
@@ -73,6 +83,15 @@
   loop_control:
     label: "{{ item.name }}"
   when: pve_base_disk_import_output is changed
+  changed_when: true
+
+- name: Set --cicustom for Cloud Template
+  ansible.builtin.shell:
+    cmd: "qm set {{ item.vmid }} --cicustom \"user=local:snippets/{{ item.cicustom }}\""
+  loop: "{{ pve_cloud_images }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.cicustom is defined
   changed_when: true
 
 - name: Convert VM to Template

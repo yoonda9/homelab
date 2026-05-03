@@ -1,17 +1,20 @@
-"""Adversarial smoke test for the Step 1b two-map for_each shape in
+"""Adversarial smoke test for the two-map for_each shape in
 `tofu/main.tf`.
 
 Asserts that root `main.tf` declares:
 - `local.cloud_templates` mapping the canonical template names
-  (`ubuntu-26-04`, `centos-stream-10`) to vmids.
+  (`ubuntu-26-04`, `fedora-workstation`) to vmids.
 - `local.linux_vms` mapping the dev hostnames (`ubuntu26-dev`,
-  `centos10-dev`) to objects with the required keys (`vmid`, `template`,
-  `memory`, `cores`, `disk_gb`).
+  `fedora-workstation-dev`) to objects with the required keys (`vmid`,
+  `template`, `memory`, `cores`, `disk_gb`).
 - A single `module "linux_vm"` block driven by
   `for_each = local.linux_vms` and sourced from `./modules/linux_vm`,
   with `clone_from` indirected via `local.cloud_templates[...]`.
 - The Step 1a placeholder labels `ubuntu26_test` and `centos10_test`
   are absent (replace, not coexist).
+- The Step 3 replacement is complete: `centos10-dev` is gone from
+  `linux_vms` and `centos-stream-10` is gone from `cloud_templates`
+  (DEC-010 "replace, don't deprecate").
 
 Text-based — no HCL parser dependency. Mirrors the convention in
 `scripts/test_tofu_linux_vm_module.py` and
@@ -30,14 +33,20 @@ ROOT_MAIN_PATH = os.environ.get(
 
 EXPECTED_CLOUD_TEMPLATES = {
     "ubuntu-26-04": 9001,
-    "centos-stream-10": 9002,
+    "fedora-workstation": 9003,
 }
 EXPECTED_LINUX_VMS = {
     "ubuntu26-dev": "ubuntu-26-04",
-    "centos10-dev": "centos-stream-10",
+    "fedora-workstation-dev": "fedora-workstation",
 }
 REQUIRED_LINUX_VM_KEYS = ("vmid", "template", "memory", "cores", "disk_gb")
 FORBIDDEN_LEGACY_LABELS = ("ubuntu26_test", "centos10_test")
+# Step 3 replaced centos10-dev with fedora-workstation-dev. Keep these
+# explicit so a re-add of centos10-dev (linux_vms) or centos-stream-10
+# (cloud_templates) trips a precise check (DEC-010 "replace, don't
+# deprecate").
+FORBIDDEN_LINUX_VM_LABELS = ("centos10-dev",)
+FORBIDDEN_CLOUD_TEMPLATE_KEYS = ("centos-stream-10",)
 
 # Step 2 — Windows half. Vmids 320 / 321 keep the dev fleet's number
 # space tidy: 9000-series for cloud-init templates, 310-series for
@@ -186,8 +195,8 @@ def test_linux_vms_local_map_with_required_keys():
         if match is None:
             print(
                 f"FAIL: '{ROOT_MAIN_PATH}' local.linux_vms missing entry "
-                f"for '{host}' (Step 1b dev fleet uses ubuntu26-dev / "
-                f"centos10-dev exclusively)."
+                f"for '{host}' (Step 3 dev fleet uses ubuntu26-dev / "
+                f"fedora-workstation-dev exclusively)."
             )
             return False
         entry_body = match.group("body")
@@ -387,6 +396,84 @@ def test_module_windows_vm_uses_for_each_local_windows_vms():
     return True
 
 
+def test_centos10_dev_replaced():
+    """Step 3 replaced centos10-dev with fedora-workstation-dev.
+
+    Trips precisely if centos10-dev is re-added to local.linux_vms, or
+    if centos-stream-10 is re-added to local.cloud_templates. Pure
+    code-line scan (skip comment-prefixed lines per
+    mem-1777478162-68e8) so an explanatory comment in main.tf does not
+    trip the assertion.
+    """
+    text = read_text(ROOT_MAIN_PATH)
+    if text is None:
+        print(f"FAIL: '{ROOT_MAIN_PATH}' is missing.")
+        return False
+    locals_body = _extract_block(text, r"locals")
+    if locals_body is None:
+        print(f"FAIL: '{ROOT_MAIN_PATH}' has no 'locals {{}}' block.")
+        return False
+    linux_body = _extract_named_map(locals_body, "linux_vms")
+    if linux_body is None:
+        print(
+            f"FAIL: '{ROOT_MAIN_PATH}' locals block must declare "
+            f"'linux_vms = {{ ... }}' map."
+        )
+        return False
+    linux_code = "\n".join(
+        line
+        for line in linux_body.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    leaked_linux = []
+    for label in FORBIDDEN_LINUX_VM_LABELS:
+        if re.search(
+            r'"?' + re.escape(label) + r'"?\s*=\s*\{', linux_code
+        ):
+            leaked_linux.append(label)
+
+    cloud_body = _extract_named_map(locals_body, "cloud_templates")
+    if cloud_body is None:
+        print(
+            f"FAIL: '{ROOT_MAIN_PATH}' locals block must declare "
+            f"'cloud_templates = {{ ... }}' map."
+        )
+        return False
+    cloud_code = "\n".join(
+        line
+        for line in cloud_body.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    leaked_cloud = []
+    for key in FORBIDDEN_CLOUD_TEMPLATE_KEYS:
+        if re.search(
+            r'"?' + re.escape(key) + r'"?\s*=\s*\d+', cloud_code
+        ):
+            leaked_cloud.append(key)
+
+    if leaked_linux or leaked_cloud:
+        bits = []
+        if leaked_linux:
+            bits.append(
+                f"local.linux_vms still contains "
+                f"{leaked_linux} (must be removed; replaced by "
+                f"fedora-workstation-dev per DEC-010)"
+            )
+        if leaked_cloud:
+            bits.append(
+                f"local.cloud_templates still contains "
+                f"{leaked_cloud} (must be removed; replaced by "
+                f"fedora-workstation per DEC-010)"
+            )
+        print(f"FAIL: '{ROOT_MAIN_PATH}' " + "; ".join(bits) + ".")
+        return False
+    print(
+        f"OK: '{ROOT_MAIN_PATH}' centos10-dev removed from linux_vms "
+        f"and centos-stream-10 removed from cloud_templates."
+    )
+    return True
+
+
 def test_legacy_labels_absent():
     text = read_text(ROOT_MAIN_PATH)
     if text is None:
@@ -423,7 +510,7 @@ def main():
         ("root main.tf exists", test_main_tf_exists),
         ("locals block present", test_locals_block_present),
         (
-            "local.cloud_templates pins ubuntu-26-04 / centos-stream-10",
+            "local.cloud_templates pins ubuntu-26-04 / fedora-workstation",
             test_cloud_templates_local_map,
         ),
         (
@@ -441,6 +528,10 @@ def main():
         (
             "module \"windows_vm\" uses for_each = local.windows_vms",
             test_module_windows_vm_uses_for_each_local_windows_vms,
+        ),
+        (
+            "centos10-dev removed from linux_vms; centos-stream-10 removed from cloud_templates",
+            test_centos10_dev_replaced,
         ),
         (
             "legacy ubuntu26_test/centos10_test labels absent",

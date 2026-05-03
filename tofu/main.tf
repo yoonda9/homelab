@@ -10,17 +10,17 @@ locals {
   # Cloud-init template vmids managed by `pve_base`. Keys are the
   # human-readable distro slugs referenced by `local.linux_vms` entries.
   cloud_templates = {
-    ubuntu-24-04     = 9000
-    ubuntu-26-04     = 9001
-    centos-stream-10 = 9002
+    ubuntu-24-04       = 9000
+    ubuntu-26-04       = 9001
+    fedora-workstation = 9003
   }
 
   # Canonical Linux dev fleet. Required per-entry keys: vmid, template,
   # memory, cores, disk_gb. Optional: static_ip, gateway (must be set
   # together — half-configured fails plan via the module precondition).
   linux_vms = {
-    ubuntu26-dev = { vmid = 310, template = "ubuntu-26-04", memory = 4096, cores = 2, disk_gb = 120 }
-    centos10-dev = { vmid = 311, template = "centos-stream-10", memory = 4096, cores = 2, disk_gb = 120 }
+    ubuntu26-dev           = { vmid = 310, template = "ubuntu-26-04", memory = 4096, cores = 2, disk_gb = 120 }
+    fedora-workstation-dev = { vmid = 312, template = "fedora-workstation", memory = 4096, cores = 2, disk_gb = 120 }
   }
 
   # Canonical Windows dev fleet. Required per-entry keys: vmid, iso

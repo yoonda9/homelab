@@ -48,9 +48,11 @@ pve_cloud_images:
   - name: "ubuntu-26.04-cloud"
     url: "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img"
     vmid: 9001
-  - name: "centos-stream-10-cloud"
-    url: "https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-latest.x86_64.qcow2"
-    vmid: 9002
+    cicustom: "ubuntu-26-dev.yaml"
+  - name: "fedora-cloud-base"
+    url: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+    vmid: 9003
+    cicustom: "fedora-workstation-dev.yaml"
 
 # Proxmox VM provisioning is now owned by OpenTofu under tofu/.
 # Linux guest VM definitions (vmid, clone_from, memory, cores, bridge)

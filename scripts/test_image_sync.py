@@ -202,6 +202,28 @@ def test_iso_loops_over_url_list(tasks):
     return False
 
 
+def test_pve_cloud_images_includes_fedora(variables):
+    images = variables.get("pve_cloud_images") or []
+    expected_vmid = 9003
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        name = str(img.get("name", ""))
+        if name.lower().startswith("fedora") and img.get("vmid") == expected_vmid:
+            print(
+                f"OK: pve_cloud_images contains fedora entry "
+                f"'{name}' with vmid {expected_vmid}."
+            )
+            return True
+    print(
+        f"FAIL: pve_cloud_images is missing a fedora entry "
+        f"(name starting with 'fedora' AND vmid == {expected_vmid}). "
+        f"Add a Fedora Cloud Base entry to "
+        f"ansible/group_vars/all.yml."
+    )
+    return False
+
+
 def test_vars_have_image_sync_defaults(variables):
     required_vars = {
         "pve_storage": EXPECTED_STORAGE,
@@ -305,6 +327,12 @@ def main():
         (
             "All template tasks delegate to localhost",
             lambda: test_delegate_to_localhost(tasks),
+        ),
+        (
+            "pve_cloud_images includes fedora (vmid 9003)",
+            lambda: test_pve_cloud_images_includes_fedora(
+                variables
+            ),
         ),
     ]
 
