@@ -54,7 +54,6 @@ source "proxmox-iso" "ubuntu26" {
   vm_id                = 9100
   template_name        = "pkr-ubuntu26"
   template_description = "Built by Packer; see scripts/build_template.sh ubuntu26"
-  force                = true
 
   bios     = "ovmf"
   machine  = "q35"
