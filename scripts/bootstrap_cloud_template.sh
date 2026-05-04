@@ -73,8 +73,26 @@ ssh_pve() {
 
 log "step 1: idempotent guard — qm status $SRC_VMID on $SSH_TARGET"
 if ssh_pve "qm status $SRC_VMID" >/dev/null 2>&1; then
-  log "       template VM $SRC_VMID ($TPL_NAME) already exists; skipping bootstrap"
-  exit 0
+  # VMID exists. Verify the occupant is actually $TPL_NAME (with template:1 +
+  # scsi0) before short-circuiting. A bare 'qm status' check is too weak:
+  # VMIDs 9000/9001 may be occupied by pre-existing manual cloud templates
+  # whose names differ. Packer's proxmox-clone resolves clone_vm by NAME, so
+  # a silent skip here turns into a misleading "VM not found" downstream.
+  cfg="$(ssh_pve "qm config $SRC_VMID" 2>/dev/null || true)"
+  existing_name="$(printf '%s\n' "$cfg" | sed -n 's/^name:[[:space:]]*//p' | head -n1)"
+  has_template=0
+  if printf '%s\n' "$cfg" | grep -q '^template:[[:space:]]*1'; then has_template=1; fi
+  has_scsi0=0
+  if printf '%s\n' "$cfg" | grep -q '^scsi0:'; then has_scsi0=1; fi
+  if [[ "$existing_name" == "$TPL_NAME" && "$has_template" -eq 1 && "$has_scsi0" -eq 1 ]]; then
+    log "       template VM $SRC_VMID ($TPL_NAME) already exists; skipping bootstrap"
+    exit 0
+  fi
+  err "VMID $SRC_VMID is occupied but is NOT $TPL_NAME (found name='$existing_name', template=$has_template, scsi0=$has_scsi0)."
+  err "Remediation: free the VMID by destroying the colliding VM (qm destroy $SRC_VMID) or"
+  err "renumbering it; alternatively change SRC_VMID in this script to an id that is free per"
+  err "'pvesh get /cluster/resources --type vm'."
+  exit 70
 fi
 
 log "step 2: download cloud image on PVE node — $IMG_URL"

@@ -250,6 +250,37 @@ def test_bootstrap_script_exists_and_shape() -> bool:
     return all(checks.values())
 
 
+def test_bootstrap_guard_verifies_name_template_scsi0() -> bool:
+    """Regression for VMID-collision bug (mem-1777893372-f3b2). The
+    idempotency guard at scripts/bootstrap_cloud_template.sh must verify the
+    existing VM is *actually* TPL_NAME (with template:1 and scsi0:) — not
+    just that some VM exists at SRC_VMID. A bare 'qm status $SRC_VMID' check
+    silently skips bootstrap when VMIDs 9000/9001 are occupied by pre-existing
+    manual cloud templates with different names, after which Packer's
+    proxmox-clone fails because clone_vm is resolved by NAME.
+
+    Mutate the guard back to the weak form (drop the qm config / name /
+    template / scsi0 verification) and this test must fail.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: guard regression check skipped — script missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    ct = code_text(body)
+    checks = {
+        "guard reads 'qm config' (not just qm status)":     "qm config" in ct,
+        "guard parses '^name:' line from qm config":        "^name:" in ct,
+        "guard checks '^template:' line":                   "^template:" in ct,
+        "guard checks '^scsi0:' line":                      "^scsi0:" in ct,
+        "guard compares existing name to $TPL_NAME":        bool(
+            re.search(r"==\s*\"?\$\{?TPL_NAME\}?\"?", ct)
+        ),
+    }
+    for what, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL'}: {what}")
+    return all(checks.values())
+
+
 def test_bootstrap_shellcheck() -> bool:
     if not shutil.which("shellcheck"):
         print("OK (skip): shellcheck not installed")
@@ -277,6 +308,7 @@ def main() -> int:
         test_ubuntu26_invokes_bootstrap_cloud_template(),
         test_fedora_invokes_bootstrap_cloud_template(),
         test_bootstrap_script_exists_and_shape(),
+        test_bootstrap_guard_verifies_name_template_scsi0(),
         test_bootstrap_shellcheck(),
     ]
     total, passed = len(results), sum(results)
