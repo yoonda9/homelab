@@ -339,6 +339,88 @@ def test_bootstrap_shellcheck() -> bool:
     return ok
 
 
+def test_bootstrap_importdisk_parses_pve8_and_pve9_formats() -> bool:
+    """Regression for PVE 9 importdisk parser bug (mem-1777899105-4193).
+    'qm importdisk' output format changed between PVE 8 and PVE 9:
+
+      PVE 9 (Trixie): "unused0: successfully imported disk 'local-lvm:vm-NNNN-disk-X'"
+                      (unusedN: OUTSIDE quotes; only the volid is quoted)
+      PVE 8 legacy:   "Successfully imported disk as 'unused0:local-lvm:vm-NNNN-disk-X'"
+                      (whole unusedN:local-lvm:... INSIDE single quotes)
+
+    The original single sed pattern only matched the PVE 8 form, so the script
+    aborted on PVE 9 with 'could not parse imported disk name' (DEBUG.md repro).
+    The fix uses two -e patterns; this test extracts the actual sed pipeline
+    from bootstrap_cloud_template.sh and runs it against verbatim PVE 9 input,
+    PVE 8 legacy input, a multi-line noisy stream, and an adversarial mid-line
+    'unused0' lookalike that must NOT yield a false positive.
+
+    Mutate L120-124 back to the single sed pattern (drop the PVE 9 anchored
+    form) and this test must fail on the PVE 9 case.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: importdisk parser regression check skipped — script missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    # Locate the sed pipeline that captures imported_disk from qm importdisk
+    # output. Pull all '-e "..."' arguments verbatim and replay them with
+    # /bin/sh so the test exercises exactly the live command shape.
+    block = re.search(
+        r"imported_disk=.*?\| tail -n1\)\"",
+        body,
+        re.DOTALL,
+    )
+    if block is None:
+        print("FAIL: could not locate imported_disk sed pipeline in bootstrap")
+        return False
+    sed_args = re.findall(r'-e\s+"([^"]+)"', block.group(0))
+    if not sed_args:
+        print("FAIL: no '-e <pattern>' args found in imported_disk sed block")
+        return False
+    # Reconstruct the sed invocation: sed -n -e "..." -e "..." | tail -n1
+    sed_cmd = ["sed", "-n"]
+    for pat in sed_args:
+        sed_cmd.extend(["-e", pat])
+
+    cases = [
+        (
+            "PVE 9 verbatim DEBUG.md line",
+            "unused0: successfully imported disk 'local-lvm:vm-9001-disk-1'\n",
+            "vm-9001-disk-1",
+        ),
+        (
+            "PVE 8 legacy form",
+            "Successfully imported disk as 'unused0:local-lvm:vm-9001-disk-1'\n",
+            "vm-9001-disk-1",
+        ),
+        (
+            "multi-line noisy stream with PVE 9 result buried at end",
+            (
+                "transferred: 1.0 GiB of 5.0 GiB ( 20.00%)\n"
+                "transferred: 5.0 GiB of 5.0 GiB (100.00%)\n"
+                "unused0: successfully imported disk 'local-lvm:vm-9001-disk-1'\n"
+            ),
+            "vm-9001-disk-1",
+        ),
+        (
+            "adversarial mid-line 'unused0' lookalike (must NOT match)",
+            "some progress: see unused0 below for status\n",
+            "",
+        ),
+    ]
+    all_ok = True
+    for label, stdin, expected in cases:
+        sed_run = subprocess.run(sed_cmd, input=stdin, capture_output=True, text=True)
+        tail_run = subprocess.run(
+            ["tail", "-n1"], input=sed_run.stdout, capture_output=True, text=True
+        )
+        got = tail_run.stdout.strip()
+        ok = got == expected
+        all_ok = all_ok and ok
+        print(f"{'OK' if ok else 'FAIL'}: {label} → got={got!r} expected={expected!r}")
+    return all_ok
+
+
 def main() -> int:
     results = [
         test_exists_and_executable(),
@@ -356,6 +438,7 @@ def main() -> int:
         test_bootstrap_guard_verifies_name_template_scsi0(),
         test_bootstrap_scsi0_uses_parsed_imported_disk(),
         test_bootstrap_shellcheck(),
+        test_bootstrap_importdisk_parses_pve8_and_pve9_formats(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

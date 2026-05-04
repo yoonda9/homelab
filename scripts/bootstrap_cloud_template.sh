@@ -105,21 +105,28 @@ ssh_pve "qm create $SRC_VMID --name $TPL_NAME --memory 2048 --cpu host --cores 2
   --efidisk0 local-lvm:0,efitype=4m,pre-enrolled-keys=1"
 
 log "step 4: qm importdisk $SRC_VMID $IMG_FILE local-lvm"
-# Capture stdout+stderr; PVE prints "Successfully imported disk as
-# 'unused0:local-lvm:vm-NNNN-disk-X'". The slot index X is NOT necessarily 0:
-# step 3 already allocated vm-NNNN-disk-0 for efidisk0 via '--efidisk0
-# local-lvm:0,...', so importdisk lands on disk-1. Hardcoding 'disk-0' for
-# scsi0 below would attach the 4 MiB EFI disk and, after 'qm template',
-# rename the EFI LV to 'base-NNNN-disk-0' — leaving efidisk0's reference
-# dangling and breaking proxmox-clone.
+# Capture stdout+stderr; the parser must accept BOTH PVE output formats:
+#   PVE 9 (Trixie): "unused0: successfully imported disk 'local-lvm:vm-NNNN-disk-X'"
+#                   (unusedN: OUTSIDE quotes; only the volid is quoted)
+#   PVE 8 legacy:   "Successfully imported disk as 'unused0:local-lvm:vm-NNNN-disk-X'"
+#                   (whole unusedN:local-lvm:... INSIDE single quotes)
+# The slot index X is NOT necessarily 0: step 3 already allocated
+# vm-NNNN-disk-0 for efidisk0 via '--efidisk0 local-lvm:0,...', so importdisk
+# lands on disk-1. Hardcoding 'disk-0' for scsi0 below would attach the 4 MiB
+# EFI disk and, after 'qm template', rename the EFI LV to 'base-NNNN-disk-0'
+# — leaving efidisk0's reference dangling and breaking proxmox-clone.
 import_out="$(ssh_pve "qm importdisk $SRC_VMID $IMG_FILE local-lvm" 2>&1)"
 printf '%s\n' "$import_out" >&2
 imported_disk="$(printf '%s\n' "$import_out" \
-  | sed -n "s/.*'unused[0-9]*:local-lvm:\(vm-[0-9]\+-disk-[0-9]\+\)'.*/\1/p" \
+  | sed -n \
+      -e "s/^unused[0-9]\+:.*'local-lvm:\(vm-[0-9]\+-disk-[0-9]\+\)'.*/\1/p" \
+      -e "s/.*'unused[0-9]*:local-lvm:\(vm-[0-9]\+-disk-[0-9]\+\)'.*/\1/p" \
   | tail -n1)"
 if [[ -z "$imported_disk" ]]; then
   err "could not parse imported disk name from 'qm importdisk' output"
-  err "expected line matching: Successfully imported disk as 'unusedN:local-lvm:vm-${SRC_VMID}-disk-X'"
+  err "expected one of:"
+  err "  PVE 9: unusedN: successfully imported disk 'local-lvm:vm-${SRC_VMID}-disk-X'"
+  err "  PVE 8: Successfully imported disk as 'unusedN:local-lvm:vm-${SRC_VMID}-disk-X'"
   exit 70
 fi
 
