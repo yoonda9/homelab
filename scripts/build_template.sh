@@ -9,7 +9,7 @@ set -euo pipefail
 #   1. Validate the positional arg against the known short-name set.
 #   2. Pre-flight that PROXMOX_HOST/USER/TOKEN_ID/TOKEN_SECRET are populated
 #      (load via direnv/.envrc on the operator's workstation).
-#   3. ubuntu26 + fedora: ensure tpl-cloud-{ubuntu26,fedora43} exists on PVE
+#   3. ubuntu26 + fedora: ensure tpl-cloud-{ubuntu26,fedora44} exists on PVE
 #      via scripts/bootstrap_cloud_template.sh (DEC-020 option b — proxmox-clone
 #      requires a Cloud-Init source template; the bootstrap is idempotent).
 #      windows11 only: pre-flight genisoimage (per C-11) and pre-bake
@@ -86,7 +86,7 @@ ubuntu26)
   "$REPO_ROOT/scripts/bootstrap_cloud_template.sh" ubuntu26
   ;;
 fedora)
-  log "step 2: fedora — ensure tpl-cloud-fedora43 source template (idempotent)"
+  log "step 2: fedora — ensure tpl-cloud-fedora44 source template (idempotent)"
   "$REPO_ROOT/scripts/bootstrap_cloud_template.sh" fedora
   ;;
 windows11)
@@ -122,6 +122,6 @@ cd "$REPO_ROOT/packer"
 packer init .
 
 log "step 5: packer build -only=$ONLY (force=true overwrite)"
-packer build -force -only="$ONLY" -var-file=common.pkrvars.hcl .
+packer build -on-error=abort -force -only="$ONLY" -var-file=common.pkrvars.hcl .
 
 log "DONE: $NAME"

@@ -1,16 +1,16 @@
 // Fedora Packer template (DEC-019 Q4). Cloud-image flow:
-// `proxmox-clone` clones the bootstrapped `tpl-cloud-fedora43`
+// `proxmox-clone` clones the bootstrapped `tpl-cloud-fedora44`
 // Cloud-Init source template on the PVE node and seeds first-boot
 // config via a NoCloud cidata CD attached as `additional_iso_files`
 // (on-the-fly `cd_files` generation, no genisoimage pre-bake).
-// Source template `tpl-cloud-fedora43` is bootstrapped by Step 3c
-// (`scripts/bootstrap_cloud_template.sh fedora`) from the Fedora 43
+// Source template `tpl-cloud-fedora44` is bootstrapped by Step 3c
+// (`scripts/bootstrap_cloud_template.sh fedora`) from the Fedora 44
 // Cloud Base generic qcow2; the Workstation group install runs in a
 // Packer shell provisioner below so the template literal stays
 // `pkr-fedora-workstation` per DEC-019 Q4.
 //
 // `bios`, `machine`, and `efi_config` are intentionally OMITTED from
-// this source — they inherit from `tpl-cloud-fedora43`, which the
+// this source — they inherit from `tpl-cloud-fedora44`, which the
 // bootstrap step creates with `--bios ovmf --machine q35
 // --efidisk0 local-lvm:0,efitype=4m,pre-enrolled-keys=1`. Setting them
 // here would either be redundant or risk conflicting with the cloned
@@ -32,7 +32,7 @@ source "proxmox-clone" "fedora" {
   template_name        = "pkr-fedora-workstation"
   template_description = "Built by Packer; see scripts/build_template.sh fedora"
 
-  clone_vm   = "tpl-cloud-fedora43"
+  clone_vm   = "tpl-cloud-fedora44"
   full_clone = true
 
   cpu_type = "host"

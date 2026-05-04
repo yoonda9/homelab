@@ -29,7 +29,7 @@ Usage: scripts/bootstrap_cloud_template.sh {ubuntu26|fedora}
 
   ubuntu26   Bootstrap tpl-cloud-ubuntu26 (vmid 9000) from the Ubuntu 26.04
              server cloud image at cloud-images.ubuntu.com.
-  fedora     Bootstrap tpl-cloud-fedora43 (vmid 9001) from the Fedora 43
+  fedora     Bootstrap tpl-cloud-fedora44 (vmid 9001) from the Fedora 44
              Cloud Base Generic qcow2 at download.fedoraproject.org.
 EOF
 }
@@ -48,8 +48,8 @@ ubuntu26)
   ;;
 fedora)
   SRC_VMID=9001
-  TPL_NAME="tpl-cloud-fedora43"
-  IMG_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2"
+  TPL_NAME="tpl-cloud-fedora44"
+  IMG_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   ;;
 *)
   err "unknown OS '$NAME'"
@@ -130,10 +130,19 @@ if [[ -z "$imported_disk" ]]; then
   exit 70
 fi
 
-log "step 5: attach scsi0 ($imported_disk) + cloudinit drive + boot order"
+log "step 5: attach scsi0 ($imported_disk) + boot order"
 ssh_pve "qm set $SRC_VMID --scsi0 local-lvm:${imported_disk},discard=on,ssd=1"
 ssh_pve "qm set $SRC_VMID --boot order=scsi0"
-ssh_pve "qm set $SRC_VMID --ide2 local-lvm:cloudinit"
+# Intentionally NO '--ide2 local-lvm:cloudinit' here. Packer's proxmox-clone
+# attaches its own NoCloud seed via additional_iso_files (ide0, label=cidata),
+# and the bpg/proxmox provider's initialization{} block on Tofu clones
+# generates its own cidata drive too. Pre-baking a Proxmox-auto cloud-init
+# drive on the source template causes the clone to boot with TWO cidata-
+# labelled CDs (sr0=our seed, sr1=Proxmox empty seed); cloud-init's NoCloud
+# datasource picks one by /dev/disk/by-label/cidata and silently ignores the
+# other. When it picks the empty Proxmox seed, our user-data (ssh_pwauth:true,
+# user unlock) never runs, sshd keeps PasswordAuthentication=no, and Packer's
+# SSH login hangs until its 30-minute timeout (DEBUG.md task-1777857784-fb79).
 
 log "step 6: qm template $SRC_VMID"
 ssh_pve "qm template $SRC_VMID"

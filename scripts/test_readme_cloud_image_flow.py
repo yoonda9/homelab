@@ -21,7 +21,7 @@ Eleven assertions over ``README.md`` content:
 (2f) Documents ``build_template.sh fedora`` (exact substring).
 (2g) Documents ``build_template.sh windows11`` (exact substring).
 (2h) Mentions ``bootstrap_cloud_template.sh`` AND both
-     ``tpl-cloud-ubuntu26`` and ``tpl-cloud-fedora43`` — the one-time
+     ``tpl-cloud-ubuntu26`` and ``tpl-cloud-fedora44`` — the one-time
      Cloud-Init source templates the runner clones from.
 (2i) Mentions all four required env vars (``PROXMOX_HOST``,
      ``PROXMOX_USER``, ``PROXMOX_TOKEN_ID``, ``PROXMOX_TOKEN_SECRET``).
@@ -107,12 +107,12 @@ def test_mentions_bootstrap_and_cloud_sources() -> bool:
     text = read_readme()
     has_bootstrap = "bootstrap_cloud_template.sh" in text
     has_tpl_ubuntu = "tpl-cloud-ubuntu26" in text
-    has_tpl_fedora = "tpl-cloud-fedora43" in text
+    has_tpl_fedora = "tpl-cloud-fedora44" in text
     ok = has_bootstrap and has_tpl_ubuntu and has_tpl_fedora
     print(
         f"{'OK' if ok else 'FAIL'}: 2h: README mentions bootstrap_cloud_template.sh "
         f"({has_bootstrap}) + tpl-cloud-ubuntu26 ({has_tpl_ubuntu}) "
-        f"+ tpl-cloud-fedora43 ({has_tpl_fedora})"
+        f"+ tpl-cloud-fedora44 ({has_tpl_fedora})"
     )
     return ok
 

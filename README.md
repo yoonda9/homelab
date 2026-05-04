@@ -9,8 +9,8 @@ Three VM templates are built from cloud images on the PVE node:
 
 - `pkr-ubuntu26` (vmid 9100) — Ubuntu 26.04 server cloud image, built via
   `proxmox-clone` from a one-time `tpl-cloud-ubuntu26` source template.
-- `pkr-fedora-workstation` (vmid 9101) — Fedora 43 Cloud Base, built via
-  `proxmox-clone` from `tpl-cloud-fedora43` with workstation packages
+- `pkr-fedora-workstation` (vmid 9101) — Fedora 44 Cloud Base, built via
+  `proxmox-clone` from `tpl-cloud-fedora44` with workstation packages
   layered on at provision time.
 - `pkr-windows11` (vmid 9102) — Windows 11 24H2, built via `proxmox-iso`
   with sysprep + autounattend (Windows has no cloud image).
@@ -32,7 +32,7 @@ keystroke timing, no installer boot menus.
 
   ```bash
   bash scripts/bootstrap_cloud_template.sh ubuntu26   # → tpl-cloud-ubuntu26
-  bash scripts/bootstrap_cloud_template.sh fedora     # → tpl-cloud-fedora43
+  bash scripts/bootstrap_cloud_template.sh fedora     # → tpl-cloud-fedora44
   ```
 
   The bootstrap is idempotent — re-running it is a no-op once the source

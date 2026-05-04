@@ -202,7 +202,7 @@ def test_ubuntu26_invokes_bootstrap_cloud_template() -> bool:
 def test_fedora_invokes_bootstrap_cloud_template() -> bool:
     """DEC-020 (option b) + DEC-019 Q4 carry-forward: fedora build path MUST
     invoke scripts/bootstrap_cloud_template.sh fedora as a precondition.
-    proxmox-clone.fedora requires tpl-cloud-fedora43 to already exist on PVE;
+    proxmox-clone.fedora requires tpl-cloud-fedora44 to already exist on PVE;
     the bootstrap script is the idempotent one-time-per-cloud-image creator.
     Per DEC-019 Q2 the fedora arm does NOT pre-bake a cidata seed via
     genisoimage — Packer's additional_iso_files{cd_files=[...]} generates the
@@ -242,7 +242,7 @@ def test_bootstrap_script_exists_and_shape() -> bool:
         "references 'qm template' to flag golden":    "qm template" in ct,
         "idempotent guard via 'qm status'":           "qm status" in ct,
         "tpl-cloud-ubuntu26 source name":             "tpl-cloud-ubuntu26" in ct,
-        "tpl-cloud-fedora43 source name":             "tpl-cloud-fedora43" in ct,
+        "tpl-cloud-fedora44 source name":             "tpl-cloud-fedora44" in ct,
         "PROXMOX_HOST referenced for ssh target":     "PROXMOX_HOST" in ct,
     }
     for what, ok in checks.items():
@@ -324,6 +324,45 @@ def test_bootstrap_scsi0_uses_parsed_imported_disk() -> bool:
     for what, ok in checks.items():
         print(f"{'OK' if ok else 'FAIL'}: {what}")
     return all(checks.values())
+
+
+def test_bootstrap_does_not_attach_ide2_cloudinit() -> bool:
+    """Regression for dual-cidata SSH timeout (mem-1777927418-a0b3, DEBUG.md
+    task-1777857784-fb79). The bootstrap script MUST NOT pre-bake an ide2
+    cloud-init drive on the source template via 'qm set --ide2 local-lvm:cloudinit'.
+
+    Why: packer's proxmox-clone attaches its own NoCloud seed via
+    additional_iso_files (ide0, label=cidata). If the source template ALSO has
+    an ide2 cloud-init drive (Proxmox auto-generated, label=cidata, no
+    cipassword), the clone inherits both. cloud-init's NoCloud datasource
+    resolves /dev/disk/by-label/cidata to one of them; if it picks the empty
+    Proxmox seed, our user-data (ssh_pwauth:true, user unlock) never runs,
+    sshd keeps PasswordAuthentication=no, and packer's SSH hangs 30m.
+
+    The bpg/proxmox provider's initialization{} block on Tofu clones generates
+    its own cidata drive too, so downstream consumers don't need ide2 baked
+    into the template either.
+
+    Mutate the script to re-add 'qm set $SRC_VMID --ide2 local-lvm:cloudinit'
+    and this test must fail.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: ide2-cloudinit regression check skipped — script missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    ct = code_text(body)
+    # Match an ide2 attach where the value resolves to 'cloudinit', allowing
+    # quoting / interpolation variants (--ide2 local-lvm:cloudinit, --ide2
+    # "local-lvm:cloudinit", etc.) but ignoring any '--delete ide2' cleanup
+    # line that mentions 'ide2' without attaching.
+    has_ide2_cloudinit_attach = bool(
+        re.search(r"--ide2[\s=]+[\"']?[^\"'\s]*:cloudinit\b", ct)
+    )
+    print(
+        f"{'OK' if not has_ide2_cloudinit_attach else 'FAIL'}: "
+        "bootstrap does NOT attach '--ide2 <storage>:cloudinit' (dual-cidata SSH-timeout regression)"
+    )
+    return not has_ide2_cloudinit_attach
 
 
 def test_bootstrap_shellcheck() -> bool:
@@ -437,6 +476,7 @@ def main() -> int:
         test_bootstrap_script_exists_and_shape(),
         test_bootstrap_guard_verifies_name_template_scsi0(),
         test_bootstrap_scsi0_uses_parsed_imported_disk(),
+        test_bootstrap_does_not_attach_ide2_cloudinit(),
         test_bootstrap_shellcheck(),
         test_bootstrap_importdisk_parses_pve8_and_pve9_formats(),
     ]
