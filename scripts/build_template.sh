@@ -13,7 +13,10 @@ set -euo pipefail
 #      pre-bake packer_cache/autounattend-win11.iso with -volid "Unattend"
 #      from packer/autounattend/windows11/ (per C-10).
 #   4. cd into packer/, run `packer init .` (idempotent).
-#   5. Run `packer build -force -var-file=common.pkrvars.hcl <name>.pkr.hcl`.
+#   5. Run `packer build -force -only=proxmox-iso.<name> -var-file=common.pkrvars.hcl .`
+#      (directory form — single-file form does NOT load _variables.pkr.hcl
+#      siblings, so the shared variable + required_plugins declarations would
+#      be invisible and every var.* reference would error at HCL parse).
 #   6. Exit with Packer's exit code.
 #
 # Idempotent: re-running overwrites the prior template (FR-5). Silent: no
@@ -65,7 +68,6 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   exit 78
 fi
 
-# Bridge .envrc PROXMOX_* vars to PKR_VAR_* names declared in packer/*.pkr.hcl
 export PKR_VAR_proxmox_host="$PROXMOX_HOST"
 export PKR_VAR_proxmox_user="$PROXMOX_USER"
 export PKR_VAR_proxmox_token_id="$PROXMOX_TOKEN_ID"
@@ -96,7 +98,7 @@ log "step 4: packer init"
 cd "$REPO_ROOT/packer"
 packer init .
 
-log "step 5: packer build $NAME.pkr.hcl (force=true overwrite)"
-packer build -force -var-file=common.pkrvars.hcl "$NAME.pkr.hcl"
+log "step 5: packer build -only=proxmox-iso.$NAME (force=true overwrite)"
+packer build -force -only="proxmox-iso.$NAME" -var-file=common.pkrvars.hcl .
 
 log "DONE: $NAME"

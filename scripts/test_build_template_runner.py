@@ -128,6 +128,33 @@ def test_packer_init_then_build_force() -> bool:
     return ordered and build_uses_force
 
 
+def test_packer_build_uses_directory_form() -> bool:
+    """Regression: packer build must use directory form '-only=<source> .' so
+    _variables.pkr.hcl siblings are loaded (per mem-1777854396-6d9e). Single-file
+    form 'packer build foo.pkr.hcl' does NOT load directory siblings, leaving
+    var.* references undeclared at HCL parse → 8x 'Unsupported attribute' errors.
+    """
+    if not RUNNER.is_file():
+        print("FAIL: packer build directory-form check skipped — runner missing")
+        return False
+    body = RUNNER.read_text()
+    lines = code_lines(body)
+    # Match the actual command line, not log/echo strings that mention 'packer build'.
+    build_lines = [ln for ln in lines if re.search(r"^\s*packer\s+build\b", ln)]
+    if not build_lines:
+        print("FAIL: no 'packer build' command line found")
+        return False
+    build_line = build_lines[0]
+    uses_only = bool(re.search(r"-only=[\"']?proxmox-iso\.", build_line))
+    # Directory form: trailing '.' as positional arg, NOT a single-file 'X.pkr.hcl'.
+    uses_dir = bool(re.search(r"\s\.\s*$", build_line))
+    no_single_file = not re.search(r"\b[\w$\"'{}]+\.pkr\.hcl\b", build_line)
+    print(f"{'OK' if uses_only else 'FAIL'}: packer build uses -only=proxmox-iso.<name>")
+    print(f"{'OK' if uses_dir else 'FAIL'}: packer build targets directory '.' (not a single .pkr.hcl file)")
+    print(f"{'OK' if no_single_file else 'FAIL'}: packer build line has no '<name>.pkr.hcl' positional arg")
+    return uses_only and uses_dir and no_single_file
+
+
 def main() -> int:
     results = [
         test_exists_and_executable(),
@@ -137,6 +164,7 @@ def main() -> int:
         test_arg_validation_and_envvar_preflight(),
         test_windows11_specific_steps(),
         test_packer_init_then_build_force(),
+        test_packer_build_uses_directory_form(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
