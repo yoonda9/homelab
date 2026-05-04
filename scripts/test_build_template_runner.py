@@ -281,6 +281,51 @@ def test_bootstrap_guard_verifies_name_template_scsi0() -> bool:
     return all(checks.values())
 
 
+def test_bootstrap_scsi0_uses_parsed_imported_disk() -> bool:
+    """Regression for disk-slot collision bug (mem-1777897177-6c8f). The
+    'qm set --scsi0 ...' line in bootstrap_cloud_template.sh must reference
+    a captured/parsed disk name from 'qm importdisk' stdout, NOT the literal
+    'vm-${SRC_VMID}-disk-0'. Step 3's '--efidisk0 local-lvm:0,...' allocates
+    vm-${SRC_VMID}-disk-0, so importdisk lands on disk-1; hardcoding disk-0
+    attaches the EFI disk to scsi0 and 'qm template' then leaves efidisk0's
+    reference dangling, breaking proxmox-clone with 'no such logical volume
+    pve/vm-NNNN-disk-0'.
+
+    Mutate L111 back to 'qm set $SRC_VMID --scsi0 local-lvm:vm-${SRC_VMID}-disk-0,...'
+    and this test must fail.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: scsi0 parsed-disk regression check skipped — script missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    ct = code_text(body)
+    # The fix captures the imported disk name from 'qm importdisk' output and
+    # references it through a shell variable on the scsi0 attach.
+    captures_import = bool(
+        re.search(r"=\s*\"\$\(\s*ssh_pve\s+\"qm\s+importdisk\b", ct)
+    )
+    parses_disk_name = bool(re.search(r"unused[^']*local-lvm[^']*vm-", ct))
+    # The scsi0 attach must NOT contain the literal 'vm-${SRC_VMID}-disk-0' or
+    # 'vm-9000-disk-0' / 'vm-9001-disk-0' — that was the bug.
+    scsi0_lines = [ln for ln in code_lines(body) if re.search(r"--scsi0\b", ln)]
+    has_hardcoded_disk0 = any(
+        re.search(r"local-lvm:vm-(\$\{?SRC_VMID\}?|9000|9001)-disk-0\b", ln)
+        for ln in scsi0_lines
+    )
+    references_imported_var = any(
+        re.search(r"local-lvm:[\"']?\$\{?imported_disk\}?", ln) for ln in scsi0_lines
+    )
+    checks = {
+        "captures 'qm importdisk' stdout into a shell variable":  captures_import,
+        "parses imported disk name (unused*:local-lvm:vm-*)":     parses_disk_name,
+        "scsi0 attach does NOT hardcode 'vm-...-disk-0' literal": not has_hardcoded_disk0,
+        "scsi0 attach references the parsed disk variable":       references_imported_var,
+    }
+    for what, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL'}: {what}")
+    return all(checks.values())
+
+
 def test_bootstrap_shellcheck() -> bool:
     if not shutil.which("shellcheck"):
         print("OK (skip): shellcheck not installed")
@@ -309,6 +354,7 @@ def main() -> int:
         test_fedora_invokes_bootstrap_cloud_template(),
         test_bootstrap_script_exists_and_shape(),
         test_bootstrap_guard_verifies_name_template_scsi0(),
+        test_bootstrap_scsi0_uses_parsed_imported_disk(),
         test_bootstrap_shellcheck(),
     ]
     total, passed = len(results), sum(results)

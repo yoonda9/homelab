@@ -105,10 +105,26 @@ ssh_pve "qm create $SRC_VMID --name $TPL_NAME --memory 2048 --cpu host --cores 2
   --efidisk0 local-lvm:0,efitype=4m,pre-enrolled-keys=1"
 
 log "step 4: qm importdisk $SRC_VMID $IMG_FILE local-lvm"
-ssh_pve "qm importdisk $SRC_VMID $IMG_FILE local-lvm"
+# Capture stdout+stderr; PVE prints "Successfully imported disk as
+# 'unused0:local-lvm:vm-NNNN-disk-X'". The slot index X is NOT necessarily 0:
+# step 3 already allocated vm-NNNN-disk-0 for efidisk0 via '--efidisk0
+# local-lvm:0,...', so importdisk lands on disk-1. Hardcoding 'disk-0' for
+# scsi0 below would attach the 4 MiB EFI disk and, after 'qm template',
+# rename the EFI LV to 'base-NNNN-disk-0' — leaving efidisk0's reference
+# dangling and breaking proxmox-clone.
+import_out="$(ssh_pve "qm importdisk $SRC_VMID $IMG_FILE local-lvm" 2>&1)"
+printf '%s\n' "$import_out" >&2
+imported_disk="$(printf '%s\n' "$import_out" \
+  | sed -n "s/.*'unused[0-9]*:local-lvm:\(vm-[0-9]\+-disk-[0-9]\+\)'.*/\1/p" \
+  | tail -n1)"
+if [[ -z "$imported_disk" ]]; then
+  err "could not parse imported disk name from 'qm importdisk' output"
+  err "expected line matching: Successfully imported disk as 'unusedN:local-lvm:vm-${SRC_VMID}-disk-X'"
+  exit 70
+fi
 
-log "step 5: attach scsi0 + cloudinit drive + boot order"
-ssh_pve "qm set $SRC_VMID --scsi0 local-lvm:vm-${SRC_VMID}-disk-0,discard=on,ssd=1"
+log "step 5: attach scsi0 ($imported_disk) + cloudinit drive + boot order"
+ssh_pve "qm set $SRC_VMID --scsi0 local-lvm:${imported_disk},discard=on,ssd=1"
 ssh_pve "qm set $SRC_VMID --boot order=scsi0"
 ssh_pve "qm set $SRC_VMID --ide2 local-lvm:cloudinit"
 

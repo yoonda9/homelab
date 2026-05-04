@@ -3,20 +3,14 @@
 Running  `./scripts/build_template.sh fedora` fails with the following output.
 
 ```shell
-==> step 1: env-var pre-flight
-==> step 2: fedora — ensure tpl-cloud-fedora43 source template (idempotent)
-==> step 1: idempotent guard — qm status 9001 on root@pve.home.arpa
-==>        template VM 9001 (tpl-cloud-fedora43) already exists; skipping bootstrap
-==> step 4: packer init
-==> step 5: packer build -only=proxmox-clone.fedora (force=true overwrite)
-[1;32mproxmox-clone.fedora: output will be in this color.[0m
+==> proxmox-clone.fedora: Error creating VM: clone failed: no such logical volume pve/vm-9001-disk-0
+==> proxmox-clone.fedora: Deleted generated ISO from local:iso/packer457309238.iso
+Build 'proxmox-clone.fedora' errored after 6 seconds 214 milliseconds: Error creating VM: clone failed: no such logical volume pve/vm-9001-disk-0
 
-[1;31mBuild 'proxmox-clone.fedora' errored after 7 milliseconds 829 microseconds: Could not retrieve VM: vm 'tpl-cloud-fedora43' not found[0m
-
-==> Wait completed after 8 milliseconds 6 microseconds
+==> Wait completed after 6 seconds 214 milliseconds
 
 ==> Some builds didn't complete successfully and had errors:
---> proxmox-clone.fedora: Could not retrieve VM: vm 'tpl-cloud-fedora43' not found
+--> proxmox-clone.fedora: Error creating VM: clone failed: no such logical volume pve/vm-9001-disk-0
 
 ==> Builds finished but no artifacts were created.
 ```
