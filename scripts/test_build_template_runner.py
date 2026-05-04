@@ -14,6 +14,7 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 RUNNER = REPO_ROOT / "scripts" / "build_template.sh"
+BOOTSTRAP = REPO_ROOT / "scripts" / "bootstrap_cloud_template.sh"
 
 
 def code_lines(body: str) -> list[str]:
@@ -133,6 +134,9 @@ def test_packer_build_uses_directory_form() -> bool:
     _variables.pkr.hcl siblings are loaded (per mem-1777854396-6d9e). Single-file
     form 'packer build foo.pkr.hcl' does NOT load directory siblings, leaving
     var.* references undeclared at HCL parse → 8x 'Unsupported attribute' errors.
+
+    The per-OS source mapping (proxmox-clone vs proxmox-iso) is asserted in
+    test_per_os_only_flag_mapping; this test stays source-agnostic.
     """
     if not RUNNER.is_file():
         print("FAIL: packer build directory-form check skipped — runner missing")
@@ -145,14 +149,118 @@ def test_packer_build_uses_directory_form() -> bool:
         print("FAIL: no 'packer build' command line found")
         return False
     build_line = build_lines[0]
-    uses_only = bool(re.search(r"-only=[\"']?proxmox-iso\.", build_line))
+    uses_only = bool(re.search(r"-only=", build_line))
     # Directory form: trailing '.' as positional arg, NOT a single-file 'X.pkr.hcl'.
     uses_dir = bool(re.search(r"\s\.\s*$", build_line))
     no_single_file = not re.search(r"\b[\w$\"'{}]+\.pkr\.hcl\b", build_line)
-    print(f"{'OK' if uses_only else 'FAIL'}: packer build uses -only=proxmox-iso.<name>")
+    print(f"{'OK' if uses_only else 'FAIL'}: packer build uses -only=...")
     print(f"{'OK' if uses_dir else 'FAIL'}: packer build targets directory '.' (not a single .pkr.hcl file)")
     print(f"{'OK' if no_single_file else 'FAIL'}: packer build line has no '<name>.pkr.hcl' positional arg")
     return uses_only and uses_dir and no_single_file
+
+
+def test_per_os_only_flag_mapping() -> bool:
+    """DEC-019 Q1: ubuntu26 + fedora → proxmox-clone (cloud-image flow);
+    windows11 stays on proxmox-iso. The negative assertion `proxmox-iso.fedora`
+    NOT present catches accidental reverts of fedora back to ISO.
+    """
+    if not RUNNER.is_file():
+        print("FAIL: per-os only flag check skipped — runner missing")
+        return False
+    body = RUNNER.read_text()
+    ct = code_text(body)
+    checks = {
+        "ubuntu26 → proxmox-clone.ubuntu26 (DEC-019 cloud-image flow)":  "proxmox-clone.ubuntu26" in ct,
+        "fedora → proxmox-clone.fedora (DEC-019 cloud-image flow)":      "proxmox-clone.fedora" in ct,
+        "windows11 → proxmox-iso.windows11 (stays on ISO)":              "proxmox-iso.windows11" in ct,
+        "fedora NOT pinned to proxmox-iso.fedora (no revert)":           "proxmox-iso.fedora" not in ct,
+    }
+    for what, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL'}: {what}")
+    return all(checks.values())
+
+
+def test_ubuntu26_invokes_bootstrap_cloud_template() -> bool:
+    """DEC-020 (option b): ubuntu26 build path MUST invoke
+    scripts/bootstrap_cloud_template.sh as a precondition. proxmox-clone
+    requires the source template tpl-cloud-ubuntu26 to already exist on
+    PVE; the bootstrap script is the idempotent one-time-per-cloud-image
+    creator. Substring presence with comment-skipping is sufficient — the
+    bootstrap script's own shape + shellcheck cleanliness is checked
+    separately.
+    """
+    if not RUNNER.is_file():
+        print("FAIL: bootstrap invocation check skipped — runner missing")
+        return False
+    body = RUNNER.read_text()
+    ct = code_text(body)
+    refs_bootstrap = bool(re.search(r"bootstrap_cloud_template\.sh\W+ubuntu26", ct))
+    print(f"{'OK' if refs_bootstrap else 'FAIL'}: build_template.sh invokes bootstrap_cloud_template.sh ubuntu26")
+    return refs_bootstrap
+
+
+def test_fedora_invokes_bootstrap_cloud_template() -> bool:
+    """DEC-020 (option b) + DEC-019 Q4 carry-forward: fedora build path MUST
+    invoke scripts/bootstrap_cloud_template.sh fedora as a precondition.
+    proxmox-clone.fedora requires tpl-cloud-fedora43 to already exist on PVE;
+    the bootstrap script is the idempotent one-time-per-cloud-image creator.
+    Per DEC-019 Q2 the fedora arm does NOT pre-bake a cidata seed via
+    genisoimage — Packer's additional_iso_files{cd_files=[...]} generates the
+    NoCloud seed on-the-fly, so only windows11 keeps the genisoimage pre-bake.
+    """
+    if not RUNNER.is_file():
+        print("FAIL: fedora bootstrap invocation check skipped — runner missing")
+        return False
+    body = RUNNER.read_text()
+    ct = code_text(body)
+    refs_bootstrap = bool(re.search(r"bootstrap_cloud_template\.sh\W+fedora", ct))
+    print(f"{'OK' if refs_bootstrap else 'FAIL'}: build_template.sh invokes bootstrap_cloud_template.sh fedora")
+    return refs_bootstrap
+
+
+def test_bootstrap_script_exists_and_shape() -> bool:
+    """scripts/bootstrap_cloud_template.sh: shebang, set -euo pipefail in
+    first 10 lines (per mem-1777856290-3a6f), executable bit, and the
+    qm create / importdisk / qm template chain from research.md:55-68 with
+    an idempotent qm-status guard so re-runs are safe.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: scripts/bootstrap_cloud_template.sh missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    lines = body.splitlines()
+    shebang_ok = lines[0].strip() == "#!/usr/bin/env bash"
+    set_ok = any("set -euo pipefail" in ln for ln in lines[:10])
+    mode_ok = bool(BOOTSTRAP.stat().st_mode & stat.S_IXUSR)
+    ct = code_text(body)
+    checks = {
+        "shebang #!/usr/bin/env bash":                shebang_ok,
+        "set -euo pipefail in first 10 lines":        set_ok,
+        "executable bit set":                         mode_ok,
+        "references 'qm create' for source VM":       "qm create" in ct,
+        "references 'qm importdisk' for cloud image": "qm importdisk" in ct,
+        "references 'qm template' to flag golden":    "qm template" in ct,
+        "idempotent guard via 'qm status'":           "qm status" in ct,
+        "tpl-cloud-ubuntu26 source name":             "tpl-cloud-ubuntu26" in ct,
+        "tpl-cloud-fedora43 source name":             "tpl-cloud-fedora43" in ct,
+        "PROXMOX_HOST referenced for ssh target":     "PROXMOX_HOST" in ct,
+    }
+    for what, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL'}: {what}")
+    return all(checks.values())
+
+
+def test_bootstrap_shellcheck() -> bool:
+    if not shutil.which("shellcheck"):
+        print("OK (skip): shellcheck not installed")
+        return True
+    if not BOOTSTRAP.is_file():
+        print("FAIL: bootstrap shellcheck skipped — script missing")
+        return False
+    r = subprocess.run(["shellcheck", str(BOOTSTRAP)], capture_output=True, text=True)
+    ok = r.returncode == 0
+    print(f"{'OK' if ok else 'FAIL'}: bootstrap shellcheck ({r.stdout.strip() or 'clean'})")
+    return ok
 
 
 def main() -> int:
@@ -165,6 +273,11 @@ def main() -> int:
         test_windows11_specific_steps(),
         test_packer_init_then_build_force(),
         test_packer_build_uses_directory_form(),
+        test_per_os_only_flag_mapping(),
+        test_ubuntu26_invokes_bootstrap_cloud_template(),
+        test_fedora_invokes_bootstrap_cloud_template(),
+        test_bootstrap_script_exists_and_shape(),
+        test_bootstrap_shellcheck(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

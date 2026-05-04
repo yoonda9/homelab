@@ -1,4 +1,19 @@
-source "proxmox-iso" "ubuntu26" {
+// Ubuntu 26.04 Packer template (DEC-019). Cloud-image flow:
+// `proxmox-clone` clones the bootstrapped `tpl-cloud-ubuntu26`
+// Cloud-Init source template on the PVE node and seeds first-boot
+// config via a NoCloud cidata CD attached as `additional_iso_files`
+// (on-the-fly `cd_files` generation, no genisoimage pre-bake).
+// The bootstrap template is owned by Step 2c (`scripts/build_template.sh`
+// + `scripts/bootstrap_cloud_template.sh`).
+//
+// `bios`, `machine`, and `efi_config` are intentionally OMITTED from
+// this source — they inherit from `tpl-cloud-ubuntu26`, which the
+// bootstrap step creates with `--bios ovmf --machine q35
+// --efidisk0 local-lvm:0,efitype=4m,pre-enrolled-keys=1`. Setting them
+// here would either be redundant or risk conflicting with the cloned
+// hardware spec (Step 1 Critic note 2).
+
+source "proxmox-clone" "ubuntu26" {
   proxmox_url              = "https://${var.proxmox_host}:8006/api2/json"
   username                 = "${var.proxmox_user}!${var.proxmox_token_id}"
   token                    = var.proxmox_token_secret
@@ -9,17 +24,13 @@ source "proxmox-iso" "ubuntu26" {
   template_name        = "pkr-ubuntu26"
   template_description = "Built by Packer; see scripts/build_template.sh ubuntu26"
 
-  bios     = "ovmf"
-  machine  = "q35"
+  clone_vm   = "tpl-cloud-ubuntu26"
+  full_clone = true
+
   cpu_type = "host"
   cores    = 2
   memory   = 2048
-
-  efi_config {
-    efi_storage_pool  = "local-lvm"
-    efi_type          = "4m"
-    pre_enrolled_keys = true
-  }
+  os       = "l26"
 
   network_adapters {
     bridge = var.network_bridge
@@ -27,30 +38,22 @@ source "proxmox-iso" "ubuntu26" {
   }
 
   scsi_controller = "virtio-scsi-pci"
-  disks {
-    type         = "scsi"
-    storage_pool = var.storage_pool
-    disk_size    = "32G"
-    format       = "raw"
-  }
 
-  boot_iso {
-    type              = "scsi"
-    iso_url           = "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img"
-    iso_checksum      = "file:https://cloud-images.ubuntu.com/releases/26.04/release/SHA256SUMS"
-    iso_storage_pool  = var.iso_storage_pool
+  # NoCloud seed for FIRST-BOOT config (user, ssh, qemu-guest-agent).
+  # cloud-init finds the CD labelled "cidata" and applies its user-data.
+  additional_iso_files {
+    type             = "ide"
+    iso_storage_pool = var.iso_storage_pool
+    cd_files = [
+      "${path.root}/seed/ubuntu26/user-data",
+      "${path.root}/seed/ubuntu26/meta-data",
+    ]
+    cd_label          = "cidata"
     unmount           = true
     keep_cdrom_device = false
   }
 
-  http_directory = "http/ubuntu26"
-  boot_command = [
-    "<esc><wait>",
-    "linux /casper/vmlinuz autoinstall ds=nocloud-net;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ---<enter>",
-    "initrd /casper/initrd<enter>",
-    "boot<enter>",
-  ]
-  boot_wait = "10s"
+  qemu_agent = true
 
   communicator = "ssh"
   ssh_username = "user"
@@ -59,7 +62,7 @@ source "proxmox-iso" "ubuntu26" {
 }
 
 build {
-  sources = ["source.proxmox-iso.ubuntu26"]
+  sources = ["source.proxmox-clone.ubuntu26"]
 
   # Floor verification (C-3): user, sshd, python already in cloud image.
   provisioner "shell" {

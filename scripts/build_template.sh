@@ -9,11 +9,18 @@ set -euo pipefail
 #   1. Validate the positional arg against the known short-name set.
 #   2. Pre-flight that PROXMOX_HOST/USER/TOKEN_ID/TOKEN_SECRET are populated
 #      (load via direnv/.envrc on the operator's workstation).
-#   3. windows11 only: pre-flight that genisoimage is on PATH (per C-11);
-#      pre-bake packer_cache/autounattend-win11.iso with -volid "Unattend"
-#      from packer/autounattend/windows11/ (per C-10).
+#   3. ubuntu26 + fedora: ensure tpl-cloud-{ubuntu26,fedora43} exists on PVE
+#      via scripts/bootstrap_cloud_template.sh (DEC-020 option b — proxmox-clone
+#      requires a Cloud-Init source template; the bootstrap is idempotent).
+#      windows11 only: pre-flight genisoimage (per C-11) and pre-bake
+#      packer_cache/autounattend-win11.iso with -volid "Unattend" from
+#      packer/autounattend/windows11/ (per C-10). Fedora does NOT pre-bake a
+#      cidata seed via genisoimage — DEC-019 Q2 picked on-the-fly cd_files via
+#      Packer's additional_iso_files; only windows11 keeps the pre-bake.
 #   4. cd into packer/, run `packer init .` (idempotent).
-#   5. Run `packer build -force -only=proxmox-iso.<name> -var-file=common.pkrvars.hcl .`
+#   5. Resolve per-OS Packer source key (DEC-019 Q1: ubuntu26 + fedora →
+#      proxmox-clone cloud-image flow; windows11 stays on proxmox-iso) and run
+#      `packer build -force -only=<source> -var-file=common.pkrvars.hcl .`
 #      (directory form — single-file form does NOT load _variables.pkr.hcl
 #      siblings, so the shared variable + required_plugins declarations would
 #      be invisible and every var.* reference would error at HCL parse).
@@ -73,7 +80,16 @@ export PKR_VAR_proxmox_user="$PROXMOX_USER"
 export PKR_VAR_proxmox_token_id="$PROXMOX_TOKEN_ID"
 export PKR_VAR_proxmox_token_secret="$PROXMOX_TOKEN_SECRET"
 
-if [[ "$NAME" == "windows11" ]]; then
+case "$NAME" in
+ubuntu26)
+  log "step 2: ubuntu26 — ensure tpl-cloud-ubuntu26 source template (idempotent)"
+  "$REPO_ROOT/scripts/bootstrap_cloud_template.sh" ubuntu26
+  ;;
+fedora)
+  log "step 2: fedora — ensure tpl-cloud-fedora43 source template (idempotent)"
+  "$REPO_ROOT/scripts/bootstrap_cloud_template.sh" fedora
+  ;;
+windows11)
   log "step 2: windows11 — genisoimage pre-flight"
   if ! command -v genisoimage >/dev/null 2>&1; then
     err "genisoimage not found on PATH (required to pre-bake autounattend cidata)"
@@ -92,13 +108,20 @@ if [[ "$NAME" == "windows11" ]]; then
     -joliet -rock -input-charset utf-8 \
     "$AUTOUNATTEND_SRC"
   log "       wrote $AUTOUNATTEND_ISO"
-fi
+  ;;
+esac
+
+case "$NAME" in
+ubuntu26) ONLY="proxmox-clone.ubuntu26" ;;
+fedora) ONLY="proxmox-clone.fedora" ;;
+windows11) ONLY="proxmox-iso.windows11" ;;
+esac
 
 log "step 4: packer init"
 cd "$REPO_ROOT/packer"
 packer init .
 
-log "step 5: packer build -only=proxmox-iso.$NAME (force=true overwrite)"
-packer build -force -only="proxmox-iso.$NAME" -var-file=common.pkrvars.hcl .
+log "step 5: packer build -only=$ONLY (force=true overwrite)"
+packer build -force -only="$ONLY" -var-file=common.pkrvars.hcl .
 
 log "DONE: $NAME"

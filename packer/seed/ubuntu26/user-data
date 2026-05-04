@@ -1,0 +1,31 @@
+#cloud-config
+# NoCloud seed for proxmox-clone first-boot config (DEC-019).
+# This is regular cloud-init #cloud-config (NOT autoinstall) — the
+# cloud image is already installed; first boot just needs user, ssh,
+# and qemu-guest-agent set up. Carries forward the user/ssh/agent
+# semantics from the previous autoinstall flow.
+hostname: pkr-ubuntu26
+users:
+  - name: user
+    # password hash for plaintext "password" via mkpasswd -m sha-512
+    # (per C-6 weak-creds posture). Regenerate with:
+    #   mkpasswd -m sha-512 password
+    # or:
+    #   python3 -c "import crypt; print(crypt.crypt('password', crypt.mksalt(crypt.METHOD_SHA512)))"
+    passwd: "$6$aj34MsUySdCm3MSz$7xFZr27PgRMF2jc0UuVWoRSqL1bCA0UiCnMuirMfPmyWtwTyeN7JWB30FwyelDIRywRo6DcgsfsoyiC5anZii1"
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+chpasswd:
+  expire: false
+ssh_pwauth: true
+package_update: true
+packages:
+  - python3
+  - qemu-guest-agent
+  - openssh-server
+runcmd:
+  - systemctl enable --now ssh
+  - systemctl enable --now qemu-guest-agent
+  - sed -i 's/^#*PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  - systemctl reload ssh

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# ============================================================================
+# bootstrap_cloud_template.sh — one-time-per-cloud-image PVE source-template
+# bootstrap for the Packer proxmox-clone flow (DEC-020 option b).
+#
+# proxmox-clone REQUIRES that tpl-cloud-<os> already exist on the PVE node;
+# this script ssh's to $PROXMOX_HOST and runs the qm create / importdisk /
+# qm set / qm template chain from research.md:55-68 idempotently. Re-running
+# is safe: a `qm status $SRC_VMID` guard short-circuits when the source
+# template VM is already present.
+#
+# Usage: scripts/bootstrap_cloud_template.sh {ubuntu26|fedora}
+#
+# Env vars (read from .envrc / direnv):
+#   PROXMOX_HOST       (required) PVE node hostname or IP
+#   PVE_SSH_USER       (optional, default: root) ssh login on the PVE node
+# ============================================================================
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+log() { echo >&2 "==> $*"; }
+err() { echo >&2 "ERROR: $*"; }
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/bootstrap_cloud_template.sh {ubuntu26|fedora}
+
+  ubuntu26   Bootstrap tpl-cloud-ubuntu26 (vmid 9000) from the Ubuntu 26.04
+             server cloud image at cloud-images.ubuntu.com.
+  fedora     Bootstrap tpl-cloud-fedora43 (vmid 9001) from the Fedora 43
+             Cloud Base Generic qcow2 at download.fedoraproject.org.
+EOF
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 64
+fi
+
+NAME="$1"
+case "$NAME" in
+ubuntu26)
+  SRC_VMID=9000
+  TPL_NAME="tpl-cloud-ubuntu26"
+  IMG_URL="https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img"
+  ;;
+fedora)
+  SRC_VMID=9001
+  TPL_NAME="tpl-cloud-fedora43"
+  IMG_URL="https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2"
+  ;;
+*)
+  err "unknown OS '$NAME'"
+  usage
+  exit 64
+  ;;
+esac
+
+if [[ -z "${PROXMOX_HOST:-}" ]]; then
+  err "PROXMOX_HOST not set; run 'direnv allow' or export it"
+  exit 78
+fi
+
+PVE_USER="${PVE_SSH_USER:-root}"
+SSH_TARGET="${PVE_USER}@${PROXMOX_HOST}"
+IMG_FILE="/tmp/$(basename "$IMG_URL")"
+
+ssh_pve() {
+  ssh -o StrictHostKeyChecking=accept-new "$SSH_TARGET" "$@"
+}
+
+log "step 1: idempotent guard — qm status $SRC_VMID on $SSH_TARGET"
+if ssh_pve "qm status $SRC_VMID" >/dev/null 2>&1; then
+  log "       template VM $SRC_VMID ($TPL_NAME) already exists; skipping bootstrap"
+  exit 0
+fi
+
+log "step 2: download cloud image on PVE node — $IMG_URL"
+ssh_pve "test -f $IMG_FILE || curl -fsSLo $IMG_FILE '$IMG_URL'"
+
+log "step 3: qm create $SRC_VMID --name $TPL_NAME"
+ssh_pve "qm create $SRC_VMID --name $TPL_NAME --memory 2048 --cpu host --cores 2 \
+  --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-pci --serial0 socket \
+  --ostype l26 --machine q35 --bios ovmf \
+  --efidisk0 local-lvm:0,efitype=4m,pre-enrolled-keys=1"
+
+log "step 4: qm importdisk $SRC_VMID $IMG_FILE local-lvm"
+ssh_pve "qm importdisk $SRC_VMID $IMG_FILE local-lvm"
+
+log "step 5: attach scsi0 + cloudinit drive + boot order"
+ssh_pve "qm set $SRC_VMID --scsi0 local-lvm:vm-${SRC_VMID}-disk-0,discard=on,ssd=1"
+ssh_pve "qm set $SRC_VMID --boot order=scsi0"
+ssh_pve "qm set $SRC_VMID --ide2 local-lvm:cloudinit"
+
+log "step 6: qm template $SRC_VMID"
+ssh_pve "qm template $SRC_VMID"
+
+log "DONE: $TPL_NAME (vmid $SRC_VMID) ready as Cloud-Init source template"

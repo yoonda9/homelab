@@ -19,8 +19,8 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 PACKER_DIR = REPO_ROOT / "packer"
 EXPECTED = {
-    "ubuntu26.pkr.hcl":   ("pkr-ubuntu26",            9100, "proxmox-iso.ubuntu26"),
-    "fedora.pkr.hcl":     ("pkr-fedora-workstation", 9101, "proxmox-iso.fedora"),
+    "ubuntu26.pkr.hcl":   ("pkr-ubuntu26",            9100, "proxmox-clone.ubuntu26"),
+    "fedora.pkr.hcl":     ("pkr-fedora-workstation", 9101, "proxmox-clone.fedora"),
     "windows11.pkr.hcl":  ("pkr-win11",               9102, "proxmox-iso.windows11"),
 }
 
