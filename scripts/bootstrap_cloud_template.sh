@@ -139,9 +139,20 @@ if [[ -z "$imported_disk" ]]; then
   exit 70
 fi
 
-log "step 5: attach scsi0 ($imported_disk) + boot order"
+log "step 5: attach scsi0 ($imported_disk) + boot order + grow scsi0 to fit workstation install"
 ssh_pve "qm set $SRC_VMID --scsi0 local-lvm:${imported_disk},discard=on,ssd=1"
 ssh_pve "qm set $SRC_VMID --boot order=scsi0"
+# Grow scsi0 from the cloud image's 5 GiB virtual size (Fedora 44 / Ubuntu 26
+# Cloud Base both ship at 5 GiB) to 25 GiB so cloud-init's growpart fills the
+# clone's rootfs to ~25 GiB on first boot. Without this, the fedora packer
+# build's '@workstation-product-environment' dnf provisioner exhausts the
+# rootfs mid-install with "needs NMB more space on the / filesystem" climbing
+# from ~2880 MiB to 3729 MiB and exits 1 (DEBUG.md task-1777857784-fb79;
+# evidence: mem-1777948460-029f single-variable resize 5G→25G test finished
+# build in 5m37s with zero ENOSPC matches in logs/fedora-enospc-test.log).
+# +20G is additive and non-destructive on existing storage; ubuntu26 gets the
+# same headroom for free.
+ssh_pve "qm resize $SRC_VMID scsi0 +20G"
 # Intentionally NO '--ide2 local-lvm:cloudinit' here. Packer's proxmox-clone
 # attaches its own NoCloud seed via additional_iso_files (ide0, label=cidata),
 # and the bpg/proxmox provider's initialization{} block on Tofu clones

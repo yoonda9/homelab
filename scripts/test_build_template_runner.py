@@ -426,6 +426,63 @@ def test_bootstrap_guard_repairs_dirty_ide2_on_existing_template() -> bool:
     return all(checks.values())
 
 
+def test_bootstrap_resizes_scsi0_for_workstation_install() -> bool:
+    """Regression for fedora workstation ENOSPC bug (mem-1777948460-029f, DEBUG.md
+    task-1777857784-fb79). The fedora packer build's second provisioner
+    ('dnf install -y @workstation-product-environment') needs ~8-9 GiB on /,
+    but the cloned VM inherits the source template's 5 GiB scsi0 (Fedora 44
+    Cloud Base qcow2 virtual size). cloud-init's growpart can only fill what
+    the disk holds; the workstation install fails with hundreds of 'needs NMB
+    more space on the / filesystem' lines climbing from 2880 MiB to 3729 MiB.
+    Single-variable test (5G→25G via 'qm resize 9001 scsi0 +20G') flipped the
+    build to clean success in 5m37s.
+
+    The bootstrap script MUST run 'qm resize $SRC_VMID scsi0 +<N>G' in step 5
+    (after the scsi0 attach, before 'qm template' in step 6) so future
+    bootstraps inherit a sized-up scsi0. Mutate the script to drop the resize
+    line and this test must fail.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: scsi0 resize regression check skipped — script missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    lines = body.splitlines()
+    code = code_lines(body)
+    code_text_all = "\n".join(code)
+    # The resize must reference $SRC_VMID and target scsi0 with a positive grow
+    # (additive '+NG'), not a destructive shrink or an absolute size that could
+    # be smaller than the imported disk.
+    has_resize = bool(
+        re.search(r"qm\s+resize\s+\$SRC_VMID\s+scsi0\s+\+\d+G", code_text_all)
+    )
+    # Ordering: resize must run AFTER the scsi0 attach (so the imported disk
+    # exists at slot scsi0) and BEFORE 'qm template' (PVE refuses to resize
+    # disks on a templated VM, only on its clones). Use code-line indices so
+    # the comment block between attach and resize doesn't perturb ordering.
+    attach_idx = next(
+        (i for i, ln in enumerate(code) if re.search(r"--scsi0\s+local-lvm:", ln)), -1
+    )
+    resize_idx = next(
+        (i for i, ln in enumerate(code) if re.search(r"qm\s+resize\s+\$SRC_VMID\s+scsi0\s+\+", ln)), -1
+    )
+    template_idx = next(
+        (i for i, ln in enumerate(code) if re.search(r"qm\s+template\s+\$SRC_VMID", ln)), -1
+    )
+    ordered = (
+        attach_idx != -1
+        and resize_idx != -1
+        and template_idx != -1
+        and attach_idx < resize_idx < template_idx
+    )
+    checks = {
+        "bootstrap runs 'qm resize $SRC_VMID scsi0 +NG' (additive grow)": has_resize,
+        "resize runs after scsi0 attach and before qm template":          ordered,
+    }
+    for what, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL'}: {what}")
+    return all(checks.values())
+
+
 def test_bootstrap_shellcheck() -> bool:
     if not shutil.which("shellcheck"):
         print("OK (skip): shellcheck not installed")
@@ -539,6 +596,7 @@ def main() -> int:
         test_bootstrap_scsi0_uses_parsed_imported_disk(),
         test_bootstrap_does_not_attach_ide2_cloudinit(),
         test_bootstrap_guard_repairs_dirty_ide2_on_existing_template(),
+        test_bootstrap_resizes_scsi0_for_workstation_install(),
         test_bootstrap_shellcheck(),
         test_bootstrap_importdisk_parses_pve8_and_pve9_formats(),
     ]
