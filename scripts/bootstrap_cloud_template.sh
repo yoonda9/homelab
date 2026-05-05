@@ -85,6 +85,15 @@ if ssh_pve "qm status $SRC_VMID" >/dev/null 2>&1; then
   has_scsi0=0
   if printf '%s\n' "$cfg" | grep -q '^scsi0:'; then has_scsi0=1; fi
   if [[ "$existing_name" == "$TPL_NAME" && "$has_template" -eq 1 && "$has_scsi0" -eq 1 ]]; then
+    # Self-heal a dirty ide2 cloud-init drive on the existing template. The
+    # line-136 attach was removed, but a pre-existing or web-UI-introduced
+    # ide2 cidata seed re-creates the dual-cidata SSH-timeout regression
+    # (mem-1777927418-a0b3) because this guard would otherwise short-circuit
+    # and leave it attached for packer's clone to inherit.
+    if printf '%s\n' "$cfg" | grep -q '^ide2:'; then
+      log "       repairing dirty ide2 cloud-init drive on existing $TPL_NAME (qm set $SRC_VMID --delete ide2)"
+      ssh_pve "qm set $SRC_VMID --delete ide2"
+    fi
     log "       template VM $SRC_VMID ($TPL_NAME) already exists; skipping bootstrap"
     exit 0
   fi

@@ -365,6 +365,67 @@ def test_bootstrap_does_not_attach_ide2_cloudinit() -> bool:
     return not has_ide2_cloudinit_attach
 
 
+def test_bootstrap_guard_repairs_dirty_ide2_on_existing_template() -> bool:
+    """Regression for hardened idempotency guard (task-1777945168-5471).
+
+    The dual-cidata fix landed code-side at scripts/bootstrap_cloud_template.sh:136
+    (no '--ide2 local-lvm:cloudinit' attachment), but the step-1 idempotency
+    guard short-circuits when the source template already exists. So any
+    pre-existing dirty ide2 cidata seed (re-introduced after a manual cleanup,
+    a web-UI edit, or a state restore) survives the rerun. Packer's clone then
+    inherits the dirty ide2, two cidata-labelled CDs collide, cloud-init NoCloud
+    picks the empty Proxmox seed, sshd PasswordAuthentication=no, and the
+    30-minute SSH timeout returns.
+
+    The guard MUST detect '^ide2:' in the existing template's config and run
+    'qm set $SRC_VMID --delete ide2' to self-heal *before* short-circuiting
+    with 'exit 0'. Mutate the script to drop the ide2 detection or the
+    --delete ide2 cleanup and this test must fail.
+    """
+    if not BOOTSTRAP.is_file():
+        print("FAIL: ide2 self-heal regression check skipped — script missing")
+        return False
+    body = BOOTSTRAP.read_text()
+    # Slice the existing-template guard branch: from 'if ssh_pve "qm status'
+    # up to the start of step 2 (download cloud image). The self-heal must be
+    # inside this branch so it runs alongside the short-circuit, not in the
+    # bootstrap-from-scratch path below.
+    branch_match = re.search(
+        r'if ssh_pve "qm status \$SRC_VMID".*?(?=^log "step 2)',
+        body,
+        re.DOTALL | re.MULTILINE,
+    )
+    if branch_match is None:
+        print("FAIL: could not locate existing-template guard branch in bootstrap")
+        return False
+    branch_text = branch_match.group(0)
+    detects_ide2 = bool(re.search(r"\^ide2:", branch_text))
+    repairs_ide2 = bool(
+        re.search(r"qm\s+set\s+\$SRC_VMID\s+--delete\s+ide2", branch_text)
+    )
+    # The repair must run BEFORE the success-path 'exit 0', not after a
+    # collision 'exit 70'. Find the line offsets of the relevant tokens within
+    # the branch and assert ordering.
+    delete_idx = (
+        branch_text.find("--delete ide2") if "--delete ide2" in branch_text else -1
+    )
+    success_exit_idx = -1
+    for m in re.finditer(r"^\s*exit\s+0\b", branch_text, re.MULTILINE):
+        success_exit_idx = m.start()
+        break
+    repair_before_exit = (
+        delete_idx != -1 and success_exit_idx != -1 and delete_idx < success_exit_idx
+    )
+    checks = {
+        "guard detects '^ide2:' in existing template config":           detects_ide2,
+        "guard runs 'qm set $SRC_VMID --delete ide2' to self-heal":     repairs_ide2,
+        "ide2 repair runs before the success-path 'exit 0'":            repair_before_exit,
+    }
+    for what, ok in checks.items():
+        print(f"{'OK' if ok else 'FAIL'}: {what}")
+    return all(checks.values())
+
+
 def test_bootstrap_shellcheck() -> bool:
     if not shutil.which("shellcheck"):
         print("OK (skip): shellcheck not installed")
@@ -477,6 +538,7 @@ def main() -> int:
         test_bootstrap_guard_verifies_name_template_scsi0(),
         test_bootstrap_scsi0_uses_parsed_imported_disk(),
         test_bootstrap_does_not_attach_ide2_cloudinit(),
+        test_bootstrap_guard_repairs_dirty_ide2_on_existing_template(),
         test_bootstrap_shellcheck(),
         test_bootstrap_importdisk_parses_pve8_and_pve9_formats(),
     ]

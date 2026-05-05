@@ -122,6 +122,6 @@ cd "$REPO_ROOT/packer"
 packer init .
 
 log "step 5: packer build -only=$ONLY (force=true overwrite)"
-packer build -on-error=abort -force -only="$ONLY" -var-file=common.pkrvars.hcl .
+packer build -force -only="$ONLY" -var-file=common.pkrvars.hcl .
 
 log "DONE: $NAME"
