@@ -4,7 +4,7 @@ packer/packer_cache/
 **/*.pkrvars.hcl
 !packer/common.pkrvars.hcl
 # Packer download cache (proxmox plugin downloads cloud images here)
-packer/downloaded_iso_path/
+packer/downloaded_iso_path
 
 # OpenTofu / Terraform
 tofu/.terraform/
