@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: plex
+  namespace: homelab
+  author: homelab maintainers
+  description: Install Plex Media Server with Intel QSV (iHD) hardware transcoding and a vainfo acceptance gate.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+  galaxy_tags:
+    - homelab
+    - plex
+    - qsv
+    - intel
+dependencies: []

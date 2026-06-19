@@ -17,6 +17,7 @@ Per `mem-1777480918-6c5f`, `git check-ignore` is always invoked with
 """
 
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -25,6 +26,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 MISE_TOML = REPO_ROOT / "mise.toml"
 MISE_LOCAL_EXAMPLE = REPO_ROOT / "mise.local.toml.example"
 GITIGNORE = REPO_ROOT / ".gitignore"
+# Step 12 — the capstone aggregate `mise run test` gate and its sign-off runbook.
+ACCEPTANCE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "acceptance-validation.md"
 
 # Tool keys mise.toml [tools] must pin (DEC-001 / design Appendix A).
 REQUIRED_TOOLS = ("opentofu", "packer", "python", "pipx:ansible")
@@ -190,6 +193,94 @@ def test_no_plaintext_secrets_committed() -> bool:
     return ok
 
 
+def _test_task_gate_text() -> str:
+    """Gate text the aggregate checks anchor on: the `[tasks.test].run` command
+    plus the source of every `scripts/*.py` helper it invokes.
+
+    The shape-test file itself is excluded even when referenced, so reverting
+    `[tasks.test]` to the single-file form (`python scripts/test_mise_config_shape.py`)
+    genuinely empties the gate text — the aggregate checks then FAIL rather than
+    matching this file's own anchor strings (mutation-proof, not a tautology).
+    """
+    data = _load_mise_toml() or {}
+    task = (data.get("tasks", {}) or {}).get("test", {}) or {}
+    run = task.get("run", "")
+    if isinstance(run, list):
+        run = "\n".join(str(x) for x in run)
+    run = str(run)
+    parts = [run]
+    self_name = pathlib.Path(__file__).name
+    for match in re.finditer(r"scripts/([\w.-]+\.py)", run):
+        helper = REPO_ROOT / "scripts" / match.group(1)
+        if helper.name == self_name:
+            continue
+        if helper.is_file():
+            parts.append(helper.read_text())
+    return "\n".join(parts)
+
+
+def test_test_task_is_full_aggregate() -> bool:
+    """Step 12: `mise run test` is the full offline gate, not a single file."""
+    text = _test_task_gate_text()
+    checks = {
+        # Globs every scripts/test_*.py so a new shape-test auto-joins the gate
+        # (no hand-maintained enumeration that silently drops files) — AC2.
+        "shape-suite glob": re.search(r"test_\*\.py", text) is not None,
+        # OpenTofu validation folded in (fmt + validate).
+        "tofu-fmt": re.search(r"tofu\b[^\n]*fmt[^\n]*-check", text) is not None,
+        "tofu-validate": re.search(r"tofu\b[^\n]*validate", text) is not None,
+        # Ansible offline lint + syntax-check folded in.
+        "ansible-offline-lint": re.search(
+            r"ansible-lint\b[^\n]*--offline", text
+        )
+        is not None,
+        "ansible-syntax-check": re.search(r"--syntax-check", text) is not None,
+        # Must NOT lean on bare `pytest scripts/` — the pre-existing
+        # test_pkr_cloud_seed.py collection artifacts would break the gate.
+        "no-pytest-collection": re.search(r"pytest\s+scripts", text) is None,
+    }
+    missing = [k for k, v in checks.items() if not v]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: [tasks.test] drives the full offline gate "
+        f"(shape glob + tofu + ansible) (missing={missing})"
+    )
+    return ok
+
+
+def test_acceptance_runbook_documents_reproducibility() -> bool:
+    """Step 12: the rebuild-from-code cycle + WAN-block acceptance is documented."""
+    body = ACCEPTANCE_RUNBOOK.read_text() if ACCEPTANCE_RUNBOOK.is_file() else ""
+    checks = {
+        "exists/non-empty": len(body.strip()) > 0,
+        # The clean rebuild-from-code cycle: destroy -> apply -> gen-inventory -> play.
+        "tofu destroy": re.search(r"tofu\s+destroy", body) is not None,
+        "mise run apply": re.search(r"mise\s+run\s+apply", body) is not None,
+        "mise run gen-inventory": re.search(
+            r"mise\s+run\s+gen-inventory", body
+        )
+        is not None,
+        "mise run play": re.search(r"mise\s+run\s+play", body) is not None,
+        # Adversarial WAN-block acceptance: grafana blocked from WAN while
+        # plex returns 200 — the headline Plex-only-public invariant.
+        "wan-block grafana": (
+            re.search(r"grafana\.yoonnation\.com", body) is not None
+            and re.search(r"\bWAN\b", body) is not None
+        ),
+        "plex 200 from wan": (
+            re.search(r"plex\.yoonnation\.com", body) is not None
+            and re.search(r"\b200\b", body) is not None
+        ),
+    }
+    missing = [k for k, v in checks.items() if not v]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: docs/runbooks/acceptance-validation.md "
+        f"documents the rebuild cycle + adversarial WAN-block (missing={missing})"
+    )
+    return ok
+
+
 TESTS = (
     test_mise_toml_parses,
     test_tools_pinned,
@@ -199,6 +290,8 @@ TESTS = (
     test_local_secrets_gitignored,
     test_no_envrc_remains,
     test_no_plaintext_secrets_committed,
+    test_test_task_is_full_aggregate,
+    test_acceptance_runbook_documents_reproducibility,
 )
 
 

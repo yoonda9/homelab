@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Grafana datasource provisioning (Step 10): the Prometheus service on the
+# internal compose network, set as the default datasource.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

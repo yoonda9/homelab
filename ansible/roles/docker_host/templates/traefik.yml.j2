@@ -1,0 +1,66 @@
+# {{ ansible_managed }}
+# Traefik static configuration (design §4.4). Entrypoints, providers and BOTH
+# ACME certresolvers are defined here; the per-router resolver is chosen via the
+# `acme_resolver` group_var (default le-http), so the Step-11 DNS-01 flip is one
+# variable.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+  # Internal metrics endpoint scraped by Prometheus (Step 10). Not published to
+  # the host and never routed — reachable only on the compose network.
+  metrics:
+    address: ":8082"
+
+providers:
+  # Docker labels for the in-compose services (whoami now, extras in Step 10).
+  docker:
+    exposedByDefault: false
+  # File provider for the externally-routed Plex service (Step 9) and the shared
+  # middlewares; watched so dynamic config hot-reloads without a restart.
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  # Active now: HTTP-01 via the port-forward (works for the public host).
+  le-http:
+    acme:
+      email: "{{ docker_host_acme_email }}"
+      storage: /acme.json
+      httpChallenge:
+        entryPoint: web
+  # Defined now, used after the Step-11 Cloudflare migration: DNS-01 wildcard.
+  le-dns-cf:
+    acme:
+      email: "{{ docker_host_acme_email }}"
+      storage: /acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+
+api:
+  dashboard: true
+
+# Prometheus metrics (Step 10), served on the internal `metrics` entrypoint.
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true
+
+log:
+  level: INFO

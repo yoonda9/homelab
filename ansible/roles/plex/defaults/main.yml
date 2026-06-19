@@ -1,0 +1,31 @@
+---
+# plex role defaults (design §4.3). Override per group/host.
+
+# Debian mirror + components carrying the non-free Intel iHD media driver.
+plex_debian_mirror: http://deb.debian.org/debian
+plex_nonfree_components:
+  - main
+  - contrib
+  - non-free
+  - non-free-firmware
+
+# Intel QSV (iHD) media driver + VA-API verification tooling (design §A/§6).
+plex_media_packages:
+  - intel-media-va-driver-non-free
+  - vainfo
+  - intel-gpu-tools
+
+# Host-mapped GPU group GIDs punched through the Step-7 idmap 1:1 (design §5/§A);
+# the /dev/dri nodes are group-owned by these GIDs inside the CT (993/44, NOT 104).
+plex_render_gid: 993
+plex_video_gid: 44
+
+# Plex service account (created by the plexmediaserver package); added to the
+# render/video groups so it can open /dev/dri for QSV transcoding.
+plex_service_user: plex
+
+# Deterministic VA-API driver selection for the Plex service (design §6 iHD row).
+plex_libva_driver: iHD
+
+# VA-API render node probed by the post-install acceptance gate.
+plex_render_node: /dev/dri/renderD128

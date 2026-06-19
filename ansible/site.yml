@@ -1,0 +1,26 @@
+---
+# Top-level play: apply the baseline `common` role to every managed host.
+# Later steps add `plex` (CT 110) plays/roles.
+- name: Baseline configuration for all managed hosts
+  hosts: all
+  become: true
+  roles:
+    - common
+
+# Docker host (CT 111): Docker CE + Traefik reverse proxy + whoami smoke route.
+# `common` runs first (above, on `all`); this play targets only the
+# docker_host group so the role runs on CT 111 alone.
+- name: Docker host with Traefik reverse proxy
+  hosts: docker_host
+  become: true
+  roles:
+    - docker_host
+
+# Plex CT (110): Intel QSV (iHD) hardware transcoding + Plex Media Server.
+# `common` runs first (above, on `all`); this play targets only the plex group
+# so the role runs on CT 110 alone (GPU passthrough + DAS bind from Step 7).
+- name: Plex media server with Intel QSV hardware transcoding
+  hosts: plex
+  become: true
+  roles:
+    - plex

@@ -1,0 +1,188 @@
+---
+# Install Docker CE + compose and bring up the Traefik smoke stack on CT 111.
+# ansible.builtin-only (the ansible-core venv has no community.docker — see
+# mem-1781894740-5099); every task is idempotent: declared `state`, or a
+# guarded ansible.builtin.command for `docker compose` (no builtin module).
+
+- name: Ensure the apt keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the deb822 source manager dependency
+  ansible.builtin.apt:
+    name: python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Add the Docker apt GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Docker apt repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: https://download.docker.com/linux/debian
+    suites: "{{ ansible_distribution_release }}"
+    components: stable
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+    enabled: true
+
+- name: Install Docker CE and the compose plugin
+  ansible.builtin.apt:
+    name: "{{ docker_host_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the Docker service is enabled and running
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Create the compose project directory
+  ansible.builtin.file:
+    path: "{{ docker_host_project_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create the Traefik dynamic-config directory
+  ansible.builtin.file:
+    path: "{{ docker_host_project_dir }}/dynamic"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create the ACME certificate store with restrictive permissions
+  ansible.builtin.file:
+    path: "{{ docker_host_project_dir }}/acme.json"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Render the compose project file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ docker_host_project_dir }}/compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Render the Cloudflare token env file for DNS-01
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ docker_host_project_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render the Traefik static configuration
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: "{{ docker_host_project_dir }}/traefik.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart traefik
+
+- name: Render the Traefik dynamic configuration (middlewares + file provider)
+  ansible.builtin.template:
+    src: dynamic.yml.j2
+    dest: "{{ docker_host_project_dir }}/dynamic/dynamic.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+# --- Extras stack supporting config (Step 10), mounted read-only. ---
+- name: Create the extras config directories
+  ansible.builtin.file:
+    path: "{{ docker_host_project_dir }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - prometheus
+    - grafana/provisioning/datasources
+    - grafana/provisioning/dashboards
+    - grafana/dashboards
+    - homepage
+
+- name: Render the Prometheus scrape configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ docker_host_project_dir }}/prometheus/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Render the Grafana datasource provisioning
+  ansible.builtin.template:
+    src: grafana-datasource.yml.j2
+    dest: "{{ docker_host_project_dir }}/grafana/provisioning/datasources/datasource.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Render the Grafana dashboard provider provisioning
+  ansible.builtin.template:
+    src: grafana-dashboards.yml.j2
+    dest: "{{ docker_host_project_dir }}/grafana/provisioning/dashboards/dashboards.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install the Grafana starter dashboard
+  ansible.builtin.copy:
+    src: grafana-homelab-dashboard.json
+    dest: "{{ docker_host_project_dir }}/grafana/dashboards/homelab.json"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Render the Homepage service links
+  ansible.builtin.template:
+    src: homepage-services.yaml.j2
+    dest: "{{ docker_host_project_dir }}/homepage/services.yaml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install the static Homepage config
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ docker_host_project_dir }}/homepage/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0640"
+  loop:
+    - { src: homepage-settings.yaml, dest: settings.yaml }
+    - { src: homepage-widgets.yaml, dest: widgets.yaml }
+
+- name: Bring up the Traefik smoke stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ docker_host_project_dir }}"
+  register: docker_host_compose_up
+  changed_when: >-
+    ('Started' in docker_host_compose_up.stderr)
+    or ('Created' in docker_host_compose_up.stderr)
+    or ('Recreated' in docker_host_compose_up.stderr)

@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Grafana dashboard provider (Step 10): load JSON dashboards from the mounted
+# /var/lib/grafana/dashboards directory (the starter homelab dashboard).
+apiVersion: 1
+
+providers:
+  - name: homelab
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

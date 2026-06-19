@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: docker_host
+  namespace: homelab
+  author: homelab maintainers
+  description: Install Docker CE + compose and bring up Traefik (HTTP-01) with a LAN-only whoami smoke route.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+  galaxy_tags:
+    - homelab
+    - docker
+    - traefik
+dependencies: []

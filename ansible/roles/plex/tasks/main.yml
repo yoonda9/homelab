@@ -1,0 +1,134 @@
+---
+# Run Plex Media Server on CT 110 with Intel QSV (iHD) hardware transcoding.
+# ansible.builtin-only (the ansible-core venv has no community.* — mem-1781894740-5099);
+# every task is idempotent: declared `state`, or a guarded command (changed_when).
+# The /dev/dri passthrough + render(993)/video(44) idmap come from the Step-7 tofu
+# module "plex"; this role makes the in-CT software use them.
+
+- name: Ensure the apt keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the deb822 source manager dependency
+  ansible.builtin.apt:
+    name: python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable the Debian non-free components (the iHD media driver lives there)
+  ansible.builtin.deb822_repository:
+    name: debian-extra-components
+    types: deb
+    uris: "{{ plex_debian_mirror }}"
+    suites:
+      - "{{ ansible_distribution_release }}"
+      - "{{ ansible_distribution_release }}-updates"
+    components: "{{ plex_nonfree_components }}"
+    signed_by: /usr/share/keyrings/debian-archive-keyring.gpg
+    state: present
+    enabled: true
+
+- name: Install the Intel iHD media driver and VA-API tooling
+  ansible.builtin.apt:
+    name: "{{ plex_media_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Add the Plex apt GPG key
+  ansible.builtin.get_url:
+    url: https://downloads.plex.tv/plex-keys/PlexSign.key
+    dest: /etc/apt/keyrings/plex.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Plex apt repository
+  ansible.builtin.deb822_repository:
+    name: plexmediaserver
+    types: deb
+    uris: https://downloads.plex.tv/repo/deb
+    suites: public
+    components: main
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/plex.asc
+    state: present
+    enabled: true
+
+- name: Install Plex Media Server
+  ansible.builtin.apt:
+    name: plexmediaserver
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the render group maps to the host render GID for /dev/dri access
+  ansible.builtin.group:
+    name: render
+    gid: "{{ plex_render_gid }}"
+    state: present
+
+- name: Ensure the video group maps to the host video GID for /dev/dri access
+  ansible.builtin.group:
+    name: video
+    gid: "{{ plex_video_gid }}"
+    state: present
+
+- name: Add the plex user to the render/video groups so QSV can open /dev/dri
+  ansible.builtin.user:
+    name: "{{ plex_service_user }}"
+    groups:
+      - render
+      - video
+    append: true
+
+- name: Ensure the plexmediaserver systemd override directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/plexmediaserver.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pin LIBVA_DRIVER_NAME so QSV selects the iHD driver deterministically
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/plexmediaserver.service.d/override.conf
+    content: |
+      [Service]
+      Environment=LIBVA_DRIVER_NAME={{ plex_libva_driver }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart plexmediaserver
+
+- name: Ensure Plex Media Server is enabled and running
+  ansible.builtin.systemd:
+    name: plexmediaserver
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# --- Hardware-transcode acceptance gate (design §4.3/§6) -------------------
+# Probe the VA-API driver on the render node and FAIL the play unless the modern
+# Intel iHD driver is active. The wrong driver (i965) is a known QSV failure mode.
+- name: Probe the VA-API driver on the render node
+  ansible.builtin.command:
+    cmd: "vainfo --display drm --device {{ plex_render_node }}"
+  register: plex_vainfo
+  changed_when: false
+  failed_when: false
+
+- name: Assert the Intel iHD driver is active (QSV hardware-transcode gate)
+  ansible.builtin.assert:
+    that:
+      - "'iHD' in plex_vainfo.stdout"
+    fail_msg: >-
+      vainfo did not report the iHD driver (rc={{ plex_vainfo.rc }}). QSV hardware
+      transcoding will not work — check intel-media-va-driver-non-free,
+      LIBVA_DRIVER_NAME={{ plex_libva_driver }}, and the /dev/dri passthrough/idmap.
+    success_msg: "VA-API reports the iHD driver — QSV hardware transcoding is ready."

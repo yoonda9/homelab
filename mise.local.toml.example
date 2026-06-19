@@ -12,6 +12,13 @@ PROXMOX_VE_API_TOKEN = "CHANGEME"       # e.g. root@pam!ansible-token=<uuid>
 PROXMOX_VE_SSH_USERNAME = "CHANGEME"    # SSH user for idmap / bind mounts (e.g. root)
 CLOUDFLARE_DNS_API_TOKEN = "CHANGEME"   # Zone:DNS:Edit — Traefik DNS-01 (later)
 
+# --- Ansible Vault ---
+# Password that decrypts ansible/group_vars/vault.yml (resolved by
+# ansible/vault-pass.sh). The shipped vault.yml holds placeholders only and is
+# encrypted with the bootstrap password "CHANGEME"; set your own value here and
+# `ansible-vault rekey ansible/group_vars/vault.yml` before storing real secrets.
+ANSIBLE_VAULT_PASSWORD = "CHANGEME"
+
 # --- Packer secrets (PROXMOX_* scheme) — DEC-001 ---
 # scripts/build_template.sh pre-flights these four and exits 78 if any is unset;
 # it re-exports them as PKR_VAR_proxmox_*. Keep the names exactly as-is.

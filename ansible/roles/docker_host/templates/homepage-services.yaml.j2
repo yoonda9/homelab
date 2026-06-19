@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# Homepage service links (Step 10). Internal dashboards on the LAN/Tailscale,
+# plus Plex. Hosts resolve via the Traefik routers ({{ domain }}).
+- Media:
+    - Plex:
+        href: https://plex.{{ domain }}
+        description: Plex Media Server
+
+- Monitoring:
+    - Grafana:
+        href: https://grafana.{{ domain }}
+        description: Metrics dashboards
+    - Prometheus:
+        href: https://prometheus.{{ domain }}
+        description: Metrics store
+    - Uptime Kuma:
+        href: https://uptime.{{ domain }}
+        description: Service uptime monitoring

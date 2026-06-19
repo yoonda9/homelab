@@ -1,0 +1,34 @@
+---
+# docker_host role defaults (design §4.3/§4.4). Override per group/host.
+
+# Compose project directory on CT 111 (holds compose.yml + Traefik config).
+docker_host_project_dir: /opt/stack
+
+# Docker CE + compose plugin packages (installed via ansible.builtin.apt).
+docker_host_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Container images for the smoke stack.
+docker_host_traefik_image: traefik:v3.3
+docker_host_whoami_image: traefik/whoami:latest
+
+# Internal-only extras stack images (Step 10). All LAN/Tailscale-only, routed by
+# Traefik docker labels (no published host port) and gated by lan-allowlist@file.
+docker_host_homepage_image: ghcr.io/gethomepage/homepage:latest
+docker_host_uptime_kuma_image: louislam/uptime-kuma:1
+docker_host_grafana_image: grafana/grafana:latest
+docker_host_prometheus_image: prom/prometheus:latest
+# Prometheus scrape targets (never routed/exposed — no Traefik labels).
+docker_host_node_exporter_image: prom/node-exporter:latest
+docker_host_cadvisor_image: gcr.io/cadvisor/cadvisor:latest
+
+# Plex CT (110) backend for the public file-provider router (Step 9). Plex does
+# not run in Docker, so Traefik reaches it over the LAN at this address.
+docker_host_plex_url: http://192.168.1.110:32400
+
+# ACME registration email (Let's Encrypt). Overridable per environment.
+docker_host_acme_email: "admin@{{ domain }}"

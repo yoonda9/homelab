@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: common
+  namespace: homelab
+  author: homelab maintainers
+  description: Baseline OS config (packages, timezone, unattended-upgrades, service user, SSH hardening).
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+  galaxy_tags:
+    - homelab
+    - baseline
+dependencies: []

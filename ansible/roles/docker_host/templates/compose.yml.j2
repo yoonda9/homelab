@@ -1,0 +1,150 @@
+---
+# {{ ansible_managed }}
+# Traefik reverse proxy + whoami smoke service (design §4.4).
+# whoami is exposed ONLY through Traefik labels (no published host port) and is
+# internal-only via the lan-allowlist middleware.
+services:
+  traefik:
+    image: {{ docker_host_traefik_image }}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    # CF_DNS_API_TOKEN is read from the sibling .env (rendered from vault), used
+    # by the le-dns-cf Cloudflare DNS-01 resolver. Never embedded in this file.
+    environment:
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - {{ docker_host_project_dir }}/traefik.yml:/etc/traefik/traefik.yml:ro
+      - {{ docker_host_project_dir }}/dynamic:/etc/traefik/dynamic:ro
+      - {{ docker_host_project_dir }}/acme.json:/acme.json
+
+  whoami:
+    image: {{ docker_host_whoami_image }}
+    restart: unless-stopped
+    # Internal-only smoke route: discovered by the docker provider, routed on
+    # websecure, TLS via the active resolver, gated by lan-allowlist.
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.whoami.rule=Host(`whoami.{{ domain }}`)
+      - traefik.http.routers.whoami.entrypoints=websecure
+      - traefik.http.routers.whoami.tls=true
+      - traefik.http.routers.whoami.tls.certresolver={{ acme_resolver }}
+{% if acme_resolver == 'le-dns-cf' %}
+      # DNS-01 wildcard request (Step 11): under le-dns-cf this one router asks for
+      # a single {{ domain }} + *.{{ domain }} cert. Traefik stores it globally and
+      # serves it for every other host that matches (grafana/prometheus/uptime/
+      # homepage and Plex), so no per-service cert is requested. Gated on the
+      # resolver because HTTP-01 cannot issue wildcards — under le-http nothing here
+      # is emitted, keeping that path satisfiable.
+      - traefik.http.routers.whoami.tls.domains[0].main={{ domain }}
+      - traefik.http.routers.whoami.tls.domains[0].sans=*.{{ domain }}
+{% endif %}
+      - traefik.http.routers.whoami.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.services.whoami.loadbalancer.server.port=80
+
+  # --- Extras stack (Step 10): LAN/Tailscale-only dashboards & monitoring. ---
+  # Each is routed by the docker provider (labels only, no published host port),
+  # on websecure with the var-driven {{ acme_resolver }} resolver, and carries
+  # lan-allowlist@file + security-headers@file so it is reachable on the LAN/
+  # Tailscale and blocked from the WAN. None appear in public_services.
+  homepage:
+    image: {{ docker_host_homepage_image }}
+    restart: unless-stopped
+    # gethomepage/homepage (v0.9.0+) validates the Host header: any request whose
+    # Host is not localhost or in HOMEPAGE_ALLOWED_HOSTS gets a "Host validation
+    # failed" page. Reached only via Traefik on homepage.{{ domain }}, so that
+    # host MUST be allow-listed or the dashboard never loads.
+    environment:
+      - HOMEPAGE_ALLOWED_HOSTS=homepage.{{ domain }}
+    volumes:
+      - {{ docker_host_project_dir }}/homepage:/app/config:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.homepage.rule=Host(`homepage.{{ domain }}`)
+      - traefik.http.routers.homepage.entrypoints=websecure
+      - traefik.http.routers.homepage.tls=true
+      - traefik.http.routers.homepage.tls.certresolver={{ acme_resolver }}
+      - traefik.http.routers.homepage.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.services.homepage.loadbalancer.server.port=3000
+
+  uptime-kuma:
+    image: {{ docker_host_uptime_kuma_image }}
+    restart: unless-stopped
+    volumes:
+      - uptime-kuma-data:/app/data
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.uptime-kuma.rule=Host(`uptime.{{ domain }}`)
+      - traefik.http.routers.uptime-kuma.entrypoints=websecure
+      - traefik.http.routers.uptime-kuma.tls=true
+      - traefik.http.routers.uptime-kuma.tls.certresolver={{ acme_resolver }}
+      - traefik.http.routers.uptime-kuma.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.services.uptime-kuma.loadbalancer.server.port=3001
+
+  grafana:
+    image: {{ docker_host_grafana_image }}
+    restart: unless-stopped
+    # Admin password is sourced from the sibling .env (rendered from vault),
+    # never embedded here. GF_SECURITY_ADMIN_PASSWORD comes from env.j2.
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - {{ docker_host_project_dir }}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - {{ docker_host_project_dir }}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`grafana.{{ domain }}`)
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls=true
+      - traefik.http.routers.grafana.tls.certresolver={{ acme_resolver }}
+      - traefik.http.routers.grafana.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+
+  prometheus:
+    image: {{ docker_host_prometheus_image }}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - {{ docker_host_project_dir }}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prometheus.rule=Host(`prometheus.{{ domain }}`)
+      - traefik.http.routers.prometheus.entrypoints=websecure
+      - traefik.http.routers.prometheus.tls=true
+      - traefik.http.routers.prometheus.tls.certresolver={{ acme_resolver }}
+      - traefik.http.routers.prometheus.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.services.prometheus.loadbalancer.server.port=9090
+
+  # Scrape targets only: NO Traefik labels, NO router — Prometheus reaches them
+  # over the internal compose network; they are never routed or exposed.
+  node-exporter:
+    image: {{ docker_host_node_exporter_image }}
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+
+  cadvisor:
+    image: {{ docker_host_cadvisor_image }}
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+volumes:
+  uptime-kuma-data:
+  grafana-data:
+  prometheus-data:

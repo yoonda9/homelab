@@ -1,0 +1,23 @@
+---
+# Non-secret configuration shared by all hosts (design §Data Models).
+# Secrets live in vault.yml (Ansible-Vault encrypted; see ansible.cfg).
+
+domain: yoonnation.com
+
+# Active Traefik certresolver. DNS-01 wildcard (le-dns-cf) is now live after the
+# Cloudflare migration (Step 11, design §4.4): it issues a browser-trusted
+# *.{{ domain }} cert that covers the LAN/Tailscale-only internal services, which
+# cannot satisfy HTTP-01. Flipping back to le-http re-renders cleanly (the
+# wildcard tls.domains are gated on this value).
+acme_resolver: le-dns-cf
+
+# Plex is the ONLY internet-exposed service (design §E.1, R8).
+public_services:
+  - plex
+
+# LAN/Tailscale-only services routed by Traefik (design §Data Models).
+internal_services:
+  - homepage
+  - uptime-kuma
+  - grafana
+  - prometheus

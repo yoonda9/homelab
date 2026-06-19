@@ -1,0 +1,8 @@
+---
+# Restart Plex when the LIBVA_DRIVER_NAME systemd drop-in changes so the new
+# environment takes effect. daemon_reload picks up the override.conf edit first.
+- name: Restart plexmediaserver
+  ansible.builtin.systemd:
+    name: plexmediaserver
+    state: restarted
+    daemon_reload: true

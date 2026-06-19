@@ -1,0 +1,10 @@
+---
+# Restart only the Traefik container when its static config changes (the file
+# provider hot-reloads dynamic config, but static traefik.yml needs a restart).
+# Guarded with changed_when so the Step-4/Step-5 idempotency scan stays green.
+- name: Restart traefik
+  ansible.builtin.command:
+    cmd: docker compose restart traefik
+    chdir: "{{ docker_host_project_dir }}"
+  register: docker_host_traefik_restart
+  changed_when: docker_host_traefik_restart.rc == 0

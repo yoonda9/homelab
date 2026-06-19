@@ -1,0 +1,24 @@
+---
+# Baseline packages installed on every managed host.
+common_base_packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - htop
+  - vim
+  - rsync
+
+# System timezone (overridable per group/host).
+common_timezone: America/New_York
+
+# Unprivileged service account the common role provisions.
+common_service_user: svc
+
+# sshd hardening applied idempotently via lineinfile (regexp -> line).
+common_sshd_settings:
+  - regexp: "^#?PermitRootLogin"
+    line: "PermitRootLogin prohibit-password"
+  - regexp: "^#?PasswordAuthentication"
+    line: "PasswordAuthentication no"
+  - regexp: "^#?X11Forwarding"
+    line: "X11Forwarding no"

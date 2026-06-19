@@ -1,0 +1,52 @@
+# {{ ansible_managed }}
+# Traefik dynamic configuration (file provider). Holds the shared middlewares
+# referenced by every internal router and a placeholder for the Step-9 Plex
+# external router/service (added when Plex goes public).
+http:
+  middlewares:
+    # Force HTTP -> HTTPS (also enforced at the `web` entrypoint redirect).
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    # Baseline hardening headers for every internal router.
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+
+    # LAN + Tailscale only. Internal routers (whoami, extras) carry this so they
+    # are reachable on the LAN/Tailscale and blocked from the WAN.
+    lan-allowlist:
+      ipAllowList:
+        sourceRange:
+          - "192.168.1.0/24"
+          - "100.64.0.0/10"
+
+  # Plex is the ONLY public router (design §E.1). Unlike every internal router it
+  # carries security-headers but NOT lan-allowlist, so it is reachable from the
+  # WAN via the port-forward 80/443 -> .111 (docs/runbooks/host-bootstrap.md §4).
+  # Plex runs outside Docker, so it is routed here (file provider) rather than by
+  # docker labels. certResolver stays the {{ acme_resolver }} var so the Step-11
+  # DNS-01 flip is one variable.
+  routers:
+    plex:
+      rule: "Host(`plex.{{ domain }}`)"
+      entryPoints:
+        - websecure
+      service: plex
+      middlewares:
+        - security-headers@file
+      tls:
+        certResolver: "{{ acme_resolver }}"
+
+  services:
+    plex:
+      loadBalancer:
+        servers:
+          - url: "{{ docker_host_plex_url }}"

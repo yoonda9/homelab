@@ -10,7 +10,14 @@
 opentofu = "1.12.2"
 packer = "1.15.0"
 python = "3.12"
+# The `ansible` community bundle only puts `ansible-community` on PATH; the
+# workhorse CLIs (ansible-playbook, ansible-vault, ansible-galaxy, …) ship with
+# ansible-core, so pin it explicitly to expose them (mise has no pipx
+# --include-deps). ansible-lint is the Step-4+ config-layer gate that Step 12
+# folds into `mise run test`.
 "pipx:ansible" = "latest"
+"pipx:ansible-core" = "latest"
+"pipx:ansible-lint" = "latest"
 
 [env]
 # Non-secret Proxmox provider config (Tofu PROXMOX_VE_* scheme). The secret
@@ -36,11 +43,19 @@ description = "run the Ansible site playbook"
 dir = "ansible"
 run = "ansible-playbook site.yml"
 
+[tasks.gen-inventory]
+description = "render ansible/inventory/hosts.yml from `tofu output`"
+run = "python scripts/gen_inventory.py"
+
 [tasks.fmt]
 description = "format the OpenTofu config"
 dir = "tofu"
 run = "tofu fmt -recursive"
 
 [tasks.test]
-description = "run the repo shape-tests"
-run = "python scripts/test_mise_config_shape.py"
+# The single aggregate offline backpressure gate (Step 12): every
+# scripts/test_*.py shape-test (standalone __main__ exit code, NOT
+# `pytest scripts/`) + tofu fmt-check/validate + ansible-lint --offline +
+# ansible-playbook --syntax-check. See scripts/run_gate.py.
+description = "run the full offline gate (shape-tests + tofu + ansible)"
+run = "python scripts/run_gate.py"
