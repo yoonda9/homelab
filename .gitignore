@@ -7,12 +7,13 @@ packer/packer_cache/
 packer/downloaded_iso_path
 
 # OpenTofu / Terraform
-tofu/.terraform/
-tofu/*.tfstate
-tofu/*.tfstate.backup
-tofu/.terraform.lock.hcl
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/.terraform.lock.hcl
 terraform.tfvars
 *.auto.tfvars
+
 
 # direnv local override
 .envrc.local
