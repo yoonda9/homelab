@@ -1,0 +1,33 @@
+#cloud-config
+# NoCloud seed for proxmox-clone first-boot config (DEC-019).
+# Fedora cloud image is already installed; first boot only needs user,
+# ssh, and qemu-guest-agent set up. Carries forward the user/ssh/agent
+# semantics from the previous kickstart flow. Per DEC-019 Q4 the
+# template_name literal stays "pkr-fedora-workstation" — Cloud Base is
+# the cloud image; the Workstation group install runs in a Packer shell
+# provisioner (build block in packer/fedora.pkr.hcl).
+hostname: pkr-fedora-workstation
+users:
+  - name: user
+    # password hash for plaintext "password" via mkpasswd -m sha-512
+    # (per C-6 weak-creds posture). Regenerate with:
+    #   mkpasswd -m sha-512 password
+    # or:
+    #   python3 -c "import crypt; print(crypt.crypt('password', crypt.mksalt(crypt.METHOD_SHA512)))"
+    passwd: "$6$aj34MsUySdCm3MSz$7xFZr27PgRMF2jc0UuVWoRSqL1bCA0UiCnMuirMfPmyWtwTyeN7JWB30FwyelDIRywRo6DcgsfsoyiC5anZii1"
+    lock_passwd: false
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+chpasswd:
+  expire: false
+ssh_pwauth: true
+package_update: true
+packages:
+  - python3
+  - qemu-guest-agent
+  - openssh-server
+runcmd:
+  - systemctl enable --now sshd
+  - systemctl enable --now qemu-guest-agent
+  - sed -i 's/^#*PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  - systemctl reload sshd

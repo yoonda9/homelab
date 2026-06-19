@@ -1,0 +1,48 @@
+# Packer
+packer/packer_cache/
+**/.packer.d/
+**/*.pkrvars.hcl
+!packer/common.pkrvars.hcl
+# Packer download cache (proxmox plugin downloads cloud images here)
+packer/downloaded_iso_path
+
+# OpenTofu / Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars
+
+
+# direnv (real secrets are exported from here; keep both out of git)
+.envrc
+.envrc.local
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Build/debug logs (not source; regenerated on demand)
+DEBUG.md
+
+# Untracked spec source (kept under .agents/)
+PROMPT.md
+
+# Ralph Orchestrator
+.ralph/
+!.ralph/specs/
+!.ralph/tasks/
+!.ralph/agent/
+.ralph/agent/*
+!.ralph/agent/memories.md
+!.ralph/agent/tasks.jsonl
+
+# Evaluation Sandbox
+.eval-sandbox/

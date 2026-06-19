@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+      <InputLocale>0409:00000409</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration>
+        <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>100</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+          </ModifyPartitions>
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+          <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
+          <InstallToAvailablePartition>false</InstallToAvailablePartition>
+          <InstallFrom>
+            <MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>1</Value>
+            </MetaData>
+          </InstallFrom>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>user</FullName>
+        <Organization>homelab</Organization>
+      </UserData>
+      <UseConfigurationSet>false</UseConfigurationSet>
+      <DriverPaths>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="1" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Path>D:\amd64\w11</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="2" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Path>D:\NetKVM\w11\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="3" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Path>D:\vioscsi\w11\amd64</Path>
+        </PathAndCredentials>
+      </DriverPaths>
+    </component>
+  </settings>
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <ComputerName>*</ComputerName>
+      <TimeZone>UTC</TimeZone>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+            <Name>user</Name>
+            <Group>Administrators</Group>
+            <DisplayName>user</DisplayName>
+            <Description>Default homelab user (per C-6 weak-creds posture)</Description>
+            <Password>
+              <Value>password</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+      <AutoLogon>
+        <Username>user</Username>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Password><Value>password</Value><PlainText>true</PlainText></Password>
+      </AutoLogon>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <NetworkLocation>Home</NetworkLocation>
+        <ProtectYourPC>3</ProtectYourPC>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <SkipUserOOBE>true</SkipUserOOBE>
+      </OOBE>
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>1</Order>
+          <CommandLine>cmd.exe /c powershell -ExecutionPolicy Bypass -NoProfile -File A:\setup.ps1 &gt; C:\Windows\Temp\setup.log 2&gt;&amp;1</CommandLine>
+          <Description>Run setup.ps1 to enable WinRM HTTP listener and TCP/5985 firewall rule</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>2</Order>
+          <CommandLine>cmd.exe /c winrm quickconfig -quiet</CommandLine>
+          <Description>Belt-and-braces winrm quickconfig in case setup.ps1 path is unreadable</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>3</Order>
+          <CommandLine>powershell -NoProfile -Command "New-NetFirewallRule -Name WinRM-HTTP-FirstLogon -DisplayName 'WinRM HTTP 5985 (FirstLogon)' -Protocol TCP -LocalPort 5985 -Action Allow -Direction Inbound -Profile Public,Private,Domain"</CommandLine>
+          <Description>TCP/5985 firewall rule via New-NetFirewallRule (per C-9)</Description>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>4</Order>
+          <CommandLine>cmd.exe /c netsh advfirewall firewall add rule name="WinRM-HTTP-fallback" dir=in action=allow protocol=TCP localport=5985</CommandLine>
+          <Description>netsh fallback TCP/5985 firewall rule (belt-and-braces per C-9)</Description>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>
