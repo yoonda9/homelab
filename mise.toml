@@ -1,0 +1,46 @@
+# mise dev-environment for the proxmox-homelab pipeline (replaces direnv).
+#   mise install          # provision the pinned toolchain
+#   cp mise.local.toml.example mise.local.toml   # then fill in real secrets
+#   mise run <task>       # plan / apply / play / fmt / test
+#
+# Non-secret config lives here (committed). All secret-bearing env vars live in
+# the gitignored mise.local.toml (template: mise.local.toml.example) — DEC-001.
+
+[tools]
+opentofu = "1.12.2"
+packer = "1.15.0"
+python = "3.12"
+"pipx:ansible" = "latest"
+
+[env]
+# Non-secret Proxmox provider config (Tofu PROXMOX_VE_* scheme). The secret
+# half (API token, SSH user) and the Packer PROXMOX_* vars are in
+# mise.local.toml — see mise.local.toml.example.
+PROXMOX_VE_ENDPOINT = "https://192.168.1.50:8006/api2/json"
+PROXMOX_VE_INSECURE = "true"
+# Create/activate a project venv so uv + pytest are available for `mise run test`.
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.plan]
+description = "tofu plan against the homelab config"
+dir = "tofu"
+run = "tofu plan"
+
+[tasks.apply]
+description = "tofu apply the homelab config"
+dir = "tofu"
+run = "tofu apply"
+
+[tasks.play]
+description = "run the Ansible site playbook"
+dir = "ansible"
+run = "ansible-playbook site.yml"
+
+[tasks.fmt]
+description = "format the OpenTofu config"
+dir = "tofu"
+run = "tofu fmt -recursive"
+
+[tasks.test]
+description = "run the repo shape-tests"
+run = "python scripts/test_mise_config_shape.py"

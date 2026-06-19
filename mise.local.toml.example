@@ -1,0 +1,21 @@
+# mise.local.toml.example — template for operator secrets.
+#
+#   cp mise.local.toml.example mise.local.toml
+#   # then replace every CHANGEME with a real value
+#
+# mise.local.toml is gitignored and overrides/extends mise.toml [env].
+# NEVER commit mise.local.toml. This .example carries placeholders only.
+
+[env]
+# --- Tofu / provider secrets (PROXMOX_VE_* scheme) ---
+PROXMOX_VE_API_TOKEN = "CHANGEME"       # e.g. root@pam!ansible-token=<uuid>
+PROXMOX_VE_SSH_USERNAME = "CHANGEME"    # SSH user for idmap / bind mounts (e.g. root)
+CLOUDFLARE_DNS_API_TOKEN = "CHANGEME"   # Zone:DNS:Edit — Traefik DNS-01 (later)
+
+# --- Packer secrets (PROXMOX_* scheme) — DEC-001 ---
+# scripts/build_template.sh pre-flights these four and exits 78 if any is unset;
+# it re-exports them as PKR_VAR_proxmox_*. Keep the names exactly as-is.
+PROXMOX_HOST = "CHANGEME"               # e.g. https://pve.home.arpa:8006/
+PROXMOX_USER = "CHANGEME"               # e.g. root@pam
+PROXMOX_TOKEN_ID = "CHANGEME"           # e.g. root@pam!packer-token
+PROXMOX_TOKEN_SECRET = "CHANGEME"       # the token UUID secret

@@ -15,9 +15,9 @@ terraform.tfvars
 *.auto.tfvars
 
 
-# direnv (real secrets are exported from here; keep both out of git)
-.envrc
-.envrc.local
+# mise local secrets (real secrets live here; keep out of git, ship the template)
+mise.local.toml
+!mise.local.toml.example
 
 # Python
 .venv/

@@ -22,11 +22,13 @@ keystroke timing, no installer boot menus.
 
 ### Prerequisites
 
-- Packer 1.15+ on `PATH` (`~/.local/bin/packer` works).
+- [`mise`](https://mise.jdx.dev) for the toolchain and env. Run `mise install`
+  to provision Packer/OpenTofu/Python/Ansible, then copy the secrets template:
+  `cp mise.local.toml.example mise.local.toml` and fill it in. mise exports the
+  four PVE API credentials Packer needs — `PROXMOX_HOST`, `PROXMOX_USER`,
+  `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` — from the gitignored
+  `mise.local.toml`.
 - `genisoimage` for building the cidata seed ISO.
-- `direnv` to load `.envrc`, which exports the four PVE API credentials:
-  `PROXMOX_HOST`, `PROXMOX_USER`, `PROXMOX_TOKEN_ID`,
-  `PROXMOX_TOKEN_SECRET`. Run `direnv allow` once after cloning.
 - For the two Linux templates, run the one-time bootstrap that downloads
   the upstream cloud image and registers it as a PVE source template:
 

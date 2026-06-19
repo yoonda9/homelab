@@ -71,7 +71,7 @@ for v in "${REQUIRED_VARS[@]}"; do
 done
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   err "missing required env vars: ${MISSING[*]}"
-  err "run 'direnv allow' or fix .envrc"
+  err "source your mise env (mise install; copy mise.local.toml from the .example)"
   exit 78
 fi
 
