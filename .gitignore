@@ -15,7 +15,8 @@ terraform.tfvars
 *.auto.tfvars
 
 
-# direnv local override
+# direnv (real secrets are exported from here; keep both out of git)
+.envrc
 .envrc.local
 
 # Python
@@ -27,6 +28,9 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Build/debug logs (not source; regenerated on demand)
+DEBUG.md
 
 # Untracked spec source (kept under .agents/)
 PROMPT.md
