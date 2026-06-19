@@ -29,3 +29,12 @@ __pycache__/
 
 # Untracked spec source (kept under .agents/)
 PROMPT.md
+
+# Ralph Orchestrator
+.ralph/
+!.ralph/specs/
+!.ralph/tasks/
+!.ralph/agent/
+.ralph/agent/*
+!.ralph/agent/memories.md
+!.ralph/agent/tasks.jsonl
