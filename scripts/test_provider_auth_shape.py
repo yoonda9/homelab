@@ -33,6 +33,8 @@ VERSIONS = TOFU / "versions.tf"
 PROVIDERS = TOFU / "providers.tf"
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "host-bootstrap.md"
 MISE_LOCAL_EXAMPLE = REPO_ROOT / "mise.local.toml.example"
+JUSTFILE = REPO_ROOT / "justfile"
+PREFLIGHT = REPO_ROOT / "scripts" / "preflight_tofu_auth.py"
 
 # Secret-bearing env-var names whose *values* must never be literal in HCL.
 SECRET_KEYS = (
@@ -167,6 +169,64 @@ def test_root_pam_ticket_for_device_passthrough() -> bool:
     return ok
 
 
+def test_preflight_guards_api_token() -> bool:
+    """Regression: the real (gitignored) env carrying PROXMOX_VE_API_TOKEN.
+
+    The original 403 root cause was the token lingering in the user's gitignored
+    `mise.local.toml` — invisible to the .example template guard
+    (`test_root_pam_ticket_for_device_passthrough`, which can only see the
+    committed template). `scripts/preflight_tofu_auth.py` closes that gap: it
+    inspects the LIVE env and aborts `just apply` before bpg ever authenticates,
+    so a stray token surfaces as an instant preflight error instead of a deep
+    device-passthrough 403. This test exercises the guard's logic directly (the
+    exact failing condition) and confirms the `apply` recipe runs it first.
+    """
+    if not PREFLIGHT.is_file():
+        print("FAIL: scripts/preflight_tofu_auth.py exists")
+        return False
+
+    # Exercise the guard's decision function on both env shapes (the import path
+    # works because the script's own directory is on sys.path[0] when run as
+    # `python scripts/test_provider_auth_shape.py`).
+    try:
+        import preflight_tofu_auth as guard
+    except ImportError as exc:
+        print(f"FAIL: cannot import preflight_tofu_auth ({exc})")
+        return False
+
+    # The failing condition (token set) must be flagged…
+    flags_token = bool(guard.check_env({"PROXMOX_VE_API_TOKEN": "root@pam!x=uuid"}))
+    # …an empty token must be treated as absent (not a false positive)…
+    empty_ok = guard.check_env({"PROXMOX_VE_API_TOKEN": ""}) is None
+    # …and the ticket-only env (the fix) must pass clean.
+    ticket_ok = (
+        guard.check_env(
+            {"PROXMOX_VE_USERNAME": "root@pam", "PROXMOX_VE_PASSWORD": "pw"}
+        )
+        is None
+    )
+
+    # The apply recipe must actually invoke the guard before `tofu apply`, else
+    # it never runs. Match the preflight line preceding the apply line.
+    just = JUSTFILE.read_text() if JUSTFILE.is_file() else ""
+    wired = (
+        re.search(
+            r"preflight_tofu_auth\.py[^\n]*\n\s*tofu\s+apply",
+            just,
+            re.MULTILINE,
+        )
+        is not None
+    )
+
+    ok = flags_token and empty_ok and ticket_ok and wired
+    print(
+        f"{'OK' if ok else 'FAIL'}: preflight guards PROXMOX_VE_API_TOKEN in the "
+        f"live env (flags_token={flags_token}, empty_ok={empty_ok}, "
+        f"ticket_ok={ticket_ok}, wired_into_apply={wired})"
+    )
+    return ok
+
+
 def test_no_secret_literals_in_hcl() -> bool:
     leaks = []
     for tf in TOFU.glob("*.tf"):
@@ -186,6 +246,7 @@ TESTS = (
     test_auth_exercising_data_source,
     test_runbook_documents_prereqs,
     test_root_pam_ticket_for_device_passthrough,
+    test_preflight_guards_api_token,
     test_no_secret_literals_in_hcl,
 )
 

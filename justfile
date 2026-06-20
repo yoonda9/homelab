@@ -22,9 +22,12 @@ plan:
     tofu plan
 
 # Apply the Tofu plan. Interactive by default; pass `approve=1` (or set
-# AUTO_APPROVE) to run unattended with `-auto-approve`.
+# AUTO_APPROVE) to run unattended with `-auto-approve`. A preflight guard aborts
+# the apply if PROXMOX_VE_API_TOKEN is set in the env — it would shadow the
+# root@pam ticket and 403 the Plex CT device-passthrough create.
 [working-directory: 'tofu']
 apply approve=AUTO:
+    python {{ justfile_directory() }}/scripts/preflight_tofu_auth.py
     tofu apply {{ if approve != "" { "-auto-approve" } else { "" } }}
 
 [working-directory: 'tofu']
