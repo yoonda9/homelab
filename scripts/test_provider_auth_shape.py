@@ -31,10 +31,12 @@ TOFU = REPO_ROOT / "tofu"
 VERSIONS = TOFU / "versions.tf"
 PROVIDERS = TOFU / "providers.tf"
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "host-bootstrap.md"
+MISE_LOCAL_EXAMPLE = REPO_ROOT / "mise.local.toml.example"
 
 # Secret-bearing env-var names whose *values* must never be literal in HCL.
 SECRET_KEYS = (
     "PROXMOX_VE_API_TOKEN",
+    "PROXMOX_VE_PASSWORD",
     "PROXMOX_TOKEN_SECRET",
     "CLOUDFLARE_DNS_API_TOKEN",
 )
@@ -116,6 +118,41 @@ def test_runbook_documents_prereqs() -> bool:
     return ok
 
 
+def test_root_pam_ticket_for_device_passthrough() -> bool:
+    """Regression: the Plex CT 403 'configuring device passthrough is only
+    allowed for root@pam'.
+
+    Proxmox forbids configuring LXC device passthrough (dev[n] keys) through any
+    API token, even a root@pam-owned one, and demands a real root@pam login
+    ticket. bpg reads PROXMOX_VE_USERNAME / PROXMOX_VE_PASSWORD natively, so the
+    fix is to supply that ticket via env: the .example template must document
+    `PROXMOX_VE_USERNAME = "root@pam"` plus a `PROXMOX_VE_PASSWORD` placeholder,
+    and providers.tf must explain the requirement so the ticket is not dropped.
+    """
+    example = _read(MISE_LOCAL_EXAMPLE)
+    # Username pinned to root@pam (the ticket only clears the gate as root@pam).
+    user_root_pam = re.search(
+        r'PROXMOX_VE_USERNAME\s*=\s*"root@pam"', example
+    ) is not None
+    # Password key documented with the CHANGEME placeholder (secret half).
+    pass_placeholder = re.search(
+        r'PROXMOX_VE_PASSWORD\s*=\s*"CHANGEME"', example
+    ) is not None
+    # providers.tf records why the ticket is needed (env-native, no HCL literal).
+    providers = _read(PROVIDERS)
+    providers_doc = (
+        "PROXMOX_VE_PASSWORD" in providers
+        and re.search(r'device passthrough', providers, re.IGNORECASE) is not None
+    )
+    ok = user_root_pam and pass_placeholder and providers_doc
+    print(
+        f"{'OK' if ok else 'FAIL'}: root@pam ticket wired for device passthrough "
+        f"(user=root@pam {user_root_pam}, password placeholder {pass_placeholder}, "
+        f"providers.tf documents it {providers_doc})"
+    )
+    return ok
+
+
 def test_no_secret_literals_in_hcl() -> bool:
     leaks = []
     for tf in TOFU.glob("*.tf"):
@@ -134,6 +171,7 @@ TESTS = (
     test_providers_has_ssh_block,
     test_auth_exercising_data_source,
     test_runbook_documents_prereqs,
+    test_root_pam_ticket_for_device_passthrough,
     test_no_secret_literals_in_hcl,
 )
 

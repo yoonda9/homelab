@@ -38,6 +38,7 @@ REQUIRED_TASKS = ("plan", "apply", "play", "fmt", "test")
 SECRET_KEYS = (
     "PROXMOX_VE_API_TOKEN",
     "PROXMOX_VE_SSH_USERNAME",
+    "PROXMOX_VE_PASSWORD",
     "CLOUDFLARE_DNS_API_TOKEN",
     "PROXMOX_HOST",
     "PROXMOX_USER",
