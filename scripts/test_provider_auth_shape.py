@@ -25,6 +25,7 @@ failure. Stdlib only. The real gate is the standalone exit code.
 import pathlib
 import re
 import sys
+import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOFU = REPO_ROOT / "tofu"
@@ -124,30 +125,43 @@ def test_root_pam_ticket_for_device_passthrough() -> bool:
 
     Proxmox forbids configuring LXC device passthrough (dev[n] keys) through any
     API token, even a root@pam-owned one, and demands a real root@pam login
-    ticket. bpg reads PROXMOX_VE_USERNAME / PROXMOX_VE_PASSWORD natively, so the
-    fix is to supply that ticket via env: the .example template must document
-    `PROXMOX_VE_USERNAME = "root@pam"` plus a `PROXMOX_VE_PASSWORD` placeholder,
-    and providers.tf must explain the requirement so the ticket is not dropped.
+    ticket. bpg's auth modes are mutually exclusive and the API token takes
+    PRECEDENCE: if `PROXMOX_VE_API_TOKEN` is set, bpg authenticates EVERY API call
+    with the token and never builds the username/password ticket, so the
+    passthrough create still 403s even when the ticket vars are also present
+    (the prior "keep token + add user/pass" fix was insufficient).
+
+    The fix is therefore to authenticate solely with the ticket: the `[env]` of
+    the .example template must define `PROXMOX_VE_USERNAME = "root@pam"` plus a
+    `PROXMOX_VE_PASSWORD` placeholder, and must NOT define `PROXMOX_VE_API_TOKEN`
+    at all. providers.tf must explain the requirement so the token is not
+    reintroduced.
     """
     example = _read(MISE_LOCAL_EXAMPLE)
+    # Parse the [env] table so a comment that merely *names* PROXMOX_VE_API_TOKEN
+    # (explaining why it is omitted) does not register as an assignment.
+    try:
+        env = tomllib.loads(example).get("env", {})
+    except tomllib.TOMLDecodeError:
+        env = {}
     # Username pinned to root@pam (the ticket only clears the gate as root@pam).
-    user_root_pam = re.search(
-        r'PROXMOX_VE_USERNAME\s*=\s*"root@pam"', example
-    ) is not None
+    user_root_pam = env.get("PROXMOX_VE_USERNAME") == "root@pam"
     # Password key documented with the CHANGEME placeholder (secret half).
-    pass_placeholder = re.search(
-        r'PROXMOX_VE_PASSWORD\s*=\s*"CHANGEME"', example
-    ) is not None
+    pass_placeholder = env.get("PROXMOX_VE_PASSWORD") == "CHANGEME"
+    # The API token MUST be absent from the provider env — its mere presence would
+    # take precedence over the ticket and reintroduce the 403.
+    token_absent = "PROXMOX_VE_API_TOKEN" not in env
     # providers.tf records why the ticket is needed (env-native, no HCL literal).
     providers = _read(PROVIDERS)
     providers_doc = (
         "PROXMOX_VE_PASSWORD" in providers
         and re.search(r'device passthrough', providers, re.IGNORECASE) is not None
     )
-    ok = user_root_pam and pass_placeholder and providers_doc
+    ok = user_root_pam and pass_placeholder and token_absent and providers_doc
     print(
-        f"{'OK' if ok else 'FAIL'}: root@pam ticket wired for device passthrough "
-        f"(user=root@pam {user_root_pam}, password placeholder {pass_placeholder}, "
+        f"{'OK' if ok else 'FAIL'}: root@pam ticket is the sole API auth for "
+        f"device passthrough (user=root@pam {user_root_pam}, password placeholder "
+        f"{pass_placeholder}, api_token absent {token_absent}, "
         f"providers.tf documents it {providers_doc})"
     )
     return ok

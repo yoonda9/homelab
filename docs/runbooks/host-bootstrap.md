@@ -1,10 +1,10 @@
 # Runbook: Proxmox host bootstrap (bare `pve` → "Tofu can talk to Proxmox")
 
 This runbook covers the **manual** host prerequisites that OpenTofu cannot
-provision for itself: the API token it authenticates with, the SSH access bpg
-needs for idmap/bind-mount operations, a host-GID sanity check, and the router
-port-forward placeholder. Work through it once on a fresh Proxmox VE host
-(`pve`) before running `mise run plan`.
+provision for itself: the root@pam login ticket it authenticates with, the SSH
+access bpg needs for idmap/bind-mount operations, a host-GID sanity check, and
+the router port-forward placeholder. Work through it once on a fresh Proxmox VE
+host (`pve`) before running `mise run plan`.
 
 All credentials are consumed from the environment exported by **mise**
 (non-secret config in committed `mise.toml`; secrets in gitignored
@@ -13,35 +13,29 @@ runbook is hardcoded into the OpenTofu HCL.
 
 ---
 
-## 1. Create the API token (`root@pam!ansible-token`)
+## 1. Provide the `root@pam` login ticket (username + password)
 
-OpenTofu authenticates with a Proxmox API token, not a password.
+OpenTofu authenticates with the `root@pam` **login ticket** (username +
+password), **not** an API token. The Plex CT configures LXC device passthrough
+(`dev[n]` keys), which Proxmox refuses through *any* API token — even a
+`root@pam`-owned one (`HTTP 403 … device passthrough is only allowed for
+root@pam`). A real `root@pam` login ticket is the only credential that clears
+that gate.
 
-**Web UI:** Datacenter → Permissions → API Tokens → **Add**
+> **Do not set `PROXMOX_VE_API_TOKEN` for the Tofu provider.** bpg's auth modes
+> are mutually exclusive and the API token takes **precedence**: if the token env
+> var is set, bpg authenticates every API call with it and never builds the
+> ticket, so the passthrough create 403s even when the username/password are also
+> present. (The separate Packer build keeps its own `PROXMOX_TOKEN_*` token —
+> that is unrelated to this provider, see DEC-001.)
 
-- **User:** `root@pam`
-- **Token ID:** `ansible-token`
-- **Privilege Separation:** **unchecked** (the token inherits `root@pam`'s full
-  privileges — required for bind mounts, which need `root@pam`).
-
-**CLI equivalent (run on `pve`):**
-
-```bash
-pveum user token add root@pam ansible-token --privsep 0
-```
-
-Copy the generated secret **immediately** — it is shown only once. The full
-token value has the form:
-
-```
-root@pam!ansible-token=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-Put it in your gitignored `mise.local.toml`:
+No Proxmox-side setup is needed beyond knowing the `root@pam` account password.
+Put the ticket credentials in your gitignored `mise.local.toml`:
 
 ```toml
 [env]
-PROXMOX_VE_API_TOKEN = "root@pam!ansible-token=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+PROXMOX_VE_USERNAME = "root@pam"
+PROXMOX_VE_PASSWORD = "<the root@pam account password>"
 ```
 
 > The matching non-secret `PROXMOX_VE_ENDPOINT` (e.g.

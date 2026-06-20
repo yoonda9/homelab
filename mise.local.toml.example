@@ -8,15 +8,18 @@
 
 [env]
 # --- Tofu / provider secrets (PROXMOX_VE_* scheme) ---
-PROXMOX_VE_API_TOKEN = "CHANGEME"       # e.g. root@pam!ansible-token=<uuid>
-PROXMOX_VE_SSH_USERNAME = "CHANGEME"    # SSH user for idmap / bind mounts (e.g. root)
-# root@pam password ticket — REQUIRED for the Plex CT. Proxmox forbids
-# configuring LXC device passthrough (dev[n] keys) through ANY API token, even a
-# root@pam-owned one; it demands a real root@pam login ticket. bpg reads these
-# two env vars natively and uses the ticket alongside the API token, so the
-# token still services everything that does not need root@pam.
+# The Tofu provider authenticates with a root@pam login TICKET
+# (username + password) — NOT an API token. The Plex CT configures LXC device
+# passthrough (dev[n] keys), which Proxmox refuses through ANY API token, even a
+# root@pam-owned one; it demands a real root@pam login ticket. bpg auth modes are
+# mutually exclusive and the API token takes PRECEDENCE: if PROXMOX_VE_API_TOKEN
+# is set, bpg uses the token for ALL API calls and never builds the ticket, so
+# the passthrough create 403s. Therefore PROXMOX_VE_API_TOKEN is intentionally
+# absent here — set only the username/password ticket below. (The Packer build
+# uses its own separate PROXMOX_TOKEN_* token scheme further down — DEC-001.)
 PROXMOX_VE_USERNAME = "root@pam"        # MUST be root@pam for device passthrough
 PROXMOX_VE_PASSWORD = "CHANGEME"        # the root@pam account password
+PROXMOX_VE_SSH_USERNAME = "CHANGEME"    # SSH user for idmap / bind mounts (e.g. root)
 CLOUDFLARE_DNS_API_TOKEN = "CHANGEME"   # Zone:DNS:Edit — Traefik DNS-01 (later)
 
 # --- Ansible Vault ---

@@ -35,8 +35,11 @@ REQUIRED_TOOLS = ("opentofu", "packer", "python", "pipx:ansible")
 REQUIRED_TASKS = ("plan", "apply", "play", "fmt", "test")
 # Secret-bearing keys that must NEVER appear in the committed mise.toml —
 # the Tofu/Cloudflare half plus the four Packer vars (DEC-001).
+# NB: the Tofu provider authenticates with the root@pam username/password TICKET,
+# not an API token — PROXMOX_VE_API_TOKEN is deliberately absent from the provider
+# env (bpg token precedence would otherwise shadow the ticket and 403 the Plex CT
+# device passthrough). The Packer build keeps its own separate PROXMOX_TOKEN_*.
 SECRET_KEYS = (
-    "PROXMOX_VE_API_TOKEN",
     "PROXMOX_VE_SSH_USERNAME",
     "PROXMOX_VE_PASSWORD",
     "CLOUDFLARE_DNS_API_TOKEN",
