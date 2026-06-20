@@ -139,6 +139,38 @@ def test_idmap_dynamic() -> bool:
     return ok
 
 
+def test_idmap_type_literals_valid() -> bool:
+    """Regression (mem-1781916305-0a00): bpg/proxmox v0.110 validates the idmap
+    block `type` to exactly {"uid","gid"}. The earlier literals "g"/"u" are
+    rejected at plan time (`Error: expected type to be one of ["uid" "gid"], got
+    g`). The gid_maps branch MUST tag type="gid" and the uid_maps branch
+    type="uid"; reverting to "g"/"u" must fail this gate."""
+    main_file = MODULE / "main.tf"
+    if not main_file.is_file():
+        print("FAIL: idmap type literals valid (main.tf missing)")
+        return False
+    body = main_file.read_text()
+    # Anchor each type literal to its source list comprehension so we verify the
+    # gid branch -> "gid" and the uid branch -> "uid" specifically.
+    gid_ok = re.search(
+        r'var\.gid_maps\s*:\s*\{[^{}]*?type\s*=\s*"gid"',
+        body,
+        re.DOTALL,
+    )
+    uid_ok = re.search(
+        r'var\.uid_maps\s*:\s*\{[^{}]*?type\s*=\s*"uid"',
+        body,
+        re.DOTALL,
+    )
+    # Guard against any rejected literal sneaking back in (code only; comments
+    # may cite the old values for historical context).
+    main_code = re.sub(r"#[^\n]*", "", body)
+    no_bad = re.search(r'type\s*=\s*"(?:g|u|group|user)"', main_code) is None
+    ok = bool(gid_ok and uid_ok and no_bad)
+    print(f"{'OK' if ok else 'FAIL'}: idmap type literals are gid/uid (gid={bool(gid_ok)} uid={bool(uid_ok)} no_bad={no_bad})")
+    return ok
+
+
 def _tofu_eval_json(expr: str):
     """Evaluate an HCL expression in the root tofu dir via `tofu console` and
     return the parsed value. `jsonencode(...)` makes the console print a single
@@ -344,6 +376,7 @@ def main() -> int:
         test_device_passthrough_dynamic(),
         test_mount_point_dynamic(),
         test_idmap_dynamic(),
+        test_idmap_type_literals_valid(),
         test_idmap_tiling_gapfree(),
         test_idmap_uid_full_offset(),
         test_idmap_generated_from_host_gids(),

@@ -1,17 +1,19 @@
 locals {
   # Combine the GID/UID idmap lists into the provider's flat idmap block shape,
-  # tagging each with its required `type` ("g" / "u"). Empty inputs yield an
-  # empty list, so the dynamic "idmap" block below renders nothing for a plain
-  # CT. Step 7 generates the gap-free tiling that fills gid_maps/uid_maps.
+  # tagging each with its required `type` ("gid" / "uid"). bpg/proxmox v0.110
+  # validates type to exactly {"uid","gid"}; "g"/"u" are rejected at plan time.
+  # Empty inputs yield an empty list, so the dynamic "idmap" block below renders
+  # nothing for a plain CT. Step 7 generates the gap-free tiling that fills
+  # gid_maps/uid_maps.
   idmap_entries = concat(
     [for m in var.gid_maps : {
-      type         = "g"
+      type         = "gid"
       container_id = m.container_id
       host_id      = m.host_id
       size         = m.size
     }],
     [for m in var.uid_maps : {
-      type         = "u"
+      type         = "uid"
       container_id = m.container_id
       host_id      = m.host_id
       size         = m.size
