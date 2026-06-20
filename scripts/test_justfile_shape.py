@@ -1,10 +1,14 @@
-"""Shape test for the just task-runner foundation (mise-to-just Step 1).
+"""Shape test for the just task-runner (mise-to-just Steps 1–2).
 
 Verifies the root `justfile` reproduces the live mise task surface 1:1 — seven
 leaf recipes (`default` first, the Tofu/Ansible ones carrying the canonical
 `[working-directory: '…']` attribute, bodies calling the tools directly) — and
 that `mise.toml [tools]` pins the `just` binary so `mise install` provisions it.
-The mise `[tasks.*]` stay this step (parallel, zero-downtime); cutover is Step 4.
+Step 2 adds the composite recipes (`infra`/`config`/`provision`/`destroy`)
+chained over the leaves and the interactive-by-default `apply approve=AUTO:`
+auto-approve hatch; this test asserts those compose the expected leaves and the
+hatch is wired. The mise `[tasks.*]` stay (parallel, zero-downtime); cutover is
+Step 4.
 
 Follows the repo's dual-mode shape-test convention (see
 `test_mise_config_shape.py`, `test_dev_vm_module_shape.py`): module-level
@@ -25,8 +29,18 @@ MISE_TOML = REPO_ROOT / "mise.toml"
 
 # The seven leaf recipes that mirror the live mise tasks 1:1 (`default` is new).
 RECIPES = ("default", "plan", "apply", "fmt", "play", "gen-inventory", "test")
+# Step-2 composite recipes layered over the leaf recipes (dependency chains).
+COMPOSITES = ("infra", "config", "provision", "destroy")
 # Recipes carrying a `[working-directory: '…']` attribute and their directory.
-WORKDIRS = {"plan": "tofu", "apply": "tofu", "fmt": "tofu", "play": "ansible"}
+# `destroy` (Step 2) joins the Tofu recipes; composites that are pure dependency
+# chains (`infra`/`config`/`provision`) inherit each leaf's own directory.
+WORKDIRS = {
+    "plan": "tofu",
+    "apply": "tofu",
+    "fmt": "tofu",
+    "play": "ansible",
+    "destroy": "tofu",
+}
 # The `[working-directory]` recipe attribute landed in just 1.38 — the floor.
 VERSION_FLOOR = (1, 38)
 
@@ -39,11 +53,30 @@ def _justfile_text() -> str:
 def _recipe_header(name: str) -> re.Pattern[str]:
     """Compiled pattern matching a recipe header `name:` at column 0.
 
-    Anchors on the recipe-header grammar (`^name\\s*:`, MULTILINE) so a recipe
-    *name* appearing inside a comment or another body is not a false positive
-    (cf. mem-1781892715-142d: anchor on the construct, not a loose substring).
+    Anchors on the recipe-header grammar (`^name[ params]:`, MULTILINE) so a
+    recipe *name* appearing inside a comment or another body is not a false
+    positive (cf. mem-1781892715-142d: anchor on the construct, not a loose
+    substring). The optional `[^\\n:]*` tolerates a parameter list — e.g. the
+    Step-2 `apply approve=AUTO:` signature — without crossing a line or colon.
     """
-    return re.compile(rf"^{re.escape(name)}\s*:", re.MULTILINE)
+    return re.compile(rf"^{re.escape(name)}(?:\s+[^\n:]*)?\s*:", re.MULTILINE)
+
+
+def _recipe_deps(name: str, text: str) -> str:
+    """Return the dependency portion (after the `:`) of recipe `name`'s header.
+
+    For `provision approve=AUTO: (apply approve) gen-inventory play` this returns
+    ` (apply approve) gen-inventory play`; for a leaf recipe with no
+    dependencies it returns `''`. Matches only the header line (no newline in the
+    class), so a recipe body never leaks in.
+    """
+    m = re.search(rf"^{re.escape(name)}(?:\s+[^\n:]*)?:([^\n]*)$", text, re.MULTILINE)
+    return m.group(1) if m else ""
+
+
+def _mentions(deps: str, recipe: str) -> bool:
+    """True if `recipe` appears as a whole token in a dependency string."""
+    return re.search(rf"(?<![\w-]){re.escape(recipe)}(?![\w-])", deps) is not None
 
 
 def _parse_major_minor(version: str) -> tuple[int, int]:
@@ -86,7 +119,7 @@ def test_default_is_list() -> bool:
     )
     headers = [
         (m.start(), m.group(1))
-        for m in re.finditer(r"^([a-z][\w-]*)\s*:", text, re.MULTILINE)
+        for m in re.finditer(r"^([a-z][\w-]*)(?:\s+[^\n:]*)?\s*:", text, re.MULTILINE)
     ]
     first_ok = bool(headers) and min(headers)[1] == "default"
     ok = body_ok and first_ok
@@ -120,14 +153,14 @@ def test_workdir_attributes() -> bool:
         name
         for name, d in WORKDIRS.items()
         if not re.search(
-            rf"^\[working-directory:\s*'{d}'\]\s*\n{re.escape(name)}\s*:",
+            rf"^\[working-directory:\s*'{d}'\]\s*\n{re.escape(name)}(?:\s+[^\n:]*)?\s*:",
             text,
             re.MULTILINE,
         )
     ]
     ok = not bad
     print(
-        f"{'OK' if ok else 'FAIL'}: plan/apply/fmt carry "
+        f"{'OK' if ok else 'FAIL'}: plan/apply/fmt/destroy carry "
         f"[working-directory: 'tofu'] and play carries 'ansible' (bad={bad})"
     )
     return ok
@@ -152,6 +185,75 @@ def test_mise_pins_just() -> bool:
     return ok
 
 
+def test_composite_recipes_defined() -> bool:
+    text = _justfile_text()
+    missing = [r for r in COMPOSITES if not _recipe_header(r).search(text)]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: justfile defines {list(COMPOSITES)} composite "
+        f"recipes (missing={missing})"
+    )
+    return ok
+
+
+def test_provision_composes_pipeline() -> bool:
+    deps = _recipe_deps("provision", _justfile_text())
+    needed = ("apply", "gen-inventory", "play")
+    missing = [r for r in needed if not _mentions(deps, r)]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: provision depends on apply/gen-inventory/play "
+        f"(deps={deps.strip()!r}, missing={missing})"
+    )
+    return ok
+
+
+def test_infra_composes_apply() -> bool:
+    deps = _recipe_deps("infra", _justfile_text())
+    ok = _mentions(deps, "apply")
+    print(
+        f"{'OK' if ok else 'FAIL'}: infra depends on apply "
+        f"(deps={deps.strip()!r})"
+    )
+    return ok
+
+
+def test_config_composes_inventory_play() -> bool:
+    deps = _recipe_deps("config", _justfile_text())
+    missing = [r for r in ("gen-inventory", "play") if not _mentions(deps, r)]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: config depends on gen-inventory/play "
+        f"(deps={deps.strip()!r}, missing={missing})"
+    )
+    return ok
+
+
+def test_apply_auto_approve_hatch() -> bool:
+    text = _justfile_text()
+    # The `AUTO_APPROVE` env default feeds the `approve` parameter default.
+    auto_decl = (
+        re.search(
+            r'^AUTO\s*:=\s*env_var_or_default\(\s*"AUTO_APPROVE"\s*,\s*""\s*\)',
+            text,
+            re.MULTILINE,
+        )
+        is not None
+    )
+    # `apply` is now parameterized with an `approve=AUTO` default …
+    apply_param = (
+        re.search(r"^apply\s+approve\s*=\s*AUTO\s*:", text, re.MULTILINE) is not None
+    )
+    # … and the body gates `-auto-approve` on that parameter (interactive default).
+    gated = re.search(r"if\s+approve\b[^\n]*-auto-approve", text) is not None
+    ok = auto_decl and apply_param and gated
+    print(
+        f"{'OK' if ok else 'FAIL'}: apply auto-approve hatch wired "
+        f"(AUTO_decl={auto_decl}, approve_param={apply_param}, gated_flag={gated})"
+    )
+    return ok
+
+
 TESTS = (
     test_justfile_exists,
     test_leaf_recipes_defined,
@@ -159,6 +261,11 @@ TESTS = (
     test_test_recipe_drives_gate,
     test_workdir_attributes,
     test_mise_pins_just,
+    test_composite_recipes_defined,
+    test_provision_composes_pipeline,
+    test_infra_composes_apply,
+    test_config_composes_inventory_play,
+    test_apply_auto_approve_hatch,
 )
 
 
