@@ -28,7 +28,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 MISE_TOML = REPO_ROOT / "mise.toml"
 MISE_LOCAL_EXAMPLE = REPO_ROOT / "mise.local.toml.example"
 GITIGNORE = REPO_ROOT / ".gitignore"
-# Step 12 — the capstone aggregate `mise run test` gate and its sign-off runbook.
+# Step 12 — the capstone aggregate `just test` gate and its sign-off runbook.
 ACCEPTANCE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "acceptance-validation.md"
 
 # Tool keys mise.toml [tools] must pin (DEC-001 / design Appendix A). `just` is
@@ -219,12 +219,12 @@ def test_acceptance_runbook_documents_reproducibility() -> bool:
         "exists/non-empty": len(body.strip()) > 0,
         # The clean rebuild-from-code cycle: destroy -> apply -> gen-inventory -> play.
         "tofu destroy": re.search(r"tofu\s+destroy", body) is not None,
-        "mise run apply": re.search(r"mise\s+run\s+apply", body) is not None,
-        "mise run gen-inventory": re.search(
-            r"mise\s+run\s+gen-inventory", body
+        "just apply": re.search(r"just\s+apply", body) is not None,
+        "just gen-inventory": re.search(
+            r"just\s+gen-inventory", body
         )
         is not None,
-        "mise run play": re.search(r"mise\s+run\s+play", body) is not None,
+        "just play": re.search(r"just\s+play", body) is not None,
         # Adversarial WAN-block acceptance: grafana blocked from WAN while
         # plex returns 200 — the headline Plex-only-public invariant.
         "wan-block grafana": (

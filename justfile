@@ -3,8 +3,8 @@
 #   just <recipe>   # plan / apply / fmt / play / gen-inventory / test
 #   just provision  # apply -> gen-inventory -> play (composite)
 #
-# Leaf recipes mirror the mise [tasks.*] 1:1 (coexistence — `mise run <task>`
-# still works; cutover is Step 4). Composite recipes chain the leaves via just's
+# `just` is the sole task interface — the former mise [tasks.*] were removed in
+# the Step-4 cutover. Composite recipes chain the leaves via just's
 # left-to-right dependency ordering (a non-zero recipe aborts the chain).
 # `just` is provisioned by mise (mise.toml [tools]); recipe bodies call the
 # tools directly (active-mise model, PATH).

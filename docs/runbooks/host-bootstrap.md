@@ -4,7 +4,7 @@ This runbook covers the **manual** host prerequisites that OpenTofu cannot
 provision for itself: the root@pam login ticket it authenticates with, the SSH
 access bpg needs for idmap/bind-mount operations, a host-GID sanity check, and
 the router port-forward placeholder. Work through it once on a fresh Proxmox VE
-host (`pve`) before running `mise run plan`.
+host (`pve`) before running `just plan`.
 
 All credentials are consumed from the environment exported by **mise**
 (non-secret config in committed `mise.toml`; secrets in gitignored
@@ -119,7 +119,7 @@ in once the Docker-host CT exists (Step 3+):
 With `mise.local.toml` populated and the steps above done:
 
 ```bash
-mise run plan
+just plan
 ```
 
 OpenTofu authenticates to `pve` (token + SSH), resolves the

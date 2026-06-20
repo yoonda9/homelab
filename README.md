@@ -23,7 +23,9 @@ keystroke timing, no installer boot menus.
 ### Prerequisites
 
 - [`mise`](https://mise.jdx.dev) for the toolchain and env. Run `mise install`
-  to provision Packer/OpenTofu/Python/Ansible, then copy the secrets template:
+  to provision Packer/OpenTofu/Python/Ansible/[`just`](https://just.systems) (the
+  task runner — `just <recipe>` drives plan/apply/play/gen-inventory/test), then
+  copy the secrets template:
   `cp mise.local.toml.example mise.local.toml` and fill it in. mise exports the
   four PVE API credentials Packer needs — `PROXMOX_HOST`, `PROXMOX_USER`,
   `PROXMOX_TOKEN_ID`, `PROXMOX_TOKEN_SECRET` — from the gitignored

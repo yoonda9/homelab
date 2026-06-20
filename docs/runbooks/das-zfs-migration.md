@@ -158,7 +158,7 @@ generated from `local.host_gids`), so the container can open `/dev/dri` and
 read `/media` while staying unprivileged. This is the default and preferred
 path.
 
-If, on a live `mise run apply`, the idmap fights GPU or DAS access — `vainfo`
+If, on a live `just apply`, the idmap fights GPU or DAS access — `vainfo`
 cannot open `/dev/dri/renderD128`, `/media` still shows `nobody:nogroup`, or the
 CT refuses to start because the provider could not apply the create-time idmap
 (needs **bpg ≥ 0.108.0** + provider `ssh { agent = true }`) — fall back to a
@@ -178,7 +178,7 @@ CT refuses to start because the provider could not apply the create-time idmap
 
    A privileged CT maps IDs 1:1 by default, so the `gid_maps`/`uid_maps` tiling
    becomes a no-op and `/dev/dri` + `/media` are reachable without punches.
-3. `mise run apply` to recreate the CT, then re-verify `/dev/dri` access and
+3. `just apply` to recreate the CT, then re-verify `/dev/dri` access and
    `/media` ownership inside the container.
 
 Privileged is the escape hatch, not the goal — prefer the unprivileged idmap and

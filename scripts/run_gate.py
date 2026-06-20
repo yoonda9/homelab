@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Aggregate offline backpressure gate for the proxmox-homelab repo (Step 12).
 
-`mise run test` calls this. It runs, in order, the entire offline gate that
+`just test` calls this. It runs, in order, the entire offline gate that
 every prior step invoked by hand, and exits non-zero if ANY part fails:
 
   1. Every ``scripts/test_*.py`` shape-test, each via ``python <file>`` — the

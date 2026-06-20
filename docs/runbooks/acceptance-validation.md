@@ -4,7 +4,7 @@ This runbook proves the headline requirement — **the whole service layer is
 rebuildable from code** — and walks the on-host acceptance checklist that signs
 off a deployment. It is the capstone (Step 12). Everything here needs **live**
 `pve` + DAS + WAN, so it is **manual, documented acceptance**: the offline gate
-(`mise run test`) is the automated half; this is the on-host half.
+(`just test`) is the automated half; this is the on-host half.
 
 Run it after a clean teardown to confirm the stack comes up purely from the repo
 with no manual fiddling **beyond the already-documented host prerequisites**:
@@ -23,42 +23,44 @@ cycle.
 Before touching `pve`, the full offline backpressure gate must be green:
 
 ```bash
-mise run test
+just test
 ```
 
 This runs every `scripts/test_*.py` shape-test plus `tofu fmt -check`/`validate`
 plus `ansible-lint --offline` + `ansible-playbook --syntax-check` and exits
-non-zero on any failure. A clean `mise run test` is the precondition for a live
+non-zero on any failure. A clean `just test` is the precondition for a live
 rebuild.
 
 ---
 
-## 1. Rebuild from code (clean destroy → apply → play)
+## 1. Rebuild from code (clean `just destroy` → `just provision`)
 
 The reproducibility cycle. With the host prerequisites in place and
 `mise.local.toml` populated (secrets — see `host-bootstrap.md` and DEC-001):
 
 ```bash
-# 1. Clean teardown — destroy the managed containers (110 plex, 111 docker-host).
-#    The DAS/ZFS pool and /tank/media are NOT tofu-managed and survive this.
-mise exec -- tofu -chdir=tofu destroy        # equivalently: cd tofu && tofu destroy
+# 1. Clean teardown — `just destroy` runs `tofu destroy` on the managed
+#    containers (110 plex, 111 docker-host). The DAS/ZFS pool and /tank/media
+#    are NOT tofu-managed and survive this.
+just destroy
 
-# 2. Re-provision the LXCs from code.
-mise run apply
-
-# 3. Render the Ansible inventory from live `tofu output` (static .110/.111
-#    fallback when an IP is still null).
-mise run gen-inventory
-
-# 4. Re-configure everything inside the containers from code.
-mise run play
+# 2. Re-provision the whole stack from code in one shot.
+just provision
 ```
+
+`just provision` chains the three leaf recipes it composes — run them
+individually if you want to inspect each stage:
+
+- `just apply` — re-provision the LXCs from code.
+- `just gen-inventory` — render the Ansible inventory from live `tofu output`
+  (static .110/.111 fallback when an IP is still null).
+- `just play` — re-configure everything inside the containers from code.
 
 > `tofu destroy` removes only the OpenTofu-managed CTs. Media on the ZFS DAS is
 > imported out-of-band (`das-zfs-migration.md`) and is bind-mounted read-only
 > into the Plex CT, so a destroy/apply cycle never touches the library.
 
-A second `mise run play` (or `ansible-playbook --check`) should report **no
+A second `just play` (or `ansible-playbook --check`) should report **no
 changes** — idempotency confirms the configuration is fully code-defined.
 
 ---
@@ -137,12 +139,12 @@ Traefik router rules and the `lan-allowlist@file` middleware before sign-off.
 
 Acceptance passes when, after a clean §1 rebuild-from-code:
 
-- [ ] `mise run test` (offline gate) is green.
-- [ ] CTs 110/111 created purely from `mise run apply`.
+- [ ] `just test` (offline gate) is green.
+- [ ] CTs 110/111 created purely from `just apply`.
 - [ ] `vainfo` → `iHD`; Plex Dashboard → `Transcode (hw)`.
 - [ ] `https://plex.yoonnation.com` → `200` + valid LE cert **from WAN**.
 - [ ] grafana / prometheus / homepage / uptime-kuma reachable on **LAN** with
       valid certs.
 - [ ] `grafana.yoonnation.com` **blocked from WAN** while `plex.yoonnation.com`
       stays `200` (§2.5).
-- [ ] A repeat `mise run play` reports no changes (idempotent).
+- [ ] A repeat `just play` reports no changes (idempotent).
