@@ -7,8 +7,12 @@ that `mise.toml [tools]` pins the `just` binary so `mise install` provisions it.
 Step 2 adds the composite recipes (`infra`/`config`/`provision`/`destroy`)
 chained over the leaves and the interactive-by-default `apply approve=AUTO:`
 auto-approve hatch; this test asserts those compose the expected leaves and the
-hatch is wired. The mise `[tasks.*]` stay (parallel, zero-downtime); cutover is
-Step 4.
+hatch is wired. Step 3 adds the parameterized Packer template recipes
+(`build <os>`/`build-all`/`bootstrap <os>`) — `build`/`bootstrap` take an `os`
+parameter forwarded to `scripts/*.sh` (the scripts own OS validation, so the
+justfile does not re-validate), and `build-all` sweeps the three OSes via
+`build` dependencies. The mise `[tasks.*]` stay (parallel, zero-downtime);
+cutover is Step 4.
 
 Follows the repo's dual-mode shape-test convention (see
 `test_mise_config_shape.py`, `test_dev_vm_module_shape.py`): module-level
@@ -31,6 +35,10 @@ MISE_TOML = REPO_ROOT / "mise.toml"
 RECIPES = ("default", "plan", "apply", "fmt", "play", "gen-inventory", "test")
 # Step-2 composite recipes layered over the leaf recipes (dependency chains).
 COMPOSITES = ("infra", "config", "provision", "destroy")
+# Step-3 parameterized Packer template recipes.
+TEMPLATES = ("build", "build-all", "bootstrap")
+# The three OS short-names `build-all` sweeps via `build` dependencies.
+BUILD_ALL_OSES = ("ubuntu26", "fedora", "windows11")
 # Recipes carrying a `[working-directory: '…']` attribute and their directory.
 # `destroy` (Step 2) joins the Tofu recipes; composites that are pure dependency
 # chains (`infra`/`config`/`provision`) inherit each leaf's own directory.
@@ -254,6 +262,68 @@ def test_apply_auto_approve_hatch() -> bool:
     return ok
 
 
+def test_template_recipes_defined() -> bool:
+    text = _justfile_text()
+    missing = [r for r in TEMPLATES if not _recipe_header(r).search(text)]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: justfile defines {list(TEMPLATES)} template "
+        f"recipes (missing={missing})"
+    )
+    return ok
+
+
+def test_build_invokes_script() -> bool:
+    text = _justfile_text()
+    # `build os:` header takes an `os` parameter and the body forwards it to the
+    # build script unchanged — no in-justfile OS validation (the script owns it).
+    ok = (
+        re.search(
+            r"^build\s+os\s*:[^\n]*\n\s*scripts/build_template\.sh\s+\{\{\s*os\s*\}\}",
+            text,
+            re.MULTILINE,
+        )
+        is not None
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: build takes an `os` param and runs "
+        f"`scripts/build_template.sh {{{{os}}}}`"
+    )
+    return ok
+
+
+def test_bootstrap_invokes_script() -> bool:
+    text = _justfile_text()
+    ok = (
+        re.search(
+            r"^bootstrap\s+os\s*:[^\n]*\n\s*scripts/bootstrap_cloud_template\.sh"
+            r"\s+\{\{\s*os\s*\}\}",
+            text,
+            re.MULTILINE,
+        )
+        is not None
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: bootstrap takes an `os` param and runs "
+        f"`scripts/bootstrap_cloud_template.sh {{{{os}}}}`"
+    )
+    return ok
+
+
+def test_build_all_sweeps_three() -> bool:
+    deps = _recipe_deps("build-all", _justfile_text())
+    # `build-all` is a pure dependency chain invoking `build` per OS short-name.
+    builds_ok = _mentions(deps, "build")
+    missing_os = [os for os in BUILD_ALL_OSES if os not in deps]
+    ok = builds_ok and not missing_os
+    print(
+        f"{'OK' if ok else 'FAIL'}: build-all depends on build for "
+        f"{list(BUILD_ALL_OSES)} (deps={deps.strip()!r}, build={builds_ok}, "
+        f"missing_os={missing_os})"
+    )
+    return ok
+
+
 TESTS = (
     test_justfile_exists,
     test_leaf_recipes_defined,
@@ -266,6 +336,10 @@ TESTS = (
     test_infra_composes_apply,
     test_config_composes_inventory_play,
     test_apply_auto_approve_hatch,
+    test_template_recipes_defined,
+    test_build_invokes_script,
+    test_bootstrap_invokes_script,
+    test_build_all_sweeps_three,
 )
 
 

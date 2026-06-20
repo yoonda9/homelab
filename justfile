@@ -58,3 +58,18 @@ provision approve=AUTO: (apply approve) gen-inventory play
 [working-directory: 'tofu']
 destroy:
     tofu destroy
+
+# --- Template recipes (Packer dev-VM builds) ---------------------------------
+# The scripts validate `os` and exit non-zero on an unknown short-name, so the
+# justfile forwards the arg unchanged — no re-validation here (avoids drift).
+
+# Build one dev-VM template: `just build {ubuntu26|fedora|windows11}`.
+build os:
+    scripts/build_template.sh {{os}}
+
+# Build all three dev-VM templates in sequence.
+build-all: (build "ubuntu26") (build "fedora") (build "windows11")
+
+# One-time cloud source-template bootstrap: `just bootstrap {ubuntu26|fedora}`.
+bootstrap os:
+    scripts/bootstrap_cloud_template.sh {{os}}
