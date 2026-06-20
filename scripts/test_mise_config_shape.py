@@ -1,10 +1,12 @@
 """Shape test for the mise dev-environment foundation (Step 1: direnv -> mise).
 
 Per design SS5.5/Appendix A and DEC-001 — verifies the committed `mise.toml`
-pins the tooling and the five tasks, carries the non-secret Proxmox env +
-python venv config, that the secret half lives only in the gitignored
-`mise.local.toml` (template committed as `mise.local.toml.example`), and that
-the legacy direnv `.envrc` approach is fully gone.
+pins the tooling (incl. the `just` task runner) and, after the Step-4 cutover,
+carries NO `[tasks.*]` (the justfile is now the sole task interface). It also
+carries the non-secret Proxmox env + python venv config, keeps the secret half
+only in the gitignored `mise.local.toml` (template committed as
+`mise.local.toml.example`), and proves the legacy direnv `.envrc` approach is
+fully gone.
 
 Follows the repo's dual-mode shape-test convention (see
 `test_dev_vm_module_shape.py`, `test_repo_artifacts.py`): module-level
@@ -29,10 +31,9 @@ GITIGNORE = REPO_ROOT / ".gitignore"
 # Step 12 — the capstone aggregate `mise run test` gate and its sign-off runbook.
 ACCEPTANCE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "acceptance-validation.md"
 
-# Tool keys mise.toml [tools] must pin (DEC-001 / design Appendix A).
+# Tool keys mise.toml [tools] must pin (DEC-001 / design Appendix A). `just` is
+# the task runner the Step-4 cutover migrated onto (asserted separately below).
 REQUIRED_TOOLS = ("opentofu", "packer", "python", "pipx:ansible")
-# The five tasks every later step relies on (mise run <name>).
-REQUIRED_TASKS = ("plan", "apply", "play", "fmt", "test")
 # Secret-bearing keys that must NEVER appear in the committed mise.toml —
 # the Tofu/Cloudflare half plus the four Packer vars (DEC-001).
 # NB: the Tofu provider authenticates with the root@pam username/password TICKET,
@@ -101,14 +102,28 @@ def test_tools_pinned() -> bool:
     return ok
 
 
-def test_five_tasks_present() -> bool:
+def test_just_pinned() -> bool:
+    """Step-4 cutover: mise [tools] still pins the `just` task runner."""
     data = _load_mise_toml() or {}
-    tasks = data.get("tasks", {})
-    missing = [t for t in REQUIRED_TASKS if t not in tasks]
-    ok = not missing
+    tools = data.get("tools", {})
+    val = tools.get("just")
+    ok = isinstance(val, str) and bool(val.strip())
     print(
-        f"{'OK' if ok else 'FAIL'}: [tasks] defines {list(REQUIRED_TASKS)} "
-        f"(missing={missing})"
+        f"{'OK' if ok else 'FAIL'}: [tools] pins the `just` task runner "
+        f"(value={val!r})"
+    )
+    return ok
+
+
+def test_no_tasks_block() -> bool:
+    """Step-4 cutover: the justfile is the sole task interface — mise has
+    no `[tasks.*]` blocks left (re-adding one reddens this; non-tautology)."""
+    data = _load_mise_toml() or {}
+    tasks = data.get("tasks", {}) or {}
+    ok = not tasks
+    print(
+        f"{'OK' if ok else 'FAIL'}: mise.toml has no [tasks.*] blocks "
+        f"(migrated to the justfile) (found={sorted(tasks)})"
     )
     return ok
 
@@ -197,61 +212,6 @@ def test_no_plaintext_secrets_committed() -> bool:
     return ok
 
 
-def _test_task_gate_text() -> str:
-    """Gate text the aggregate checks anchor on: the `[tasks.test].run` command
-    plus the source of every `scripts/*.py` helper it invokes.
-
-    The shape-test file itself is excluded even when referenced, so reverting
-    `[tasks.test]` to the single-file form (`python scripts/test_mise_config_shape.py`)
-    genuinely empties the gate text — the aggregate checks then FAIL rather than
-    matching this file's own anchor strings (mutation-proof, not a tautology).
-    """
-    data = _load_mise_toml() or {}
-    task = (data.get("tasks", {}) or {}).get("test", {}) or {}
-    run = task.get("run", "")
-    if isinstance(run, list):
-        run = "\n".join(str(x) for x in run)
-    run = str(run)
-    parts = [run]
-    self_name = pathlib.Path(__file__).name
-    for match in re.finditer(r"scripts/([\w.-]+\.py)", run):
-        helper = REPO_ROOT / "scripts" / match.group(1)
-        if helper.name == self_name:
-            continue
-        if helper.is_file():
-            parts.append(helper.read_text())
-    return "\n".join(parts)
-
-
-def test_test_task_is_full_aggregate() -> bool:
-    """Step 12: `mise run test` is the full offline gate, not a single file."""
-    text = _test_task_gate_text()
-    checks = {
-        # Globs every scripts/test_*.py so a new shape-test auto-joins the gate
-        # (no hand-maintained enumeration that silently drops files) — AC2.
-        "shape-suite glob": re.search(r"test_\*\.py", text) is not None,
-        # OpenTofu validation folded in (fmt + validate).
-        "tofu-fmt": re.search(r"tofu\b[^\n]*fmt[^\n]*-check", text) is not None,
-        "tofu-validate": re.search(r"tofu\b[^\n]*validate", text) is not None,
-        # Ansible offline lint + syntax-check folded in.
-        "ansible-offline-lint": re.search(
-            r"ansible-lint\b[^\n]*--offline", text
-        )
-        is not None,
-        "ansible-syntax-check": re.search(r"--syntax-check", text) is not None,
-        # Must NOT lean on bare `pytest scripts/` — the pre-existing
-        # test_pkr_cloud_seed.py collection artifacts would break the gate.
-        "no-pytest-collection": re.search(r"pytest\s+scripts", text) is None,
-    }
-    missing = [k for k, v in checks.items() if not v]
-    ok = not missing
-    print(
-        f"{'OK' if ok else 'FAIL'}: [tasks.test] drives the full offline gate "
-        f"(shape glob + tofu + ansible) (missing={missing})"
-    )
-    return ok
-
-
 def test_acceptance_runbook_documents_reproducibility() -> bool:
     """Step 12: the rebuild-from-code cycle + WAN-block acceptance is documented."""
     body = ACCEPTANCE_RUNBOOK.read_text() if ACCEPTANCE_RUNBOOK.is_file() else ""
@@ -288,13 +248,13 @@ def test_acceptance_runbook_documents_reproducibility() -> bool:
 TESTS = (
     test_mise_toml_parses,
     test_tools_pinned,
-    test_five_tasks_present,
+    test_just_pinned,
+    test_no_tasks_block,
     test_nonsecret_env_present,
     test_local_example_tracked,
     test_local_secrets_gitignored,
     test_no_envrc_remains,
     test_no_plaintext_secrets_committed,
-    test_test_task_is_full_aggregate,
     test_acceptance_runbook_documents_reproducibility,
 )
 
