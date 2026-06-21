@@ -327,6 +327,30 @@ def test_plex_module_wired() -> bool:
     return ok
 
 
+def test_plex_nesting_enabled() -> bool:
+    """Regression (mem-1782080830-9609): the Plex CT 110 vzreboot timed out
+    because module "plex" OMITTED `nesting`, defaulting it to false
+    (variables.tf). The Debian 13 template ships systemd 257, which hangs on
+    first boot in an unprivileged CT without features.nesting=true, so the
+    create's reboot step never completes and the CT is left tainted. docker_host
+    (nesting=true) is the live positive control. The plex module MUST pass
+    nesting = true; reverting to the default (omitting it) must fail this gate."""
+    main_file = TOFU_DIR / "main.tf"
+    if not main_file.is_file():
+        print("FAIL: plex nesting enabled (main.tf missing)")
+        return False
+    body = main_file.read_text()
+    block = re.search(r'module\s+"plex"\s*\{(.*?)\n\}', body, re.DOTALL)
+    if not block:
+        print("FAIL: plex nesting enabled (no module \"plex\" block)")
+        return False
+    # Strip comments so the historical nesting note can't satisfy the check.
+    code = re.sub(r"#[^\n]*", "", block.group(1))
+    ok = re.search(r"nesting\s*=\s*true", code) is not None
+    print(f"{'OK' if ok else 'FAIL'}: module plex passes nesting = true")
+    return ok
+
+
 def test_plex_outputs() -> bool:
     """AC4: outputs.tf exposes plex id/name/ipv4 (mirroring docker_host) so the
     Ansible inventory can target the Plex host in Step 8."""
@@ -381,6 +405,7 @@ def main() -> int:
         test_idmap_uid_full_offset(),
         test_idmap_generated_from_host_gids(),
         test_plex_module_wired(),
+        test_plex_nesting_enabled(),
         test_plex_outputs(),
         test_tofu_validate(),
     ]

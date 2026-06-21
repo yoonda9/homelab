@@ -51,8 +51,14 @@ module "plex" {
   bridge           = local.net.bridge
   template_file_id = proxmox_download_file.debian13_lxc.id
   unprivileged     = true
-  cores            = 6
-  memory_mb        = 4096
+  # The Debian 13 template ships systemd 257, which hangs on first boot in an
+  # unprivileged CT without nesting (Proxmox warns "Systemd 257 detected. You
+  # may need to enable nesting") — the create's vzreboot step then times out and
+  # the CT is left tainted. Mirror docker_host's nesting=true so the boot
+  # completes. (docker_host, also unprivileged+systemd 257, is the control.)
+  nesting   = true
+  cores     = 6
+  memory_mb = 4096
 
   device_passthroughs = [
     {
