@@ -97,7 +97,43 @@ video:x:44:
 > must carry your host's real GIDs; a mismatch will make `vainfo` fail inside the
 > Plex CT.
 
-## 4. Router port-forward (placeholder)
+## 4. Delegate the Plex CT punch GIDs in `/etc/subgid`
+
+The unprivileged Plex CT's idmap (Step 7) punches the host GIDs **993**
+(`render`) and **44** (`video`) **1:1** into the container so it can open
+`/dev/dri` and read `/media` while staying unprivileged. The provider applies
+that map with `newgidmap`, which will only write a sub-GID range that is
+**delegated to `root`** in `/etc/subgid`. Proxmox's default allocation is
+`root:100000:65536` — that covers the idmap's `+100000` *offset* tiles, but
+**not** the two size-1 *punch* tiles at GID 44 and 993, which fall outside it.
+Without the delegations the container **fails to start** with:
+
+```
+lxc_map_ids: newgidmap failed: "newgidmap: gid range [44-45) -> [44-45) not allowed"
+TASK ERROR: startup for container '110' failed
+```
+
+`getent group render video` (section 3) is clean, `just plan`/`apply` is clean —
+this surfaces only at first **CT start**, so set it up here, before any apply.
+
+Append one delegation **per punch GID** to `/etc/subgid` on `pve` (each punch
+needs its own line — a blanket range will not do):
+
+```bash
+# on pve, as root — idempotent (grep-guard avoids duplicate lines)
+grep -qxF 'root:44:1'  /etc/subgid || echo 'root:44:1'  >> /etc/subgid   # video
+grep -qxF 'root:993:1' /etc/subgid || echo 'root:993:1' >> /etc/subgid   # render
+```
+
+> **`/etc/subuid` needs nothing.** The Plex CT's **uid** map is a single offset
+> tile (`0 → 100000`, size 65536) that lies entirely inside `root`'s default
+> `root:100000:65536` subuid allocation — there are no uid punches, so no extra
+> uid delegation is required. Only the **gid** side needs the two lines above.
+
+If you change the host GIDs (so `tofu/locals.tf`'s `host_gids` change), update
+these `/etc/subgid` lines to match the new punch GIDs.
+
+## 5. Router port-forward (placeholder)
 
 Public ingress (Traefik on the Docker-host LXC) requires the home router to
 forward inbound web traffic to the LXC. This is a **manual router change**, filled
@@ -114,7 +150,7 @@ in once the Docker-host CT exists (Step 3+):
 
 ---
 
-## 5. Verify connectivity
+## 6. Verify connectivity
 
 With `mise.local.toml` populated and the steps above done:
 

@@ -167,7 +167,13 @@ CT refuses to start because the provider could not apply the create-time idmap
 1. Re-check the host GIDs match the tiling: `getent group render video` on `pve`
    (expected `render:x:993`, `video:x:44`). If they differ, fix
    `local.host_gids` in `tofu/locals.tf` and re-apply — the tiling regenerates.
-2. If the idmap still misbehaves, flip the switch in `tofu/main.tf`:
+2. **Check the `/etc/subgid` delegations first** — if the CT won't start with
+   `newgidmap: gid range [44-45) -> [44-45) not allowed` (or `[993-994)`), the
+   punch GIDs are not delegated to `root` in `/etc/subgid`. This is the host-side
+   prereq (`root:44:1` + `root:993:1`, uid side needs nothing) documented in
+   **`host-bootstrap.md` § "Delegate the Plex CT punch GIDs in /etc/subgid"** —
+   add those lines on `pve` *before* reaching for the privileged escape hatch.
+3. If the idmap still misbehaves, flip the switch in `tofu/main.tf`:
 
    ```hcl
    module "plex" {
@@ -178,7 +184,7 @@ CT refuses to start because the provider could not apply the create-time idmap
 
    A privileged CT maps IDs 1:1 by default, so the `gid_maps`/`uid_maps` tiling
    becomes a no-op and `/dev/dri` + `/media` are reachable without punches.
-3. `just apply` to recreate the CT, then re-verify `/dev/dri` access and
+4. `just apply` to recreate the CT, then re-verify `/dev/dri` access and
    `/media` ownership inside the container.
 
 Privileged is the escape hatch, not the goal — prefer the unprivileged idmap and
