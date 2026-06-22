@@ -1,0 +1,27 @@
+ansible-core: ansible [core 2.19.4]
+
+=== PRIMARY (CASE C): render PRE-EXISTS at 994, GID 993 TAKEN by another group -> matches DEBUG.md ===
+  pre-state: render:x:994: | someservice:x:993:
+  --- run EXACT task: ansible.builtin.group name=render gid=993 state=present ---
+      localhost | FAILED! => {
+          "changed": false,
+          "msg": "groupmod: GID '993' already exists\n",
+          "name": "render"
+      [/etc/group render line]: render:x:994:
+
+=== ADVERSARIAL/NEIGHBOR: render PRE-EXISTS at 994 but GID 993 is FREE (isolate the collision variable) ===
+Unknown database: gid
+  pre-state: render:x:994: | 993 holder: Try `getent --help' or `getent --usage' for more information.
+FREE
+  --- run EXACT task (993 now free, so groupmod -g 993 render should succeed) ---
+          "changed": true,
+          "gid": 993,
+          "name": "render",
+      [/etc/group render line]: render:x:993:
+
+=== FIX-DIRECTION CHECK: restore the collision, add non_unique=true (proposed reconciliation) ===
+  pre-state: render:x:994: | someservice:x:993:
+  --- run task WITH non_unique=true ---
+          "changed": true,
+          "gid": 993,
+      [render line]: render:x:993:

@@ -301,6 +301,48 @@ def test_plex_source_trusted_before_baseline_apt() -> bool:
     return ok
 
 
+def test_plex_render_video_groups_non_unique() -> bool:
+    """The render/video group tasks must set non_unique:true so a re-run converges.
+
+    Root cause (mem-1782150377-4384): the render-group task hard-pins gid=993 with no
+    collision handling. On a second `just play`, the earlier package installs in this
+    role may already have created `render` at a non-993 system GID while GID 993 is held
+    by another auto-allocated group ("play already ran once" — host GIDs allocate
+    descending from 999). ansible then runs `groupmod -g 993 render`, which aborts with
+    "groupmod: GID '993' already exists" (changed=false) and never converges. The fix
+    adds non_unique:true so the group is forced onto the host GID even when shared; the
+    repro confirmed the same task with non_unique:true succeeds under the collision. The
+    symmetric video task (gid=44) needs the same treatment.
+
+    Slices each group task by its `- name:` block so a non_unique on the wrong task (or
+    elsewhere in the file) cannot satisfy this check.
+    """
+    if not PLEX_TASKS.is_file():
+        print("FAIL: plex render/video groups non_unique (tasks/main.yml missing)")
+        return False
+    body = PLEX_TASKS.read_text()
+
+    def _block(name: str) -> str:
+        m = re.search(
+            r'(?ms)^-\s+name:\s*' + re.escape(name) + r'\b.*?(?=^-\s+name:|\Z)',
+            body,
+        )
+        return m.group(0) if m else ""
+
+    render_task = _block("Ensure the render group maps to the host render GID")
+    video_task = _block("Ensure the video group maps to the host video GID")
+    non_unique_re = re.compile(r'(?m)^\s*non_unique\s*:\s*(?:true|yes)\b')
+
+    render_non_unique = bool(render_task) and non_unique_re.search(render_task) is not None
+    video_non_unique = bool(video_task) and non_unique_re.search(video_task) is not None
+    ok = render_non_unique and video_non_unique
+    print(
+        f"{'OK' if ok else 'FAIL'}: plex render/video groups non_unique "
+        f"(render_non_unique={render_non_unique} video_non_unique={video_non_unique})"
+    )
+    return ok
+
+
 def test_site_applies_plex_play() -> bool:
     site = ANSIBLE / "site.yml"
     if not site.is_file():
@@ -410,6 +452,7 @@ def main() -> int:
         test_plex_install_refreshes_after_repo(),
         test_plex_repo_trusted_scoped_to_plex(),
         test_plex_source_trusted_before_baseline_apt(),
+        test_plex_render_video_groups_non_unique(),
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
         test_docker_install_delegated_to_geerlingguy_role(),

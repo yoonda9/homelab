@@ -1,0 +1,15 @@
+=== EXP5: idempotency / state-dependence of the render group task ===
+--- CASE A: render absent, 993 FREE (clean first run) ---
+    "changed": true,
+  -> render:x:993:
+--- CASE A re-run (idempotent second run, render now=993) ---
+    "changed": false,
+
+--- CASE B: render absent, 993 TAKEN by another group (would be FIRST reach) ---
+    "changed": false,
+    "msg": "groupadd: GID '993' already exists\n",
+  (note: groupADD path -> render absent)
+
+--- CASE C: render PRE-EXISTS !=993 (e.g. from prior run/package), 993 TAKEN -> matches DEBUG.md ---
+    "changed": false,
+    "msg": "groupmod: GID '993' already exists\n",

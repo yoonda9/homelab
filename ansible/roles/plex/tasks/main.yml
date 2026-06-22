@@ -86,12 +86,23 @@
   ansible.builtin.group:
     name: render
     gid: "{{ plex_render_gid }}"
+    # non_unique: a re-run may find that the package installs in this role already
+    # allocated `render` at a non-993 system GID while GID 993 got taken by another
+    # auto-allocated group. Without non_unique, `groupmod -g 993 render` aborts with
+    # "groupmod: GID '993' already exists" (changed=false) and never converges. With
+    # non_unique the render group is forced onto the host render GID (993) idempotently
+    # even when that GID is shared, which is what /dev/dri passthrough needs.
+    non_unique: true
     state: present
 
 - name: Ensure the video group maps to the host video GID for /dev/dri access
   ansible.builtin.group:
     name: video
     gid: "{{ plex_video_gid }}"
+    # non_unique for the same reason as the render group above: a second `just play`
+    # must reconcile `video` onto the host video GID (44) even if that GID is already
+    # held, instead of aborting "groupmod: GID '44' already exists".
+    non_unique: true
     state: present
 
 - name: Add the plex user to the render/video groups so QSV can open /dev/dri

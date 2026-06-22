@@ -1,0 +1,33 @@
+=== Fix Verifier: groupmod GID-993/44 non_unique idempotency repro ===
+host: Linux 3b580d09d4e8 7.0.11-200.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Mon Jun  1 22:50:37 UTC 2026 x86_64 GNU/Linux
+ansible-core: ansible [core 2.19.4]
+
+=== STEP 1 — ORIGINAL REPRO (CASE C, BROKEN task, no non_unique) — expect FAIL byte-identical to DEBUG.md ===
+  pre-state: render:x:994: | someservice:x:993:
+TASK [Ensure the render group maps to the host render GID for /dev/dri access] ***
+[ERROR]: Task failed: Module failed: groupmod: GID '993' already exists
+4     - name: Ensure the render group maps to the host render GID for /dev/dri access
+fatal: [localhost]: FAILED! => {"ansible_facts": {"discovered_interpreter_python": "/usr/bin/python3.13"}, "changed": false, "msg": "groupmod: GID '993' already exists\n", "name": "render"}
+localhost                  : ok=0    changed=0    unreachable=0    failed=1    skipped=0    rescued=0    ignored=0   
+  [render after]: render:x:994:
+
+=== STEP 2 — FIXED task (non_unique:true), SAME CASE C collision — expect converge to gid 993 ===
+  pre-state: render:x:994: | someservice:x:993:
+localhost                  : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+  [render after]: render:x:993:
+
+=== STEP 3 — IDEMPOTENCY (human concern: play already ran once) — re-run FIXED task on converged state — expect changed=false ===
+  pre-state: render:x:993:
+localhost                  : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+  [render after]: render:x:993:
+
+=== STEP 4 — ADVERSARIAL/NEIGHBOR: symmetric VIDEO gid=44 collision + non_unique ===
+groupadd: GID '60' already exists
+  pre-state:  | othervid:x:44:
+localhost                  : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+  [video after]: video:x:44:
+  --- re-run for idempotency ---
+localhost                  : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+  [video after]: video:x:44:
+
+=== DONE ===
