@@ -1,0 +1,16 @@
+---
+# Ansible Galaxy role requirements for the ansible/ config layer.
+#
+# geerlingguy.docker will replace the custom Docker install (keyring / deb822 /
+# apt / systemd tasks) in roles/docker_host. This file only DECLARES and pins
+# the dependency; the role is wired into docker_host in a later step. Pinned to
+# an EXACT version (never `latest`) for reproducibility, mirroring the repo's
+# exact-pin convention for opentofu / packer / just.
+#
+# The offline gate (just test) cannot reach Galaxy, so once docker_host
+# references this role it must also be vendored/resolvable on disk; that is the
+# follow-up `resolvable` step (roles_path + `just galaxy`). Declaring it here
+# does not yet reference it, so ansible-playbook --syntax-check is unaffected.
+roles:
+  - src: geerlingguy.docker
+    version: 8.0.0

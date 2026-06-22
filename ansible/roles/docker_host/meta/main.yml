@@ -3,7 +3,7 @@ galaxy_info:
   role_name: docker_host
   namespace: homelab
   author: homelab maintainers
-  description: Install Docker CE + compose and bring up Traefik (HTTP-01) with a LAN-only whoami smoke route.
+  description: Bring up Traefik and a LAN-only whoami smoke stack via Docker compose; Docker + the compose plugin come from the geerlingguy.docker dependency.
   license: MIT
   min_ansible_version: "2.15"
   platforms:
@@ -15,4 +15,17 @@ galaxy_info:
     - homelab
     - docker
     - traefik
-dependencies: []
+# Docker CE + the compose plugin are installed by the upstream geerlingguy.docker
+# role (pinned in ansible/requirements.yml, vendored under galaxy_roles/, resolved
+# offline via roles_path). A meta dependency runs it BEFORE this role's own tasks,
+# so the Traefik/compose stack below always has a running Docker daemon. Var
+# mapping replaces the former custom install: compose PLUGIN on (gives
+# `docker compose`), standalone v1 docker-compose off, service started + enabled,
+# Debian `stable` apt channel.
+dependencies:
+  - role: geerlingguy.docker
+    docker_install_compose_plugin: true
+    docker_install_compose: false
+    docker_service_state: started
+    docker_service_enabled: true
+    docker_apt_release_channel: stable

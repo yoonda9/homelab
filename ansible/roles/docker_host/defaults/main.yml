@@ -4,13 +4,8 @@
 # Compose project directory on CT 111 (holds compose.yml + Traefik config).
 docker_host_project_dir: /opt/stack
 
-# Docker CE + compose plugin packages (installed via ansible.builtin.apt).
-docker_host_packages:
-  - docker-ce
-  - docker-ce-cli
-  - containerd.io
-  - docker-buildx-plugin
-  - docker-compose-plugin
+# Docker CE + the compose plugin are installed by the geerlingguy.docker meta
+# dependency (see meta/main.yml); package selection lives in that role's vars.
 
 # Container images for the smoke stack.
 docker_host_traefik_image: traefik:v3.3

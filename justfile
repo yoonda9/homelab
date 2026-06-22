@@ -38,6 +38,13 @@ fmt:
 play:
     ansible-playbook site.yml
 
+# Install/refresh the pinned Galaxy roles (ansible/requirements.yml) into the
+# vendored ansible/galaxy_roles/ dir. The result is committed so the offline
+# gate (just test) and `just play` resolve the roles on disk with no network.
+[working-directory: 'ansible']
+galaxy:
+    ansible-galaxy role install -r requirements.yml -p galaxy_roles
+
 # Render ansible/inventory/hosts.yml from `tofu output` (runs from repo root).
 gen-inventory:
     python scripts/gen_inventory.py

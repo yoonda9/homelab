@@ -27,6 +27,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ANSIBLE = REPO_ROOT / "ansible"
 PLEX_TASKS = ANSIBLE / "roles" / "plex" / "tasks" / "main.yml"
 DOCKER_HOST_TASKS = ANSIBLE / "roles" / "docker_host" / "tasks" / "main.yml"
+DOCKER_HOST_META = ANSIBLE / "roles" / "docker_host" / "meta" / "main.yml"
 GEN_INVENTORY = REPO_ROOT / "scripts" / "gen_inventory.py"
 
 
@@ -202,59 +203,70 @@ def test_gen_inventory_renders_plex_group() -> bool:
     return ok
 
 
-def test_docker_ce_install_refreshes_after_repo() -> bool:
-    """The 'Install Docker CE' apt task must not skip the post-repo cache refresh.
+def test_docker_install_delegated_to_geerlingguy_role() -> bool:
+    """docker_host delegates Docker install to the upstream geerlingguy.docker role.
 
-    Regression for the cache_valid_time footgun (mem-1782131294-0a24): the prior
-    python3-debian apt task stamps the apt cache fresh, so the Docker deb822 repo
-    added just above the install is only indexed if the install task refreshes the
-    cache unconditionally. Ansible's apt module updates the cache ONLY when it is
-    older than cache_valid_time, so a cache_valid_time on the docker-ce install
-    task makes it SKIP the refresh -> "No package matching 'docker-ce'".
+    Step 2 (wire-role) replaced the former custom install -- keyring dir,
+    python3-debian, Docker GPG, a deb822 Docker repo, an apt install of
+    `docker_host_packages`, and the systemd enable -- with the vendored
+    geerlingguy.docker role (pinned in requirements.yml, resolved offline via
+    roles_path). This asserts the NEW reality:
 
-    The fix is sound if EITHER: (a) the docker-ce install apt task carries
-    update_cache:true with NO cache_valid_time (always refreshes), OR (b) an
-    explicit apt update_cache:true (no cache_valid_time) task sits between the
-    deb822 docker repo and the install. This anchors on the install task body so
-    a bare mention elsewhere cannot satisfy it (mem-1781892715-142d).
+    1. geerlingguy.docker is wired -- as a meta dependency (meta/main.yml) OR an
+       include_role in tasks/main.yml -- WITH the compose-plugin var mapping
+       (docker_install_compose_plugin: true) so `docker compose` is present for
+       the Traefik stack rendered by this role's own tasks.
+    2. the custom install primitives are ABSENT from tasks/main.yml: no
+       'Install Docker CE' task, no deb822 Docker repo, no `docker_host_packages`
+       reference, no python3-debian prereq.
+
+    Anchors on the actual wiring + var lines (a role/name key, not a comment) and
+    on the absence of the old primitives, so neither a stub nor a leftover comment
+    can satisfy it (mem-1781892715-142d).
     """
-    if not DOCKER_HOST_TASKS.is_file():
-        print("FAIL: docker-ce install refreshes cache after repo (docker_host main.yml missing)")
-        return False
-    body = DOCKER_HOST_TASKS.read_text()
+    for path in (DOCKER_HOST_TASKS, DOCKER_HOST_META):
+        if not path.is_file():
+            print(f"FAIL: docker install delegated to geerlingguy.docker ({path.name} missing)")
+            return False
+    tasks = DOCKER_HOST_TASKS.read_text()
+    # The role may be wired via a meta dependency or an include_role in tasks; scan both.
+    wiring = DOCKER_HOST_META.read_text() + "\n" + tasks
 
-    # Isolate the 'Install Docker CE' apt task block (up to the next top-level task).
-    install = re.search(
-        r'(?ms)^-\s+name:\s*Install Docker CE[^\n]*\n(?P<body>(?:^\s+.*\n?)+?)(?=^-\s|\Z)',
-        body,
-    )
-    if not install:
-        print("FAIL: docker-ce install refreshes cache after repo (Install Docker CE task not found)")
-        return False
-    install_body = install.group("body")
-    install_updates = re.search(r'(?m)^\s*update_cache\s*:\s*true', install_body) is not None
-    install_has_cvt = re.search(r'(?m)^\s*cache_valid_time\s*:', install_body) is not None
+    # 1a. geerlingguy.docker referenced on a role/name key (meta dep short form
+    #     "- role: geerlingguy.docker" or include_role's "name: geerlingguy.docker"),
+    #     not merely named in a comment.
+    role_wired = re.search(
+        r'(?m)^\s*(?:-\s+role|name)\s*:\s*["\']?geerlingguy\.docker(?:["\']|\s|$)', wiring
+    ) is not None
+    # 1b. the compose-plugin var mapping travels with the wiring.
+    compose_plugin = re.search(
+        r'(?m)^\s*docker_install_compose_plugin\s*:\s*(?:true|yes)\b', wiring
+    ) is not None
 
-    # Option (b): a dedicated apt update_cache:true task (no cache_valid_time)
-    # between the deb822 repo and the install would also keep the repo indexed.
-    repo_pos = body.find("deb822_repository")
-    install_pos = install.start()
-    explicit_refresh = False
-    if 0 <= repo_pos < install_pos:
-        between = body[repo_pos:install_pos]
-        for m in re.finditer(r'(?ms)ansible\.builtin\.apt\s*:\n(?P<b>(?:^\s+.*\n?)+?)(?=^-\s|\Z)', between):
-            blk = m.group("b")
-            if re.search(r'(?m)^\s*update_cache\s*:\s*true', blk) and not re.search(
-                r'(?m)^\s*cache_valid_time\s*:', blk
-            ):
-                explicit_refresh = True
-                break
+    # 2. the custom install primitives are gone from tasks/main.yml.
+    no_install_task = re.search(r'(?mi)^-\s+name:\s*Install Docker CE', tasks) is None
+    no_docker_repo = "deb822_repository" not in tasks
+    no_packages_var = "docker_host_packages" not in tasks
+    no_python3_debian = "python3-debian" not in tasks
+    custom_gone = no_install_task and no_docker_repo and no_packages_var and no_python3_debian
 
-    ok = (install_updates and not install_has_cvt) or explicit_refresh
+    # 3. the galaxy_info description no longer claims THIS role installs Docker CE
+    #    (Step 3 doc alignment): the install is delegated to geerlingguy.docker, so
+    #    a description advertising the role's own "Install Docker CE" is misleading.
+    #    Anchored on the `description:` value line so the migration comment block
+    #    (which names the FORMER custom install) cannot satisfy or redden it.
+    desc_match = re.search(r'(?m)^\s*description:\s*(.+)$', DOCKER_HOST_META.read_text())
+    desc = desc_match.group(1) if desc_match else ""
+    description_aligned = "Install Docker CE" not in desc
+
+    ok = role_wired and compose_plugin and custom_gone and description_aligned
     print(
-        f"{'OK' if ok else 'FAIL'}: docker-ce install refreshes apt cache after the repo is added "
-        f"(install update_cache={install_updates} cache_valid_time={install_has_cvt} "
-        f"explicit_refresh={explicit_refresh})"
+        f"{'OK' if ok else 'FAIL'}: docker install delegated to geerlingguy.docker "
+        f"(role_wired={role_wired} compose_plugin={compose_plugin} "
+        f"custom_install_gone={custom_gone} description_aligned={description_aligned} "
+        f"[install_task={not no_install_task} "
+        f"deb822={not no_docker_repo} packages_var={not no_packages_var} "
+        f"python3_debian={not no_python3_debian}])"
     )
     return ok
 
@@ -274,7 +286,7 @@ def main() -> int:
         test_plex_vainfo_ihd_gate(),
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
-        test_docker_ce_install_refreshes_after_repo(),
+        test_docker_install_delegated_to_geerlingguy_role(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

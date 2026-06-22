@@ -1,60 +1,11 @@
 ---
-# Install Docker CE + compose and bring up the Traefik smoke stack on CT 111.
-# ansible.builtin-only (the ansible-core venv has no community.docker — see
-# mem-1781894740-5099); every task is idempotent: declared `state`, or a
-# guarded ansible.builtin.command for `docker compose` (no builtin module).
-
-- name: Ensure the apt keyring directory exists
-  ansible.builtin.file:
-    path: /etc/apt/keyrings
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Install the deb822 source manager dependency
-  ansible.builtin.apt:
-    name: python3-debian
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
-
-- name: Add the Docker apt GPG key
-  ansible.builtin.get_url:
-    url: https://download.docker.com/linux/debian/gpg
-    dest: /etc/apt/keyrings/docker.asc
-    owner: root
-    group: root
-    mode: "0644"
-
-- name: Add the Docker apt repository
-  ansible.builtin.deb822_repository:
-    name: docker
-    types: deb
-    uris: https://download.docker.com/linux/debian
-    suites: "{{ ansible_distribution_release }}"
-    components: stable
-    architectures: amd64
-    signed_by: /etc/apt/keyrings/docker.asc
-    state: present
-    enabled: true
-
-- name: Install Docker CE and the compose plugin
-  ansible.builtin.apt:
-    name: "{{ docker_host_packages }}"
-    state: present
-    # No cache_valid_time: the prior python3-debian apt task freshly stamped the
-    # apt cache, so a cache_valid_time here would make the apt module SKIP the
-    # refresh (it only updates when the cache is OLDER than the window) and the
-    # Docker deb822 repo added just above would never be indexed -> "No package
-    # matching 'docker-ce'". An unconditional update_cache indexes the new repo.
-    update_cache: true
-
-- name: Ensure the Docker service is enabled and running
-  ansible.builtin.systemd:
-    name: docker
-    enabled: true
-    state: started
+# Bring up the Traefik smoke stack on CT 111. Docker CE + the compose plugin are
+# installed FIRST by the geerlingguy.docker meta dependency (see meta/main.yml),
+# so a running Docker daemon and `docker compose` are guaranteed before these
+# tasks render the stack. ansible.builtin-only (the ansible-core venv has no
+# community.docker — see mem-1781894740-5099); every task is idempotent: declared
+# `state`, or a guarded ansible.builtin.command for `docker compose` (no builtin
+# module).
 
 - name: Create the compose project directory
   ansible.builtin.file:

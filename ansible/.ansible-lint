@@ -1,0 +1,10 @@
+# ansible-lint config for the proxmox-homelab config layer.
+#
+# Vendored Galaxy roles (galaxy_roles/, pinned in requirements.yml and installed
+# via `just galaxy`) are third-party code, pinned to an exact upstream release.
+# They do not pass our production lint profile (FQCN / implicit-octal / etc.) and
+# they are not ours to fix, so exclude them from linting. Our own roles/ are
+# still linted, and `ansible-playbook --syntax-check` still resolves the vendored
+# role via roles_path (galaxy_roles/), so the offline gate stays self-contained.
+exclude_paths:
+  - galaxy_roles/
