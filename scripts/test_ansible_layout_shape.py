@@ -26,6 +26,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ANSIBLE = REPO_ROOT / "ansible"
 PLEX_TASKS = ANSIBLE / "roles" / "plex" / "tasks" / "main.yml"
+DOCKER_HOST_TASKS = ANSIBLE / "roles" / "docker_host" / "tasks" / "main.yml"
 GEN_INVENTORY = REPO_ROOT / "scripts" / "gen_inventory.py"
 
 
@@ -201,6 +202,63 @@ def test_gen_inventory_renders_plex_group() -> bool:
     return ok
 
 
+def test_docker_ce_install_refreshes_after_repo() -> bool:
+    """The 'Install Docker CE' apt task must not skip the post-repo cache refresh.
+
+    Regression for the cache_valid_time footgun (mem-1782131294-0a24): the prior
+    python3-debian apt task stamps the apt cache fresh, so the Docker deb822 repo
+    added just above the install is only indexed if the install task refreshes the
+    cache unconditionally. Ansible's apt module updates the cache ONLY when it is
+    older than cache_valid_time, so a cache_valid_time on the docker-ce install
+    task makes it SKIP the refresh -> "No package matching 'docker-ce'".
+
+    The fix is sound if EITHER: (a) the docker-ce install apt task carries
+    update_cache:true with NO cache_valid_time (always refreshes), OR (b) an
+    explicit apt update_cache:true (no cache_valid_time) task sits between the
+    deb822 docker repo and the install. This anchors on the install task body so
+    a bare mention elsewhere cannot satisfy it (mem-1781892715-142d).
+    """
+    if not DOCKER_HOST_TASKS.is_file():
+        print("FAIL: docker-ce install refreshes cache after repo (docker_host main.yml missing)")
+        return False
+    body = DOCKER_HOST_TASKS.read_text()
+
+    # Isolate the 'Install Docker CE' apt task block (up to the next top-level task).
+    install = re.search(
+        r'(?ms)^-\s+name:\s*Install Docker CE[^\n]*\n(?P<body>(?:^\s+.*\n?)+?)(?=^-\s|\Z)',
+        body,
+    )
+    if not install:
+        print("FAIL: docker-ce install refreshes cache after repo (Install Docker CE task not found)")
+        return False
+    install_body = install.group("body")
+    install_updates = re.search(r'(?m)^\s*update_cache\s*:\s*true', install_body) is not None
+    install_has_cvt = re.search(r'(?m)^\s*cache_valid_time\s*:', install_body) is not None
+
+    # Option (b): a dedicated apt update_cache:true task (no cache_valid_time)
+    # between the deb822 repo and the install would also keep the repo indexed.
+    repo_pos = body.find("deb822_repository")
+    install_pos = install.start()
+    explicit_refresh = False
+    if 0 <= repo_pos < install_pos:
+        between = body[repo_pos:install_pos]
+        for m in re.finditer(r'(?ms)ansible\.builtin\.apt\s*:\n(?P<b>(?:^\s+.*\n?)+?)(?=^-\s|\Z)', between):
+            blk = m.group("b")
+            if re.search(r'(?m)^\s*update_cache\s*:\s*true', blk) and not re.search(
+                r'(?m)^\s*cache_valid_time\s*:', blk
+            ):
+                explicit_refresh = True
+                break
+
+    ok = (install_updates and not install_has_cvt) or explicit_refresh
+    print(
+        f"{'OK' if ok else 'FAIL'}: docker-ce install refreshes apt cache after the repo is added "
+        f"(install update_cache={install_updates} cache_valid_time={install_has_cvt} "
+        f"explicit_refresh={explicit_refresh})"
+    )
+    return ok
+
+
 def main() -> int:
     results = [
         test_ansible_directory_exists(),
@@ -216,6 +274,7 @@ def main() -> int:
         test_plex_vainfo_ihd_gate(),
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
+        test_docker_ce_install_refreshes_after_repo(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

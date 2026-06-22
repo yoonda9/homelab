@@ -43,8 +43,12 @@
   ansible.builtin.apt:
     name: "{{ docker_host_packages }}"
     state: present
+    # No cache_valid_time: the prior python3-debian apt task freshly stamped the
+    # apt cache, so a cache_valid_time here would make the apt module SKIP the
+    # refresh (it only updates when the cache is OLDER than the window) and the
+    # Docker deb822 repo added just above would never be indexed -> "No package
+    # matching 'docker-ce'". An unconditional update_cache indexes the new repo.
     update_cache: true
-    cache_valid_time: 3600
 
 - name: Ensure the Docker service is enabled and running
   ansible.builtin.systemd:
