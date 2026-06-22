@@ -178,6 +178,43 @@ def test_plex_vainfo_ihd_gate() -> bool:
     return ok
 
 
+def test_plex_install_refreshes_after_repo() -> bool:
+    """The 'Install Plex Media Server' apt task must refresh the cache after the repo.
+
+    Root cause of the "No package matching 'plexmediaserver'" failure: the prior
+    iHD-driver apt task freshly stamps the apt cache, so a cache_valid_time on the
+    plexmediaserver install makes the apt module SKIP the refresh (it only updates
+    when the cache is OLDER than the window) and the Plex deb822 repo added just
+    above is never indexed. The fix: keep update_cache:true and DROP
+    cache_valid_time on that task (same footgun as the docker-ce bug).
+
+    Anchors on the install task BLOCK (from its `- name:` to the next task) and
+    asserts it has update_cache:true and NO cache_valid_time, so a leftover
+    cache_valid_time anywhere else in the file cannot mask a regression here.
+    """
+    if not PLEX_TASKS.is_file():
+        print("FAIL: plex install task refreshes cache after repo (tasks/main.yml missing)")
+        return False
+    body = PLEX_TASKS.read_text()
+    # Slice the 'Install Plex Media Server' task block: from its name line to the
+    # next top-level task (- name:) or EOF.
+    m = re.search(
+        r'(?ms)^-\s+name:\s*Install Plex Media Server\b.*?(?=^-\s+name:|\Z)', body
+    )
+    if not m:
+        print("FAIL: plex install task refreshes cache after repo ('Install Plex Media Server' task not found)")
+        return False
+    task = m.group(0)
+    refreshes = re.search(r'(?m)^\s*update_cache\s*:\s*(?:true|yes)\b', task) is not None
+    no_cvt = re.search(r'(?m)^\s*cache_valid_time\s*:', task) is None
+    ok = refreshes and no_cvt
+    print(
+        f"{'OK' if ok else 'FAIL'}: plex install task refreshes cache after repo "
+        f"(update_cache={refreshes} no_cache_valid_time={no_cvt})"
+    )
+    return ok
+
+
 def test_site_applies_plex_play() -> bool:
     site = ANSIBLE / "site.yml"
     if not site.is_file():
@@ -284,6 +321,7 @@ def main() -> int:
         test_plex_role_tasks_exist(),
         test_plex_installs_ihd_driver(),
         test_plex_vainfo_ihd_gate(),
+        test_plex_install_refreshes_after_repo(),
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
         test_docker_install_delegated_to_geerlingguy_role(),

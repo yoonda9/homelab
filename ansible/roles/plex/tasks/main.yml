@@ -64,8 +64,12 @@
   ansible.builtin.apt:
     name: plexmediaserver
     state: present
+    # No cache_valid_time: the prior iHD-driver apt task freshly stamped the apt
+    # cache, so a cache_valid_time here would make the apt module SKIP the refresh
+    # (it only updates when the cache is OLDER than the window) and the Plex deb822
+    # repo added just above would never be indexed -> "No package matching
+    # 'plexmediaserver'". An unconditional update_cache indexes the new repo.
     update_cache: true
-    cache_valid_time: 3600
 
 - name: Ensure the render group maps to the host render GID for /dev/dri access
   ansible.builtin.group:
