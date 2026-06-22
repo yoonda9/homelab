@@ -57,6 +57,17 @@
     components: main
     architectures: amd64
     signed_by: /etc/apt/keyrings/plex.asc
+    # trusted:true is REQUIRED only for THIS source. Plex's signing key
+    # (PlexSign.key, CD66 5CBA … 3ADC A79D) self-signs its uid (0x13
+    # PositiveCertification) and subkey-binding (0x18) with SHA1. Debian trixie
+    # verifies repo InRelease files with sqv (Sequoia), whose default crypto
+    # policy rejects SHA1 self/binding signatures since 2026-02-01 -> the key is
+    # "not bound" -> the Plex InRelease counts as unsigned -> apt refuses the
+    # repo and the install below fails. We cannot re-sign the key (no Plex
+    # private key), so scope an unconditional trust to this one source. The
+    # Debian non-free source above keeps full sqv verification (signed_by, no
+    # trusted) — the relax is Plex-only.
+    trusted: true
     state: present
     enabled: true
 

@@ -215,6 +215,45 @@ def test_plex_install_refreshes_after_repo() -> bool:
     return ok
 
 
+def test_plex_repo_trusted_scoped_to_plex() -> bool:
+    """The Plex deb822 source must carry trusted:true; Debian non-free must not.
+
+    Root cause of the "Plex InRelease is not signed" failure: Plex's signing key
+    self-signs its uid (0x13) + subkey-binding (0x18) with SHA1, which Debian
+    trixie's sqv crypto policy rejects since 2026-02-01, so the Plex InRelease
+    counts as unsigned and apt refuses the repo. The fix scopes an unconditional
+    trust (trusted:true) to ONLY the Plex deb822_repository task; the Debian
+    non-free source keeps full signature verification.
+
+    Slices each deb822 task by its `- name:` block so a trusted:true on the wrong
+    source (or a global relax) cannot satisfy this check.
+    """
+    if not PLEX_TASKS.is_file():
+        print("FAIL: plex repo trusted scoped to plex (tasks/main.yml missing)")
+        return False
+    body = PLEX_TASKS.read_text()
+
+    def _block(name: str) -> str:
+        m = re.search(
+            r'(?ms)^-\s+name:\s*' + re.escape(name) + r'\b.*?(?=^-\s+name:|\Z)',
+            body,
+        )
+        return m.group(0) if m else ""
+
+    plex_repo = _block("Add the Plex apt repository")
+    debian_repo = _block("Enable the Debian non-free components")
+    trusted_re = re.compile(r'(?m)^\s*trusted\s*:\s*(?:true|yes)\b')
+
+    plex_trusted = bool(plex_repo) and trusted_re.search(plex_repo) is not None
+    debian_not_trusted = bool(debian_repo) and trusted_re.search(debian_repo) is None
+    ok = plex_trusted and debian_not_trusted
+    print(
+        f"{'OK' if ok else 'FAIL'}: plex repo trusted scoped to plex "
+        f"(plex_trusted={plex_trusted} debian_non_free_verified={debian_not_trusted})"
+    )
+    return ok
+
+
 def test_site_applies_plex_play() -> bool:
     site = ANSIBLE / "site.yml"
     if not site.is_file():
@@ -322,6 +361,7 @@ def main() -> int:
         test_plex_installs_ihd_driver(),
         test_plex_vainfo_ihd_gate(),
         test_plex_install_refreshes_after_repo(),
+        test_plex_repo_trusted_scoped_to_plex(),
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
         test_docker_install_delegated_to_geerlingguy_role(),
