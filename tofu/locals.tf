@@ -91,3 +91,16 @@ locals {
     size         = local.idmap_id_space
   }]
 }
+
+locals {
+  # Operator SSH keys injected into EVERY service CT's root user_account
+  # (DEBUG fix 2026-06-22). Without a key — and with no root password — the CTs
+  # have no root credential and Ansible's `root@<ct>` SSH login is denied. Merge
+  # the explicit list var with the optional single .pub file source; both
+  # default empty so a bare checkout still plans clean (file() is only called
+  # when a path is actually provided).
+  operator_ssh_keys = concat(
+    var.operator_ssh_public_keys,
+    var.operator_ssh_public_key_file != "" ? [trimspace(file(var.operator_ssh_public_key_file))] : []
+  )
+}

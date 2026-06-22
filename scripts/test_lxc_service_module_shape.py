@@ -351,6 +351,49 @@ def test_plex_nesting_enabled() -> bool:
     return ok
 
 
+def test_operator_ssh_keys_wired() -> bool:
+    """Regression (DEBUG.md 2026-06-22): `just play` SSH failed with
+    "Permission denied (publickey,password)" because NEITHER module call passed
+    ssh_public_keys, so user_account.keys=[] in tfstate and the provisioned CTs
+    had no root credential. The fix declares a root-level operator SSH key source
+    (variables.tf operator_ssh_public_keys / operator_ssh_public_key_file, merged
+    into local.operator_ssh_keys) and wires it as ssh_public_keys into BOTH the
+    docker_host and plex module calls. Dropping either wiring — or the variable —
+    must fail this gate."""
+    main_file = TOFU_DIR / "main.tf"
+    vars_file = TOFU_DIR / "variables.tf"
+    if not main_file.is_file() or not vars_file.is_file():
+        print("FAIL: operator ssh keys wired (tofu/main.tf or variables.tf missing)")
+        return False
+    vars_body = vars_file.read_text()
+    # The root operator-key variable(s) must be declared.
+    var_declared = re.search(
+        r'variable\s+"operator_ssh_public_keys"', vars_body
+    ) is not None
+
+    main_body = main_file.read_text()
+    missing = []
+    for mod in ("docker_host", "plex"):
+        block = re.search(r'module\s+"%s"\s*\{(.*?)\n\}' % mod, main_body, re.DOTALL)
+        if not block:
+            missing.append(f"{mod} (no module block)")
+            continue
+        # Strip comments so a comment mentioning ssh_public_keys can't satisfy it.
+        code = re.sub(r"#[^\n]*", "", block.group(1))
+        wired = re.search(
+            r'ssh_public_keys\s*=\s*(?:local\.operator_ssh_keys|var\.operator_ssh_public_keys)',
+            code,
+        )
+        if not wired:
+            missing.append(mod)
+    ok = var_declared and not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: operator ssh keys wired into both module calls "
+        f"(var_declared={var_declared} missing={missing})"
+    )
+    return ok
+
+
 def test_plex_outputs() -> bool:
     """AC4: outputs.tf exposes plex id/name/ipv4 (mirroring docker_host) so the
     Ansible inventory can target the Plex host in Step 8."""
@@ -406,6 +449,7 @@ def main() -> int:
         test_idmap_generated_from_host_gids(),
         test_plex_module_wired(),
         test_plex_nesting_enabled(),
+        test_operator_ssh_keys_wired(),
         test_plex_outputs(),
         test_tofu_validate(),
     ]

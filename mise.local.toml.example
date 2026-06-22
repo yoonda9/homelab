@@ -22,6 +22,14 @@ PROXMOX_VE_PASSWORD = "CHANGEME"        # the root@pam account password
 PROXMOX_VE_SSH_USERNAME = "CHANGEME"    # SSH user for idmap / bind mounts (e.g. root)
 CLOUDFLARE_DNS_API_TOKEN = "CHANGEME"   # Zone:DNS:Edit — Traefik DNS-01 (later)
 
+# --- Operator SSH key for the service CTs (Tofu, TF_VAR_* scheme) ---
+# Injected into every service CT's root user_account so Ansible's `root@<ct>`
+# SSH login works. Without it the CTs have NO root credential and `just play`
+# fails with "Permission denied (publickey,password)" (DEBUG.md). Set EITHER a
+# .pub file path OR a JSON list of literal keys (read natively as TF_VAR_*):
+TF_VAR_operator_ssh_public_key_file = "CHANGEME"  # e.g. /home/you/.ssh/id_ed25519.pub
+# TF_VAR_operator_ssh_public_keys   = '["ssh-ed25519 AAAA... you@host"]'
+
 # --- Ansible Vault ---
 # Password that decrypts ansible/group_vars/vault.yml (resolved by
 # ansible/vault-pass.sh). The shipped vault.yml holds placeholders only and is

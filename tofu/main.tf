@@ -29,6 +29,9 @@ module "docker_host" {
   bridge           = local.net.bridge
   template_file_id = proxmox_download_file.debian13_lxc.id
   nesting          = true
+  # Inject the operator SSH key so root@docker-host has an authorized_keys entry;
+  # otherwise Ansible's root SSH login is denied (DEBUG.md). See tofu/variables.tf.
+  ssh_public_keys = local.operator_ssh_keys
 }
 
 # Plex CT 110 — the GPU/media consumer of lxc_service. Unprivileged, with the
@@ -83,4 +86,8 @@ module "plex" {
 
   gid_maps = local.plex_gid_maps
   uid_maps = local.plex_uid_maps
+
+  # Same operator SSH key as docker_host so root@plex is reachable by Ansible
+  # (without it user_account.keys=[] and root SSH is denied — DEBUG.md).
+  ssh_public_keys = local.operator_ssh_keys
 }
