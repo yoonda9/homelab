@@ -254,6 +254,53 @@ def test_plex_repo_trusted_scoped_to_plex() -> bool:
     return ok
 
 
+def test_plex_source_trusted_before_baseline_apt() -> bool:
+    """The baseline play must trust a pre-existing Plex apt source in pre_tasks,
+    BEFORE the common role's apt update_cache re-verifies it.
+
+    Root cause (mem-1782146780-fa20): site.yml PLAY 1 (hosts: all) runs the common
+    role's `apt update_cache` on the plex host first; it re-verifies a pre-existing
+    *untrusted* Plex source (SHA1 PlexSign.key, sqv-rejected) and fails before the
+    plex play (PLAY 3, hosts: plex) can rewrite the source with trusted:true. The
+    plex-role fix is structurally too late. The fix marks the Plex source Trusted
+    in pre_tasks of the baseline play — pre_tasks always run before roles, so the
+    baseline apt update no longer chokes on the stale source. Scoped to the one
+    Plex source (plexmediaserver.sources); Debian sources keep full sqv.
+
+    Slices the FIRST play (hosts: all) so a pre_tasks block in a later play cannot
+    satisfy this check, and requires the Plex source path + a Trusted marker inside
+    that play's pre_tasks.
+    """
+    site = ANSIBLE / "site.yml"
+    if not site.is_file():
+        print("FAIL: plex source trusted before baseline apt (site.yml missing)")
+        return False
+    body = site.read_text()
+
+    # The first play runs to just before the second top-level `- name:` play.
+    plays = re.split(r'(?m)^-\s+name:', body)
+    # plays[0] is the YAML preamble; plays[1] is the first play body.
+    first_play = plays[1] if len(plays) > 1 else ""
+    is_baseline = "hosts: all" in first_play and re.search(
+        r'(?m)^\s*pre_tasks\s*:', first_play
+    ) is not None
+
+    pre_tasks = ""
+    m = re.search(r'(?ms)^\s*pre_tasks\s*:.*?(?=^\s*roles\s*:|\Z)', first_play)
+    if m:
+        pre_tasks = m.group(0)
+    references_plex_source = "plexmediaserver.sources" in pre_tasks
+    trusts_it = re.search(r'(?mi)Trusted\s*:\s*yes', pre_tasks) is not None
+
+    ok = is_baseline and references_plex_source and trusts_it
+    print(
+        f"{'OK' if ok else 'FAIL'}: plex source trusted before baseline apt "
+        f"(baseline_pre_tasks={is_baseline} references_source={references_plex_source} "
+        f"trusts_it={trusts_it})"
+    )
+    return ok
+
+
 def test_site_applies_plex_play() -> bool:
     site = ANSIBLE / "site.yml"
     if not site.is_file():
@@ -362,6 +409,7 @@ def main() -> int:
         test_plex_vainfo_ihd_gate(),
         test_plex_install_refreshes_after_repo(),
         test_plex_repo_trusted_scoped_to_plex(),
+        test_plex_source_trusted_before_baseline_apt(),
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
         test_docker_install_delegated_to_geerlingguy_role(),

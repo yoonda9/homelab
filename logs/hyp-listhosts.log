@@ -1,0 +1,19 @@
+[WARNING]: Found both group and host with same name: plex
+
+playbook: site.yml
+
+  play #1 (all): Baseline configuration for all managed hosts	TAGS: []
+    pattern: ['all']
+    hosts (2):
+      plex
+      docker-host
+
+  play #2 (docker_host): Docker host with Traefik reverse proxy	TAGS: []
+    pattern: ['docker_host']
+    hosts (1):
+      docker-host
+
+  play #3 (plex): Plex media server with Intel QSV hardware transcoding	TAGS: []
+    pattern: ['plex']
+    hosts (1):
+      plex

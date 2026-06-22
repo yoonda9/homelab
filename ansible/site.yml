@@ -4,6 +4,32 @@
 - name: Baseline configuration for all managed hosts
   hosts: all
   become: true
+  # The Plex apt source (added by the `plex` role in a later play) is signed with
+  # PlexSign.key, which self-signs with SHA1 — Debian-trixie's sqv crypto policy
+  # rejects that since 2026-02-01, so the source counts as unsigned. The `plex`
+  # role scopes `trusted: true` to that one source, but it lives in a LATER play
+  # (hosts: plex). If a prior provisioning run already left an *untrusted* Plex
+  # source on disk, the `common` role's `apt update_cache` below (this play runs
+  # on the plex host FIRST) re-verifies it and fails before the plex play can
+  # rewrite it. pre_tasks run before roles, so trust any pre-existing Plex source
+  # here — before the baseline apt update. Scoped to the Plex source only; Debian
+  # sources keep full sqv verification.
+  pre_tasks:
+    - name: Check for a pre-existing Plex apt source
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/plexmediaserver.sources
+      register: baseline_plex_source
+
+    - name: Trust the pre-existing Plex apt source before the baseline apt update
+      ansible.builtin.lineinfile:
+        path: /etc/apt/sources.list.d/plexmediaserver.sources
+        line: "Trusted: yes"
+        regexp: "^Trusted:"
+        state: present
+        owner: root
+        group: root
+        mode: "0644"
+      when: baseline_plex_source.stat.exists
   roles:
     - common
 
