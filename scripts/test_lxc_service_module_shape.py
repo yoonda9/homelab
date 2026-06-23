@@ -351,6 +351,47 @@ def test_plex_nesting_enabled() -> bool:
     return ok
 
 
+def test_docker_host_keyctl_enabled() -> bool:
+    """Regression (DEBUG.md Traefik 404, logs/hyp-traefik-404-tester.log): every
+    dashboard host (grafana/prometheus/homepage/uptime/whoami) returned "404 page
+    not found" while plex@file still served, because Traefik's docker provider
+    registered ZERO *@docker routers. Root cause: docker_host CT 111 is an
+    UNPRIVILEGED LXC with features.nesting=true but keyctl UNSET (tfstate
+    keyctl:false). Docker-in-unprivileged-LXC requires BOTH nesting=1 AND
+    keyctl=1 — without keyctl, dockerd/containerd cannot manage the kernel
+    keyring, so the docker socket/API is impaired and no docker routers register.
+    The fix wires `keyctl = var.keyctl` into the module's features{} block and
+    passes keyctl = true on the docker_host module call (mirroring nesting).
+    Dropping either — the features wiring or the docker_host value — must fail."""
+    main_file = TOFU_DIR / "main.tf"
+    module_main = MODULE / "main.tf"
+    if not main_file.is_file() or not module_main.is_file():
+        print("FAIL: docker_host keyctl enabled (tofu/main.tf or module main.tf missing)")
+        return False
+    # The module's features{} block must wire keyctl = var.keyctl (so the caller
+    # controls it), not hardcode it. Anchor inside the features block.
+    module_body = module_main.read_text()
+    features = re.search(r"features\s*\{(.*?)\}", module_body, re.DOTALL)
+    feature_wired = bool(
+        features and re.search(r"keyctl\s*=\s*var\.keyctl", features.group(1))
+    )
+    # The docker_host module call must pass keyctl = true (comments stripped so a
+    # historical note can't satisfy it).
+    main_body = main_file.read_text()
+    block = re.search(r'module\s+"docker_host"\s*\{(.*?)\n\}', main_body, re.DOTALL)
+    if not block:
+        print("FAIL: docker_host keyctl enabled (no module \"docker_host\" block)")
+        return False
+    code = re.sub(r"#[^\n]*", "", block.group(1))
+    docker_keyctl = re.search(r"keyctl\s*=\s*true", code) is not None
+    ok = feature_wired and docker_keyctl
+    print(
+        f"{'OK' if ok else 'FAIL'}: docker_host keyctl enabled "
+        f"(features wires var.keyctl={feature_wired}, docker_host passes keyctl=true={docker_keyctl})"
+    )
+    return ok
+
+
 def test_operator_ssh_keys_wired() -> bool:
     """Regression (DEBUG.md 2026-06-22): `just play` SSH failed with
     "Permission denied (publickey,password)" because NEITHER module call passed
@@ -449,6 +490,7 @@ def main() -> int:
         test_idmap_generated_from_host_gids(),
         test_plex_module_wired(),
         test_plex_nesting_enabled(),
+        test_docker_host_keyctl_enabled(),
         test_operator_ssh_keys_wired(),
         test_plex_outputs(),
         test_tofu_validate(),

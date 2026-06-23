@@ -29,6 +29,12 @@ module "docker_host" {
   bridge           = local.net.bridge
   template_file_id = proxmox_download_file.debian13_lxc.id
   nesting          = true
+  # Running Docker in an UNPRIVILEGED LXC needs BOTH nesting=1 AND keyctl=1.
+  # Without keyctl, dockerd/containerd cannot manage the kernel keyring, so the
+  # Docker daemon/API is impaired and Traefik's docker provider registers ZERO
+  # *@docker routers — every dashboard host then 404s while plex@file (file
+  # provider) still serves. tfstate had keyctl:false. (DEBUG.md Traefik 404.)
+  keyctl = true
   # Inject the operator SSH key so root@docker-host has an authorized_keys entry;
   # otherwise Ansible's root SSH login is denied (DEBUG.md). See tofu/variables.tf.
   ssh_public_keys = local.operator_ssh_keys

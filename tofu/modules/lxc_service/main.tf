@@ -29,6 +29,7 @@ resource "proxmox_virtual_environment_container" "this" {
 
   features {
     nesting = var.nesting
+    keyctl  = var.keyctl
   }
 
   cpu {

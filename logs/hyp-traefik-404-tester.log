@@ -1,0 +1,47 @@
+Hypothesis Tester — task-1781916305-11ec / debug:reproduce
+Hypothesis: "404 page not found for all pages" == Traefik no-router-matched default;
+all dashboards fail together because the docker provider registered ZERO routers
+(cannot reach socket / enumerate labeled compose containers), leaving only plex@file.
+Discriminator: plex.yoonnation.com does NOT 404 (routes/502s) while every dashboard host 404s;
+if plex ALSO 404s -> falsified, cause is Host/domain mismatch.
+
+HARNESS: real Traefik v3.3 (== deployed) via podman, mounting the repo's faithfully-rendered
+traefik.yml.j2 (le-dns-cf, admin@yoonnation.com) + dynamic.yml.j2 (domain=yoonnation.com,
+acme_resolver=le-dns-cf, plex_url=http://192.168.1.110:32400). Docker provider ENABLED
+(exposedByDefault:false) but the docker socket is unreachable -> faithful to the live
+"permission denied on /var/run/docker.sock" cause. (api.insecure:true added ONLY in the
+harness static file to read /api/http/routers; production templates untouched.)
+
+== PRIMARY (hypothesis cause: docker provider yields zero routers) ==
+Traefik log: ERR "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" (providerName=docker), retrying.
+/api/http/routers names: acme-http@internal, api@internal, dashboard@internal, plex@file,
+    prometheus@internal, web-to-websecure@internal
+  providers present: file, internal   ==> plex@file PRESENT, *@docker ABSENT (zero docker routers). MATCHES expected.
+curl -k -H Host:<h> https://:443/  (client IP not in 192.168.1.0/24):
+  grafana.yoonnation.com    -> 404  body="404 page not found"
+  prometheus.yoonnation.com -> 404  body="404 page not found"
+  homepage.yoonnation.com   -> 404  body="404 page not found"
+  uptime.yoonnation.com     -> 404  body="404 page not found"
+  whoami.yoonnation.com     -> 404  body="404 page not found"
+  plex.yoonnation.com       -> 401  (Plex backend answered; matched plex@file, NOT Traefik 404)  <== DISCRIMINATOR HOLDS
+404 body bytes == "404 page not found\n" (od -c) == the live symptom EXACTLY.
+
+== ADVERSARIAL / NEIGHBOR (falsification branch: Host/domain mismatch) ==
+Same run, same plex@file router; query a WRONG domain (tester's /etc/hosts mapped wrong suffix):
+  plex.example.com             -> 404 "404 page not found"
+  grafana.example.com          -> 404 "404 page not found"
+  plex.lan                     -> 404 "404 page not found"
+  plex.yoonnation.com.evil.com -> 404 "404 page not found"
+Re-control SAME run: plex.yoonnation.com (correct host) -> 401 (still routes, NOT 404).
+=> Isolates the variable: when the Host matches NO router rule even plex 404s. The discriminator
+   distinguishes the two causes decisively: zero-docker-routers -> plex survives; domain-mismatch -> plex also 404s.
+
+== EXTRA DISCRIMINATOR (404 == no router, vs 403 == router-exists-but-allowlist-rejects) ==
+Here grafana has NO router (docker provider down) -> 404. In the Investigator's earlier file-provider run
+grafana@file EXISTED -> 403 (lan-allowlist). So 404 decisively means "no router matched", not an allowlist reject.
+
+VERDICT: CONFIRMED. The exact "404 page not found for all pages" is Traefik's no-router-matched default;
+all dashboard hosts fail together because the docker provider registered ZERO routers (socket unreachable
+-> cannot enumerate the labeled compose containers), leaving only the file-provider plex@file. plex.yoonnation.com
+routes (does NOT 404) while every *.yoonnation.com dashboard 404s. Adversarial confirms the falsification
+branch is real and separable (domain mismatch -> plex ALSO 404s). Live host NOT touched (read-only podman repro).

@@ -67,6 +67,12 @@ variable "nesting" {
   description = "features.nesting — required for the docker-host CT to run Docker."
 }
 
+variable "keyctl" {
+  type        = bool
+  default     = false
+  description = "features.keyctl — required ALONGSIDE nesting for Docker in an unprivileged CT: dockerd/containerd need the kernel keyring, and without it the docker provider registers no routers (Traefik 404). See tofu/main.tf docker_host."
+}
+
 variable "start_on_boot" {
   type    = bool
   default = true

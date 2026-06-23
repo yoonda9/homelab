@@ -1,0 +1,23 @@
+Traefik v3.3.7 local repro (podman) — status-code semantics for the live "404 page not found for all pages" symptom.
+domain=yoonnation.com, acme_resolver=le-dns-cf (live group_vars/all.yml). Image traefik:v3.3 == deployed v3.3.
+
+FILE-PROVIDER run (routers loaded from mounted dynamic.yml; client IP NOT in 192.168.1.0/24 as Traefik sees it):
+  Host: grafana.yoonnation.com  (router exists, lan-allowlist@file)        -> 403 Forbidden ("Forbidden")
+  Host: plex.yoonnation.com     (router exists, NO allowlist, dead backend)-> 502 Bad Gateway
+  Host: bogus.yoonnation.com    (NO matching router)                       -> 404 "page not found"
+  http://grafana.yoonnation.com (web entrypoint = redirect only)           -> 301 -> https
+
+DOCKER-PROVIDER run (Traefik mounting the container socket, whoami labeled exactly per compose.yml.j2):
+  Traefik log: ERR "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock"
+  -> docker provider yields ZERO containers -> NO *@docker routers register
+  -> every docker-label host (grafana/prometheus/homepage/uptime/whoami) returns Traefik's default 404 "page not found"
+  -> file-provider plex@file router is UNAFFECTED (still loads from the mounted file).
+
+CONCLUSION: Traefik's literal "404 page not found" fires ONLY when no router matches the request Host.
+  - lan-allowlist reject => 403 (NOT 404)
+  - dead/unreachable backend => 502 (NOT 404)
+  - http on web entrypoint => 301 redirect (NOT 404)
+  So "404 for ALL pages" == no router matched. Dominant cause for all the dashboard hosts at once:
+  the docker provider registered NO routers (cannot enumerate the labeled containers), leaving only plex@file.
+  DISCRIMINATOR: under this cause plex.yoonnation.com does NOT 404 (it routes/502s) while every *.yoonnation.com
+  dashboard host 404s. If plex ALSO 404s, the cause is instead a Host/domain mismatch (no rule matches at all).
