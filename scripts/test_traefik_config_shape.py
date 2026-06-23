@@ -424,6 +424,63 @@ def test_wildcard_dns01_gated() -> bool:
     return ok
 
 
+def test_traefik_image_pinned_to_concrete_v3() -> bool:
+    """Services->latest-stable: docker_host_traefik_image is a concrete v3.x.y pin.
+
+    The Traefik image must pin a concrete `traefik:v3.<minor>.<patch>` tag (the
+    current stable v3 line, e.g. v3.7.5), NOT the stale `traefik:v3.3`, NOT a
+    floating tag (`latest` or a bare major `v3`). Asserting CONCRETENESS +
+    non-staleness (not a hardcoded literal) so future version bumps stay green
+    while a regression to a floating/stale tag reddens the gate.
+    """
+    defaults = _read(ROLE / "defaults" / "main.yml")
+    m = re.search(r'(?m)^\s*docker_host_traefik_image:\s*"?([^"\s#]+)', defaults)
+    img = m.group(1) if m else ""
+    # Concrete three-part semver tag on the v3 line.
+    concrete = re.fullmatch(r'traefik:v3\.\d+\.\d+', img) is not None
+    # Explicitly reject the stale starting value and any floating tag.
+    not_stale = img != "traefik:v3.3"
+    not_floating = not re.fullmatch(r'traefik:(latest|v3)', img)
+    ok = concrete and not_stale and bool(not_floating)
+    print(
+        f"{'OK' if ok else 'FAIL'}: traefik image pinned to concrete v3.x.y "
+        f"(image={img!r}, concrete={concrete}, not_stale={not_stale}, not_floating={bool(not_floating)})"
+    )
+    return ok
+
+
+def test_no_floating_service_image_tags() -> bool:
+    """Services->latest-stable: EVERY docker_host_*_image default is concrete-pinned.
+
+    Blanket regression guard for the whole compose stack (Step-2). Parses every
+    `docker_host_<name>_image:` default and asserts its tag is a concrete pin —
+    a three-part `[v]MAJOR.MINOR.PATCH` version (optionally with a -suffix) — and
+    NEVER a floating tag: `latest`, a bare-major (`v3`, `1`) or bare-minor (`v3.3`),
+    or a missing tag. Shape, not a literal-version list, so future version bumps
+    stay GREEN while any regression to a floating/stale tag reddens the gate.
+    The traefik-specific check above stays as the named-example regression.
+    """
+    defaults = _read(ROLE / "defaults" / "main.yml")
+    floating = []
+    images = re.findall(
+        r'(?m)^\s*(docker_host_\w*_image):\s*"?([^"\s#]+)', defaults
+    )
+    for var, value in images:
+        # The tag is the segment after the LAST colon (registry host has no port
+        # in any of these refs, so the last colon always separates the tag).
+        tag = value.rsplit(":", 1)[1] if ":" in value else ""
+        concrete = re.fullmatch(r'v?\d+\.\d+\.\d+(?:-[\w.]+)?', tag) is not None
+        if not concrete:
+            floating.append(f"{var}={value!r}(tag={tag!r})")
+    # There must be image defaults to check (guard against a vacuous pass).
+    ok = bool(images) and not floating
+    print(
+        f"{'OK' if ok else 'FAIL'}: all {len(images)} docker_host_*_image defaults "
+        f"concrete-pinned (floating={floating})"
+    )
+    return ok
+
+
 def test_acme_resolver_is_dns_cf() -> bool:
     """Step-11: the one-variable flip is committed — acme_resolver is le-dns-cf.
 
@@ -460,6 +517,8 @@ def main() -> int:
         test_internal_services_exactly_four(),
         test_cf_token_sourced_from_vault(),
         test_wildcard_dns01_gated(),
+        test_traefik_image_pinned_to_concrete_v3(),
+        test_no_floating_service_image_tags(),
         test_acme_resolver_is_dns_cf(),
     ]
     total, passed = len(results), sum(results)
