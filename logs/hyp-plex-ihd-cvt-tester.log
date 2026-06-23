@@ -1,0 +1,27 @@
+== Hypothesis Tester: plex L36 'Install the Intel iHD media driver' cache_valid_time footgun ==
+Sequence: L16 python3-debian (update_cache:true) stamps cache ~=now ->
+          L23 deb822 adds Debian non-free repo (where intel-media-va-driver-non-free lives) ->
+          L36 apt install {{plex_media_packages}} update_cache:true cache_valid_time:3600
+Engine: real ansible-core 2.21.1 apt.py:1448-1451 branch (transcribed exactly)
+
+-- PRIMARY (current code): L36 update_cache=true cache_valid_time=3600, cache freshly stamped by L16 --
+  cache age     1s  cvt=3600  -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> 'No package matching intel-media-va-driver-non-free')
+  cache age     5s  cvt=3600  -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> 'No package matching intel-media-va-driver-non-free')
+  cache age    30s  cvt=3600  -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> 'No package matching intel-media-va-driver-non-free')
+  cache age   120s  cvt=3600  -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> 'No package matching intel-media-va-driver-non-free')
+
+-- FIX A: drop cache_valid_time (=0), keep update_cache:true (mirror the L74-83 plexmediaserver fix) --
+  cache age     1s  cvt=0     -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  cache age     5s  cvt=0     -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  cache age    30s  cvt=0     -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  cache age   120s  cvt=0     -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+
+-- ADVERSARIAL/NEIGHBOR: cvt=3600 BUT cache genuinely STALE (>3600s) — isolate the variable --
+  cache age  3700s  cvt=3600  -> cache.update RUNS=True  (RUNS even with cvt=3600 -> the FRESH L16 stamp is the trigger, NOT cvt alone)
+  cache age  7200s  cvt=3600  -> cache.update RUNS=True  (RUNS even with cvt=3600 -> the FRESH L16 stamp is the trigger, NOT cvt alone)
+
+== CLASSIFICATION ==
+  PRIMARY all-skipped (reproduces bug): True
+  FIX A   all-run (fix works):          True
+  STALE   all-run (isolates fresh stamp): True
+  HYPOTHESIS: CONFIRMED

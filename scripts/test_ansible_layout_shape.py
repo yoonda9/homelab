@@ -215,6 +215,45 @@ def test_plex_install_refreshes_after_repo() -> bool:
     return ok
 
 
+def test_plex_ihd_install_refreshes_after_repo() -> bool:
+    """The iHD-driver apt task must refresh the cache after the non-free repo.
+
+    Root cause of the "No package matching 'intel-media-va-driver-non-free'"
+    failure: the prior python3-debian apt task freshly stamps the apt cache
+    BEFORE the Debian non-free deb822 source is added, so a cache_valid_time on
+    the 'Install the Intel iHD media driver and VA-API tooling' task makes the
+    apt module SKIP the refresh (it only updates when the cache is OLDER than the
+    window) and the non-free repo — where intel-media-va-driver-non-free lives —
+    is never indexed. The fix: keep update_cache:true and DROP cache_valid_time
+    on that task (same footgun as the plexmediaserver and docker-ce bugs).
+
+    Anchors on the iHD-driver task BLOCK (from its `- name:` to the next task)
+    and asserts it has update_cache:true and NO cache_valid_time, so a leftover
+    cache_valid_time anywhere else in the file cannot mask a regression here.
+    """
+    if not PLEX_TASKS.is_file():
+        print("FAIL: plex iHD-driver task refreshes cache after repo (tasks/main.yml missing)")
+        return False
+    body = PLEX_TASKS.read_text()
+    # Slice the 'Install the Intel iHD media driver ...' task block: from its name
+    # line to the next top-level task (- name:) or EOF.
+    m = re.search(
+        r'(?ms)^-\s+name:\s*Install the Intel iHD media driver\b.*?(?=^-\s+name:|\Z)', body
+    )
+    if not m:
+        print("FAIL: plex iHD-driver task refreshes cache after repo ('Install the Intel iHD media driver' task not found)")
+        return False
+    task = m.group(0)
+    refreshes = re.search(r'(?m)^\s*update_cache\s*:\s*(?:true|yes)\b', task) is not None
+    no_cvt = re.search(r'(?m)^\s*cache_valid_time\s*:', task) is None
+    ok = refreshes and no_cvt
+    print(
+        f"{'OK' if ok else 'FAIL'}: plex iHD-driver task refreshes cache after repo "
+        f"(update_cache={refreshes} no_cache_valid_time={no_cvt})"
+    )
+    return ok
+
+
 def test_plex_repo_trusted_scoped_to_plex() -> bool:
     """The Plex deb822 source must carry trusted:true; Debian non-free must not.
 
@@ -450,6 +489,7 @@ def main() -> int:
         test_plex_installs_ihd_driver(),
         test_plex_vainfo_ihd_gate(),
         test_plex_install_refreshes_after_repo(),
+        test_plex_ihd_install_refreshes_after_repo(),
         test_plex_repo_trusted_scoped_to_plex(),
         test_plex_source_trusted_before_baseline_apt(),
         test_plex_render_video_groups_non_unique(),

@@ -1,0 +1,20 @@
+== Reproduction of plex L36 iHD-driver install ==
+Sequence: L16 python3-debian (update_cache:true) stamps cache ~=now;
+          L23 deb822 adds debian non-free repo;
+          L36 install intel-media-va-driver-non-free with cache_valid_time:3600
+
+-- PRIMARY: current code L36 cache_valid_time=3600, cache freshly stamped by L16 --
+  cache age    1s, cvt=3600 -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> No package matching intel-media-va-driver-non-free)
+  cache age    5s, cvt=3600 -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> No package matching intel-media-va-driver-non-free)
+  cache age   30s, cvt=3600 -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> No package matching intel-media-va-driver-non-free)
+  cache age  120s, cvt=3600 -> cache.update RUNS=False  (SKIPPED -> non-free repo NOT indexed -> No package matching intel-media-va-driver-non-free)
+
+-- FIX A: drop cache_valid_time (=0), keep update_cache:true (mirrors L74-83 plexmediaserver fix) --
+  cache age    1s, cvt=0    -> cache.update RUNS=True  (INDEXED -> installable)
+  cache age    5s, cvt=0    -> cache.update RUNS=True  (INDEXED -> installable)
+  cache age   30s, cvt=0    -> cache.update RUNS=True  (INDEXED -> installable)
+  cache age  120s, cvt=0    -> cache.update RUNS=True  (INDEXED -> installable)
+
+-- ADVERSARIAL NEIGHBOR: cvt=3600 but cache genuinely STALE (>3600s) --
+  cache age 3700s, cvt=3600 -> cache.update RUNS=True  (isolates: fresh stamp from L16 is the trigger, not cvt alone)
+  cache age 7200s, cvt=3600 -> cache.update RUNS=True  (isolates: fresh stamp from L16 is the trigger, not cvt alone)

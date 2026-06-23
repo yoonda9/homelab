@@ -1,0 +1,37 @@
+== Fix Verifier: plex iHD-driver cache_valid_time footgun ==
+Role: /home/user/Work/homelab/ansible/roles/plex/tasks/main.yml
+Engine: real bundled ansible-core apt.py branch (apt.py:1448-1451)
+
+OK: bundled apt.py cache-update branch matches the replayed decision
+
+LIVE iHD-driver task params (parsed from fixed role): update_cache=True cache_valid_time=0 (cache_valid_time key present=False)
+
+-- CHECK 1: original repro path on the LIVE FIXED iHD task --
+  fresh cache age    1s  update_cache=True cvt=0  -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  fresh cache age    5s  update_cache=True cvt=0  -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  fresh cache age   30s  update_cache=True cvt=0  -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  fresh cache age  120s  update_cache=True cvt=0  -> cache.update RUNS=True  (INDEXED -> intel-media-va-driver-non-free installable)
+  => fixed task refreshes on every fresh age: True
+
+-- CHECK 2: pre-fix broken variant (cvt=3600) still reproduces the SKIP --
+  fresh cache age    1s  update_cache=True cvt=3600  -> cache.update RUNS=False  (SKIPPED -> 'No package matching intel-media-va-driver-non-free')
+  fresh cache age    5s  update_cache=True cvt=3600  -> cache.update RUNS=False  (SKIPPED -> 'No package matching intel-media-va-driver-non-free')
+  fresh cache age   30s  update_cache=True cvt=3600  -> cache.update RUNS=False  (SKIPPED -> 'No package matching intel-media-va-driver-non-free')
+  fresh cache age  120s  update_cache=True cvt=3600  -> cache.update RUNS=False  (SKIPPED -> 'No package matching intel-media-va-driver-non-free')
+  => broken variant skips on every fresh age (bug reproduces): True
+
+-- CHECK 3: adversarial neighbor (cvt=3600 + STALE cache) must RUN --
+  stale cache age 3700s  update_cache=True cvt=3600  -> cache.update RUNS=True  (RUNS -> fresh L16 stamp is the sole trigger, not cvt alone)
+  stale cache age 7200s  update_cache=True cvt=3600  -> cache.update RUNS=True  (RUNS -> fresh L16 stamp is the sole trigger, not cvt alone)
+  => stale-cache neighbor runs even with cvt=3600 (variable isolated): True
+
+-- CHECK 4: fix applied — iHD task carries update_cache, no cache_valid_time --
+  update_cache truthy=True  cache_valid_time absent=True  => True
+
+== CLASSIFICATION ==
+  branch matches real module:          True
+  CHECK1 fixed-task refresh runs:      True
+  CHECK2 broken variant reproduces:    True
+  CHECK3 adversarial isolates trigger: True
+  CHECK4 fix applied (no cvt):         True
+  VERDICT: FIX VERIFIED
