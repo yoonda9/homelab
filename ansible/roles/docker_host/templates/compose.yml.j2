@@ -73,12 +73,13 @@ services:
     environment:
       - HOMEPAGE_ALLOWED_HOSTS=home.{{ domain }}
     volumes:
-      # Config is ansible-managed and mounted read-only. Homepage v1.x mkdir's
-      # /app/config/logs at startup, which fails against the ro mount (ENOENT);
-      # a named volume overlaid on that subpath gives it a writable logs dir while
-      # keeping the rest of the config immutable.
+      # Config is ansible-managed and mounted read-only. Homepage v1.x writes to
+      # /app/config/logs at startup; a writable bind at that subpath keeps the
+      # rest of the config immutable while giving it a logs dir. The host dir
+      # (created by the role) must pre-exist so runc has a mountpoint under the
+      # ro parent — it cannot mkdir one on a read-only fs.
       - {{ docker_host_project_dir }}/homepage:/app/config:ro
-      - homepage-logs:/app/config/logs
+      - {{ docker_host_project_dir }}/homepage/logs:/app/config/logs
     labels:
       - traefik.enable=true
       - traefik.http.routers.homepage.rule=Host(`home.{{ domain }}`)
@@ -164,7 +165,6 @@ services:
       - /dev/disk/:/dev/disk:ro
 
 volumes:
-  homepage-logs:
   uptime-kuma-data:
   grafana-data:
   prometheus-data:

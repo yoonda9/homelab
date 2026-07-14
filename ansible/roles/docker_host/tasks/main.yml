@@ -99,6 +99,11 @@
     - grafana/provisioning/dashboards
     - grafana/dashboards
     - homepage
+    # Homepage v1.x writes to /app/config/logs at startup. /app/config is bind-
+    # mounted read-only, so runc cannot create the logs mountpoint under it
+    # (mkdirat on a ro fs). Pre-create it on the host: the ro bind then exposes
+    # the dir, and compose overlays a WRITABLE bind at that same path (below).
+    - homepage/logs
 
 - name: Render the Prometheus scrape configuration
   ansible.builtin.template:
