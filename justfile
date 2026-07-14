@@ -38,6 +38,17 @@ fmt:
 play:
     ansible-playbook site.yml
 
+# acme_ca_server (group_vars/all/vars.yml) is ALREADY LE prod, so an ordinary
+# `just play` renders the prod CA — but acme.json is keyed by resolver name
+# (le-dns-cf), so if the store still holds an older (e.g. staging) cert Traefik
+# reuses it and never re-issues. This runs the playbook with the gated reset
+# (docker_host_acme_reset=true): stop Traefik -> empty acme.json at 0600 -> start.
+#
+# Force a fresh LE production wildcard (one-shot ACME reset; rate-limited 5/week).
+[working-directory: 'ansible']
+play-prod:
+    ansible-playbook site.yml -e docker_host_acme_reset=true
+
 # Install/refresh the pinned Galaxy roles (ansible/requirements.yml) into the
 # vendored ansible/galaxy_roles/ dir. The result is committed so the offline
 # gate (just test) and `just play` resolve the roles on disk with no network.
