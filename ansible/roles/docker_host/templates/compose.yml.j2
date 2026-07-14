@@ -68,15 +68,20 @@ services:
     restart: unless-stopped
     # gethomepage/homepage (v0.9.0+) validates the Host header: any request whose
     # Host is not localhost or in HOMEPAGE_ALLOWED_HOSTS gets a "Host validation
-    # failed" page. Reached only via Traefik on homepage.{{ domain }}, so that
+    # failed" page. Reached only via Traefik on home.{{ domain }}, so that
     # host MUST be allow-listed or the dashboard never loads.
     environment:
-      - HOMEPAGE_ALLOWED_HOSTS=homepage.{{ domain }}
+      - HOMEPAGE_ALLOWED_HOSTS=home.{{ domain }}
     volumes:
+      # Config is ansible-managed and mounted read-only. Homepage v1.x mkdir's
+      # /app/config/logs at startup, which fails against the ro mount (ENOENT);
+      # a named volume overlaid on that subpath gives it a writable logs dir while
+      # keeping the rest of the config immutable.
       - {{ docker_host_project_dir }}/homepage:/app/config:ro
+      - homepage-logs:/app/config/logs
     labels:
       - traefik.enable=true
-      - traefik.http.routers.homepage.rule=Host(`homepage.{{ domain }}`)
+      - traefik.http.routers.homepage.rule=Host(`home.{{ domain }}`)
       - traefik.http.routers.homepage.entrypoints=websecure
       - traefik.http.routers.homepage.tls=true
       - traefik.http.routers.homepage.tls.certresolver={{ acme_resolver }}
@@ -159,6 +164,7 @@ services:
       - /dev/disk/:/dev/disk:ro
 
 volumes:
+  homepage-logs:
   uptime-kuma-data:
   grafana-data:
   prometheus-data:

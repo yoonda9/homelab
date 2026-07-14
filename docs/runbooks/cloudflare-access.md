@@ -39,7 +39,7 @@ The dashboard hostnames gated here (all `*.yoonnation.com`):
 | `grafana.yoonnation.com` | Grafana |
 | `prometheus.yoonnation.com` | Prometheus |
 | `uptime.yoonnation.com` | Uptime-Kuma |
-| `homepage.yoonnation.com` | Homepage |
+| `home.yoonnation.com` | Homepage |
 | `whoami.yoonnation.com` | whoami smoke route |
 
 **Plex is excluded.** `plex.yoonnation.com` stays public via the existing
