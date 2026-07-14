@@ -4,20 +4,48 @@
 
 domain: yoonnation.com
 
-# Active Traefik certresolver. DNS-01 wildcard (le-dns-cf) is now live after the
-# Cloudflare migration (Step 11, design §4.4): it issues a browser-trusted
-# *.{{ domain }} cert that covers the LAN/Tailscale-only internal services, which
-# cannot satisfy HTTP-01. Flipping back to le-http re-renders cleanly (the
-# wildcard tls.domains are gated on this value).
+# Active Traefik certresolver. le-dns-cf (DNS-01) is now the SOLE resolver — the
+# le-http (HTTP-01) resolver was removed in Step 1, so this is the only valid
+# value; pointing it elsewhere would leave every router referencing a
+# non-existent resolver. DNS-01 issues a browser-trusted *.{{ domain }} cert that
+# covers the LAN/Tailscale-only internal services, which cannot satisfy HTTP-01
+# (the wildcard tls.domains request is gated on this value).
 acme_resolver: le-dns-cf
 
-# Plex is the ONLY internet-exposed service (design §E.1, R8).
+# Let's Encrypt ACME directory (CA server) the le-dns-cf resolver registers
+# against. Flipped to PRODUCTION at Step 7 so every host serves a browser-trusted
+# cert. Because acme.json is keyed by resolver name (le-dns-cf), this flip ALONE
+# does NOT re-issue — Traefik keeps the old staging cert and the Restart handler
+# preserves the file. Re-issue is forced by the gated reset task (stop Traefik →
+# empty acme.json at 0600 → start), run with `-e docker_host_acme_reset=true`
+# (roles/docker_host/tasks/main.yml; design §6).
+acme_ca_server: https://acme-v02.api.letsencrypt.org/directory
+
+# Documentation-only inventory of what is reachable and how (design §Data Models,
+# §E.1, R8). These lists are NOT templated off anything — nothing renders from
+# them — but they must not mislead a future operator, so Step 8 refreshed them to
+# match the tunnel + Access topology.
+#
+# public_services: Plex is the ONLY service exposed to the internet WITHOUT
+# Cloudflare Access in front of it — it stays public via the `:443` port-forward
+# with its own auth and a grey (DNS-only) home-IP A record (Cloudflare ToS bars
+# media through the proxy/tunnel). The internal dashboards below are ALSO
+# reachable from the internet, but only through the Cloudflare tunnel gated by a
+# per-host Access application (SSO + MFA) — so they are not "public" in the
+# unauthenticated sense Plex is.
 public_services:
   - plex
 
-# LAN/Tailscale-only services routed by Traefik (design §Data Models).
+# internal_services: LAN/Tailscale-only, Traefik-routed, behind the
+# `internal-allowlist` middleware. Off-tailnet they are reachable only via the
+# tunnel + Access; on-tailnet the split-DNS override resolves them directly to
+# 192.168.1.111 (the dual-path, R5). This is the FULL internal set — the four
+# monitoring extras (design §5 order) plus the Traefik dashboard
+# (traefik.{{ domain }}, api@internal) and the whoami smoke route.
 internal_services:
   - homepage
   - uptime-kuma
   - grafana
   - prometheus
+  - traefik
+  - whoami

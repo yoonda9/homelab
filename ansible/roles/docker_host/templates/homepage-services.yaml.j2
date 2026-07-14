@@ -1,6 +1,15 @@
 # {{ ansible_managed }}
 # Homepage service links (Step 10). Internal dashboards on the LAN/Tailscale,
 # plus Plex. Hosts resolve via the Traefik routers ({{ domain }}).
+#
+# `href` stays the public hostname — that is the link an operator clicks, and on
+# the LAN/tailnet it resolves straight to the origin. `siteMonitor` (the up/down
+# probe), however, must NOT hit the public hostname: off-tailnet that name goes
+# through the Cloudflare tunnel and Cloudflare Access answers the unauthenticated
+# probe with a 302, which Homepage would report as a false "down" (Step 8, design
+# §7 check 8). So every siteMonitor points at the INTERNAL compose-network
+# service (http://<service>:<port>) — Homepage shares that network and reaches it
+# directly, bypassing Access entirely.
 - Media:
     - Plex:
         href: https://plex.{{ domain }}
@@ -10,9 +19,12 @@
     - Grafana:
         href: https://grafana.{{ domain }}
         description: Metrics dashboards
+        siteMonitor: http://grafana:3000
     - Prometheus:
         href: https://prometheus.{{ domain }}
         description: Metrics store
+        siteMonitor: http://prometheus:9090
     - Uptime Kuma:
         href: https://uptime.{{ domain }}
         description: Service uptime monitoring
+        siteMonitor: http://uptime-kuma:3001

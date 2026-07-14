@@ -141,3 +141,43 @@
     ('Started' in docker_host_compose_up.stderr)
     or ('Created' in docker_host_compose_up.stderr)
     or ('Recreated' in docker_host_compose_up.stderr)
+
+# --- Production ACME store reset (Step 7, gated on docker_host_acme_reset). ---
+# A caServer staging->prod flip does NOT re-issue on its own: acme.json is keyed by
+# resolver name (le-dns-cf), so Traefik treats the staging cert as still valid and
+# the `Restart traefik` handler preserves the file. The one-shot cutover therefore
+# must EMPTY the store: stop Traefik (writing acme.json while running risks
+# corruption), remove + recreate it empty at 0600, then start Traefik so the
+# wildcard re-issues from LE prod. Gated off by default so ordinary runs never wipe
+# live certs; enable with `-e docker_host_acme_reset=true`. The recreate task uses a
+# plain `state: touch` (no modification_time: preserve) precisely so the file is a
+# fresh, empty store — the opposite of the idempotent touch task above.
+- name: Reset the ACME store for the production flip
+  when: docker_host_acme_reset | bool
+  block:
+    - name: Stop Traefik before resetting the ACME store
+      ansible.builtin.command:
+        cmd: docker compose stop traefik
+        chdir: "{{ docker_host_project_dir }}"
+      register: docker_host_traefik_stop
+      changed_when: "'Stopped' in docker_host_traefik_stop.stderr"
+
+    - name: Remove the stale ACME store so prod certs re-issue
+      ansible.builtin.file:
+        path: "{{ docker_host_project_dir }}/acme.json"
+        state: absent
+
+    - name: Recreate an empty ACME store at 0600 for production issuance
+      ansible.builtin.file:
+        path: "{{ docker_host_project_dir }}/acme.json"
+        state: touch
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Start Traefik after resetting the ACME store
+      ansible.builtin.command:
+        cmd: docker compose start traefik
+        chdir: "{{ docker_host_project_dir }}"
+      register: docker_host_traefik_start
+      changed_when: "'Started' in docker_host_traefik_start.stderr"

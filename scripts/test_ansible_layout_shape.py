@@ -475,6 +475,45 @@ def test_docker_install_delegated_to_geerlingguy_role() -> bool:
     return ok
 
 
+def test_acme_reset_task_does_not_preserve_mtime() -> bool:
+    """The Step-7 production ACME-store reset must NOT preserve mtime.
+
+    A `caServer` staging->prod flip does not re-issue on its own: acme.json is keyed
+    by resolver name (le-dns-cf), so Traefik keeps the staging cert and the
+    `Restart traefik` handler preserves the file (mem-1784041371-6058). To force a
+    prod re-issue the gated reset task must EMPTY the store (remove + recreate at
+    0600). The existing 'Create the ACME certificate store' task deliberately uses
+    `modification_time: preserve` so a normal run never wipes live certs -- so
+    copy-pasting that attribute onto the reset task would silently defeat the flip.
+    This asserts the reset block recreates acme.json at 0600 and does NOT carry
+    `modification_time: preserve`.
+
+    Slices the reset block by its `- name:` header so the existing preserve-mtime
+    touch task elsewhere in the file cannot satisfy or redden this check
+    (mem-1781892715-142d).
+    """
+    if not DOCKER_HOST_TASKS.is_file():
+        print("FAIL: acme reset task does not preserve mtime (docker_host tasks/main.yml missing)")
+        return False
+    body = DOCKER_HOST_TASKS.read_text()
+    m = re.search(
+        r'(?ms)^-\s+name:\s*Reset the ACME store for the production flip\b.*?(?=^-\s+name:|\Z)',
+        body,
+    )
+    if not m:
+        print("FAIL: acme reset task does not preserve mtime ('Reset the ACME store' block not found)")
+        return False
+    block = m.group(0)
+    recreates = "acme.json" in block and re.search(r'(?m)^\s*mode:\s*"?0600', block) is not None
+    no_preserve = re.search(r'(?m)^\s*modification_time\s*:\s*preserve\b', block) is None
+    ok = recreates and no_preserve
+    print(
+        f"{'OK' if ok else 'FAIL'}: acme reset task recreates acme.json at 0600 without "
+        f"preserving mtime (recreates={recreates} no_preserve={no_preserve})"
+    )
+    return ok
+
+
 def main() -> int:
     results = [
         test_ansible_directory_exists(),
@@ -496,6 +535,7 @@ def main() -> int:
         test_site_applies_plex_play(),
         test_gen_inventory_renders_plex_group(),
         test_docker_install_delegated_to_geerlingguy_role(),
+        test_acme_reset_task_does_not_preserve_mtime(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

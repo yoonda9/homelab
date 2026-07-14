@@ -20,16 +20,21 @@ http:
         frameDeny: true
         referrerPolicy: strict-origin-when-cross-origin
 
-    # LAN + Tailscale only. Internal routers (whoami, extras) carry this so they
-    # are reachable on the LAN/Tailscale and blocked from the WAN.
-    lan-allowlist:
+    # LAN + Tailscale (v4/v6) + the broad Docker private range. Internal routers
+    # (whoami, extras) carry this so they are reachable on the LAN/Tailscale and
+    # blocked from the WAN. 172.16.0.0/12 admits the Step-4 cloudflared hop's
+    # Docker source without pinning the network subnet (design §dynamic.yml.j2);
+    # fd7a:115c:a1e0::/48 admits Tailscale IPv6 clients.
+    internal-allowlist:
       ipAllowList:
         sourceRange:
           - "192.168.1.0/24"
           - "100.64.0.0/10"
+          - "fd7a:115c:a1e0::/48"
+          - "172.16.0.0/12"
 
   # Plex is the ONLY public router (design §E.1). Unlike every internal router it
-  # carries security-headers but NOT lan-allowlist, so it is reachable from the
+  # carries security-headers but NOT internal-allowlist, so it is reachable from the
   # WAN via the port-forward 80/443 -> .111 (docs/runbooks/host-bootstrap.md §4).
   # Plex runs outside Docker, so it is routed here (file provider) rather than by
   # docker labels. certResolver stays the {{ acme_resolver }} var so the Step-11
@@ -44,6 +49,31 @@ http:
         - security-headers@file
       tls:
         certResolver: "{{ acme_resolver }}"
+
+    # Hardened Traefik dashboard/API (Step 3, design §6). Serves the built-in
+    # api@internal service on traefik.{{ domain }} over websecure, internal-only via
+    # internal-allowlist + security-headers — replacing the removed insecure :8080
+    # publish. This stable file-provider router also CARRIES the DNS-01 wildcard
+    # tls.domains (relocated off the docker whoami service) so proactive wildcard
+    # issuance is independent of any docker container, closing the per-host-cert
+    # rate-limit race. Gated on le-dns-cf because HTTP-01 cannot issue wildcards;
+    # under le-http the domains block is suppressed (trim_blocks keeps YAML valid).
+    traefik-dashboard:
+      rule: "Host(`traefik.{{ domain }}`)"
+      entryPoints:
+        - websecure
+      service: api@internal
+      middlewares:
+        - internal-allowlist@file
+        - security-headers@file
+      tls:
+        certResolver: "{{ acme_resolver }}"
+{% if acme_resolver == 'le-dns-cf' %}
+        domains:
+          - main: "{{ domain }}"
+            sans:
+              - "*.{{ domain }}"
+{% endif %}
 
   services:
     plex:

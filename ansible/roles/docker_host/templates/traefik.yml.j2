@@ -1,8 +1,9 @@
 # {{ ansible_managed }}
-# Traefik static configuration (design §4.4). Entrypoints, providers and BOTH
-# ACME certresolvers are defined here; the per-router resolver is chosen via the
-# `acme_resolver` group_var (default le-http), so the Step-11 DNS-01 flip is one
-# variable.
+# Traefik static configuration (design §4.4). Entrypoints, providers and the
+# single Cloudflare DNS-01 ACME certresolver (le-dns-cf) are defined here; the
+# per-router resolver is chosen via the `acme_resolver` group_var (le-dns-cf),
+# and staging vs prod issuance is a single `acme_ca_server` toggle (LE staging
+# until Step 7). Only DNS-01 can issue the *.{{ domain }} wildcard.
 global:
   checkNewVersion: false
   sendAnonymousUsage: false
@@ -34,18 +35,14 @@ providers:
     watch: true
 
 certificatesResolvers:
-  # Active now: HTTP-01 via the port-forward (works for the public host).
-  le-http:
-    acme:
-      email: "{{ docker_host_acme_email }}"
-      storage: /acme.json
-      httpChallenge:
-        entryPoint: web
-  # Defined now, used after the Step-11 Cloudflare migration: DNS-01 wildcard.
+  # Single resolver: Cloudflare DNS-01 issues the browser-trusted *.{{ domain }}
+  # wildcard (HTTP-01 cannot). caServer selects LE staging vs prod via the
+  # acme_ca_server toggle — staging for this phase, flipped in Step 7.
   le-dns-cf:
     acme:
       email: "{{ docker_host_acme_email }}"
       storage: /acme.json
+      caServer: "{{ acme_ca_server }}"
       dnsChallenge:
         provider: cloudflare
         resolvers:
@@ -53,6 +50,9 @@ certificatesResolvers:
           - "8.8.8.8:53"
 
 api:
+  # Dashboard/API served via the routed `api@internal` service only — no insecure
+  # :8080 entrypoint. The hardened `traefik-dashboard` file-provider router
+  # (dynamic.yml.j2) exposes it on traefik.{{ domain }} behind internal-allowlist.
   dashboard: true
 
 # Prometheus metrics (Step 10), served on the internal `metrics` entrypoint.

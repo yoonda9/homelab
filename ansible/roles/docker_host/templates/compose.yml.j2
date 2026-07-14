@@ -2,7 +2,7 @@
 # {{ ansible_managed }}
 # Traefik reverse proxy + whoami smoke service (design §4.4).
 # whoami is exposed ONLY through Traefik labels (no published host port) and is
-# internal-only via the lan-allowlist middleware.
+# internal-only via the internal-allowlist middleware.
 services:
   traefik:
     image: {{ docker_host_traefik_image }}
@@ -10,6 +10,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      # No insecure dashboard publish: the API/dashboard is served only via the
+      # routed api@internal service behind the traefik-dashboard router (dynamic.yml.j2).
     # CF_DNS_API_TOKEN is read from the sibling .env (rendered from vault), used
     # by the le-dns-cf Cloudflare DNS-01 resolver. Never embedded in this file.
     environment:
@@ -20,34 +22,46 @@ services:
       - {{ docker_host_project_dir }}/dynamic:/etc/traefik/dynamic:ro
       - {{ docker_host_project_dir }}/acme.json:/acme.json
 
+  # --- Cloudflare Tunnel connector (Step 4, design §4/§A). ---
+  # Outbound-only connector to a remotely-managed tunnel: NO published ports, so
+  # there is zero inbound surface and no dashboard is ever reachable before the
+  # Step-5 Cloudflare Access gate exists. TUNNEL_TOKEN is read from the sibling
+  # .env (rendered from vault_cloudflare_tunnel_token), never a literal. NO
+  # public-hostname ingress is configured yet — Step 5 adds Access first, then
+  # the tunnel ingress. cloudflared reaches Traefik over the internal compose
+  # network; its source is in the 172.16.0.0/12 range already admitted by the
+  # internal-allowlist middleware.
+  cloudflared:
+    image: {{ docker_host_cloudflared_image }}
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      - traefik
+
   whoami:
     image: {{ docker_host_whoami_image }}
     restart: unless-stopped
     # Internal-only smoke route: discovered by the docker provider, routed on
-    # websecure, TLS via the active resolver, gated by lan-allowlist.
+    # websecure, TLS via the active resolver, gated by internal-allowlist.
     labels:
       - traefik.enable=true
       - traefik.http.routers.whoami.rule=Host(`whoami.{{ domain }}`)
       - traefik.http.routers.whoami.entrypoints=websecure
       - traefik.http.routers.whoami.tls=true
       - traefik.http.routers.whoami.tls.certresolver={{ acme_resolver }}
-{% if acme_resolver == 'le-dns-cf' %}
-      # DNS-01 wildcard request (Step 11): under le-dns-cf this one router asks for
-      # a single {{ domain }} + *.{{ domain }} cert. Traefik stores it globally and
-      # serves it for every other host that matches (grafana/prometheus/uptime/
-      # homepage and Plex), so no per-service cert is requested. Gated on the
-      # resolver because HTTP-01 cannot issue wildcards — under le-http nothing here
-      # is emitted, keeping that path satisfiable.
-      - traefik.http.routers.whoami.tls.domains[0].main={{ domain }}
-      - traefik.http.routers.whoami.tls.domains[0].sans=*.{{ domain }}
-{% endif %}
-      - traefik.http.routers.whoami.middlewares=lan-allowlist@file,security-headers@file
+      # The DNS-01 wildcard tls.domains request was relocated (Step 3) onto the stable
+      # traefik-dashboard file-provider router (dynamic.yml.j2), so proactive wildcard
+      # issuance no longer depends on this docker service. Traefik's global cert store
+      # then serves that one wildcard for whoami and every other matching host.
+      - traefik.http.routers.whoami.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.whoami.loadbalancer.server.port=80
 
   # --- Extras stack (Step 10): LAN/Tailscale-only dashboards & monitoring. ---
   # Each is routed by the docker provider (labels only, no published host port),
   # on websecure with the var-driven {{ acme_resolver }} resolver, and carries
-  # lan-allowlist@file + security-headers@file so it is reachable on the LAN/
+  # internal-allowlist@file + security-headers@file so it is reachable on the LAN/
   # Tailscale and blocked from the WAN. None appear in public_services.
   homepage:
     image: {{ docker_host_homepage_image }}
@@ -66,7 +80,7 @@ services:
       - traefik.http.routers.homepage.entrypoints=websecure
       - traefik.http.routers.homepage.tls=true
       - traefik.http.routers.homepage.tls.certresolver={{ acme_resolver }}
-      - traefik.http.routers.homepage.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.routers.homepage.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.homepage.loadbalancer.server.port=3000
 
   uptime-kuma:
@@ -80,7 +94,7 @@ services:
       - traefik.http.routers.uptime-kuma.entrypoints=websecure
       - traefik.http.routers.uptime-kuma.tls=true
       - traefik.http.routers.uptime-kuma.tls.certresolver={{ acme_resolver }}
-      - traefik.http.routers.uptime-kuma.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.routers.uptime-kuma.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.uptime-kuma.loadbalancer.server.port=3001
 
   grafana:
@@ -100,7 +114,7 @@ services:
       - traefik.http.routers.grafana.entrypoints=websecure
       - traefik.http.routers.grafana.tls=true
       - traefik.http.routers.grafana.tls.certresolver={{ acme_resolver }}
-      - traefik.http.routers.grafana.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.routers.grafana.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.grafana.loadbalancer.server.port=3000
 
   prometheus:
@@ -117,7 +131,7 @@ services:
       - traefik.http.routers.prometheus.entrypoints=websecure
       - traefik.http.routers.prometheus.tls=true
       - traefik.http.routers.prometheus.tls.certresolver={{ acme_resolver }}
-      - traefik.http.routers.prometheus.middlewares=lan-allowlist@file,security-headers@file
+      - traefik.http.routers.prometheus.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
 
   # Scrape targets only: NO Traefik labels, NO router — Prometheus reaches them

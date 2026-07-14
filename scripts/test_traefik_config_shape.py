@@ -8,14 +8,16 @@ Cloudflare DNS-01 defined) with a LAN-only `whoami` smoke route:
   compose.yml.j2 plus the Traefik static (traefik.yml.j2) + dynamic
   (dynamic.yml.j2) config templates;
 - the static config defines `web` (:80, redirect->websecure) and `websecure`
-  (:443) entrypoints and BOTH certresolvers (le-http httpChallenge + le-dns-cf
-  Cloudflare dnsChallenge);
+  (:443) entrypoints and a SINGLE Cloudflare DNS-01 certresolver (le-dns-cf);
+  `le-http` is removed (only DNS-01 issues wildcards) and staging vs prod is a
+  single `caServer: "{{ acme_ca_server }}"` toggle (LE staging until Step 7);
 - the active resolver on the whoami router is variable-driven ({{ acme_resolver }}),
   not a hard-coded literal, so the Step-11 flip is one variable;
 - the dynamic config defines the redirect-to-https / security-headers /
-  lan-allowlist middlewares and lan-allowlist carries both the 192.168.1.0/24
-  and Tailscale 100.64.0.0/10 source ranges;
-- the whoami service/router is present, internal-only (carries lan-allowlist,
+  internal-allowlist middlewares and internal-allowlist carries all four internal
+  source ranges (192.168.1.0/24, Tailscale 100.64.0.0/10 + fd7a:115c:a1e0::/48,
+  and the broad Docker 172.16.0.0/12 for the Step-4 cloudflared hop);
+- the whoami service/router is present, internal-only (carries internal-allowlist,
   NOT in public_services);
 - docker_host tasks/main.yml is idempotent (no unguarded command/shell/raw,
   reusing the Step-4 guard scan) and ansible.builtin-only;
@@ -42,6 +44,7 @@ COMPOSE = TEMPLATES / "compose.yml.j2"
 STATIC = TEMPLATES / "traefik.yml.j2"
 DYNAMIC = TEMPLATES / "dynamic.yml.j2"
 ENV = TEMPLATES / "env.j2"
+HOMEPAGE_SERVICES = TEMPLATES / "homepage-services.yaml.j2"
 
 
 def _read(path: pathlib.Path) -> str:
@@ -71,12 +74,51 @@ def test_entrypoints_with_redirect() -> bool:
 
 
 def test_both_certresolvers() -> bool:
+    """Step 1: exactly one ACME certresolver — Cloudflare DNS-01 (`le-dns-cf`).
+
+    Function name retained for acceptance traceability (task-01 §Acceptance-3);
+    the assertion is retargeted to the post-migration invariant. The old
+    HTTP-01 `le-http` resolver is REMOVED — only DNS-01 can issue the
+    `*.{{ domain }}` wildcard, so `le-dns-cf` must be the sole resolver.
+    """
     body = _read(STATIC)
-    # le-http must use an HTTP-01 challenge; le-dns-cf a Cloudflare DNS-01 one.
-    http = re.search(r'(?s)le-http:.*?acme:.*?httpChallenge', body) is not None
     dns = re.search(r'(?s)le-dns-cf:.*?acme:.*?dnsChallenge:.*?provider:\s*cloudflare', body) is not None
-    ok = http and dns
-    print(f"{'OK' if ok else 'FAIL'}: both certresolvers defined (le-http http01={http}, le-dns-cf cf-dns01={dns})")
+    # `le-http:` as a YAML resolver key must be gone (comment mentions can't match).
+    http_gone = re.search(r'(?m)^\s*le-http:\s*$', body) is None
+    ok = dns and http_gone
+    print(f"{'OK' if ok else 'FAIL'}: single DNS-01 certresolver le-dns-cf (cf-dns01={dns}, le-http_gone={http_gone})")
+    return ok
+
+
+def test_caserver_toggle_wired() -> bool:
+    """Step 7: `le-dns-cf` pins `caServer` to the `acme_ca_server` toggle, now on PROD.
+
+    The DNS-01 resolver must carry `caServer: "{{ acme_ca_server }}"` under its
+    `acme` block, and `group_vars/all.yml` must define `acme_ca_server` set to the
+    LE **production** directory URL (staging was retired at the Step-7 flip). This
+    keeps the staging->prod cutover a single variable, not a template edit. Anchors
+    on the prod directory host and rejects the staging host so a regression back to
+    `acme-staging-v02` reddens.
+    """
+    static = _read(STATIC)
+    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    caserver = re.search(
+        r'(?s)le-dns-cf:.*?acme:.*?caServer:\s*"?\{\{\s*acme_ca_server\s*\}\}',
+        static,
+    ) is not None
+    defined = re.search(r'(?m)^acme_ca_server:\s*\S', all_yml) is not None
+    prod = re.search(
+        r'(?m)^acme_ca_server:\s*"?https://acme-v02\.api\.letsencrypt\.org/directory',
+        all_yml,
+    ) is not None
+    not_staging = re.search(
+        r'(?m)^acme_ca_server:\s*"?https://acme-staging-v02\.', all_yml
+    ) is None
+    ok = caserver and defined and prod and not_staging
+    print(
+        f"{'OK' if ok else 'FAIL'}: caServer wired to acme_ca_server prod toggle "
+        f"(caServer={caserver}, defined={defined}, prod={prod}, not_staging={not_staging})"
+    )
     return ok
 
 
@@ -95,23 +137,30 @@ def test_middlewares_defined() -> bool:
     body = _read(DYNAMIC)
     redirect = re.search(r'(?s)redirect-to-https:.*?redirectScheme', body) is not None
     headers = re.search(r'(?s)security-headers:.*?headers:', body) is not None
-    allowlist = re.search(r'(?s)lan-allowlist:.*?ipAllowList', body) is not None
+    allowlist = re.search(r'(?s)internal-allowlist:.*?ipAllowList', body) is not None
     ok = redirect and headers and allowlist
     print(
         f"{'OK' if ok else 'FAIL'}: middlewares defined "
-        f"(redirect-to-https={redirect}, security-headers={headers}, lan-allowlist={allowlist})"
+        f"(redirect-to-https={redirect}, security-headers={headers}, internal-allowlist={allowlist})"
     )
     return ok
 
 
 def test_lan_allowlist_source_ranges() -> bool:
+    # Name kept for acceptance traceability (Step-2 retarget): the allowlist is now
+    # `internal-allowlist` and must carry all four internal ranges in order — the LAN
+    # /24, the Tailscale CGNAT v4 range, the Tailscale ULA v6 prefix, and the broad
+    # Docker private range that admits the Step-4 cloudflared hop without pinning a subnet.
     body = _read(DYNAMIC)
-    # Both the LAN /24 and the Tailscale CGNAT range must be inside lan-allowlist.
     ok = re.search(
-        r'(?s)lan-allowlist:.*?sourceRange:.*?192\.168\.1\.0/24.*?100\.64\.0\.0/10',
+        r'(?s)internal-allowlist:.*?sourceRange:'
+        r'.*?192\.168\.1\.0/24.*?100\.64\.0\.0/10.*?fd7a:115c:a1e0::/48.*?172\.16\.0\.0/12',
         body,
     ) is not None
-    print(f"{'OK' if ok else 'FAIL'}: lan-allowlist carries 192.168.1.0/24 + 100.64.0.0/10")
+    print(
+        f"{'OK' if ok else 'FAIL'}: internal-allowlist carries 192.168.1.0/24 + "
+        f"100.64.0.0/10 + fd7a:115c:a1e0::/48 + 172.16.0.0/12"
+    )
     return ok
 
 
@@ -127,9 +176,9 @@ def test_whoami_internal_only() -> bool:
         and re.search(r'(?m)^\s*docker_host_whoami_image:\s*traefik/whoami', defaults) is not None
     )
     has_image = img_literal or img_var
-    # whoami router must carry the lan-allowlist middleware (LAN-only).
+    # whoami router must carry the internal-allowlist middleware (LAN/Tailscale-only).
     router_allowlist = re.search(
-        r'routers\.whoami\.middlewares\s*=\s*[^\n]*lan-allowlist', compose
+        r'routers\.whoami\.middlewares\s*=\s*[^\n]*internal-allowlist', compose
     ) is not None
     # ...and must NOT be promoted to a public service.
     all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
@@ -139,7 +188,7 @@ def test_whoami_internal_only() -> bool:
     ok = has_service and has_image and router_allowlist and not_public
     print(
         f"{'OK' if ok else 'FAIL'}: whoami internal-only "
-        f"(service={has_service}, image={has_image}, lan-allowlist={router_allowlist}, not_public={not_public})"
+        f"(service={has_service}, image={has_image}, internal-allowlist={router_allowlist}, not_public={not_public})"
     )
     return ok
 
@@ -176,9 +225,9 @@ def test_no_plaintext_secrets() -> bool:
         if not path.is_file():
             continue
         for ln in _read(path).splitlines():
-            # A real token value: 20+ token chars assigned to a CF/token key.
+            # A real token value: 20+ token chars assigned to a CF/tunnel/token key.
             if re.search(
-                r'(?i)(cf_dns_api_token|cloudflare[_a-z]*token)\s*[:=]\s*[A-Za-z0-9_\-]{20,}',
+                r'(?i)(cf_dns_api_token|cloudflare[_a-z]*token|tunnel_token)\s*[:=]\s*[A-Za-z0-9_\-]{20,}',
                 ln,
             ) and not re.search(r'\{\{.*\}\}|\$\{', ln):
                 leaks.append(f"{path.name}: {ln.strip()[:60]}")
@@ -204,6 +253,35 @@ def _routers_block(body: str) -> str:
 def _services_block(body: str) -> str:
     """The `http.services:` section of dynamic.yml.j2 (to EOF)."""
     m = re.search(r'(?ms)^\s*services:\s*$(.*)', body)
+    return m.group(1) if m else ""
+
+
+def _compose_service_block(body: str, name: str) -> str:
+    """A single compose service's body under `services:` (2-space-indented key).
+
+    Scoped to ONE service so per-service assertions (e.g. cloudflared has NO
+    `ports:`) don't leak across siblings. Runs to the next 2-space service key,
+    a top-level (0-indent) key like `volumes:`, or EOF.
+    """
+    m = re.search(
+        rf'(?ms)^\s{{2}}{re.escape(name)}:\s*$(.*?)(?=^\s{{2}}\S|^\S|\Z)',
+        body + "\n  EOF:",
+    )
+    return m.group(1) if m else ""
+
+
+def _router_block(body: str, name: str) -> str:
+    """A single router's body under `http.routers:` (4-space-indented key).
+
+    Scoped to ONE router so per-router assertions (e.g. plex has NO allowlist)
+    don't leak across siblings once the Step-3 `traefik-dashboard` router — which
+    DOES carry internal-allowlist — joins the same `routers:` block. Runs to the
+    next 4-space router key or the end of the routers section; the column-0 Jinja
+    `{% if %}`/`{% endif %}` gate lines are deeper-or-shallower than 4 spaces, so
+    they stay inside the owning router's slice.
+    """
+    routers = _routers_block(body)
+    m = re.search(rf'(?ms)^\s{{4}}{re.escape(name)}:\s*$(.*?)(?=^\s{{4}}\S|\Z)', routers)
     return m.group(1) if m else ""
 
 
@@ -249,21 +327,25 @@ def test_plex_service_backend_32400() -> bool:
 
 
 def test_plex_router_is_public_not_allowlisted() -> bool:
-    """Step-9: plex is the ONLY public router — no lan-allowlist (security-critical).
+    """Step-9: plex is the ONLY public router — no allowlist (security-critical).
 
-    The plex router carries security-headers but NOT lan-allowlist, while the
-    internal whoami router still does (regression guard on the allowlist split).
+    The plex router carries security-headers but NO allowlist (neither the removed
+    lan-allowlist nor the Step-2 internal-allowlist), while the internal whoami router
+    carries internal-allowlist (regression guard on the allowlist split). Scoped to the
+    plex router's own block (not the whole routers section) because the Step-3
+    `traefik-dashboard` router now also lives under `routers:` and DOES carry
+    internal-allowlist — a section-wide "allowlist not in routers" would false-fail.
     """
-    routers = _routers_block(_read(DYNAMIC))
-    plex_no_allowlist = "lan-allowlist" not in routers
-    plex_has_headers = "security-headers" in routers
+    plex = _router_block(_read(DYNAMIC), "plex")
+    plex_no_allowlist = "allowlist" not in plex
+    plex_has_headers = "security-headers" in plex
     compose = _read(COMPOSE)
     whoami_allowlist = re.search(
-        r'routers\.whoami\.middlewares\s*=\s*[^\n]*lan-allowlist', compose
+        r'routers\.whoami\.middlewares\s*=\s*[^\n]*internal-allowlist', compose
     ) is not None
     ok = plex_no_allowlist and plex_has_headers and whoami_allowlist
     print(
-        f"{'OK' if ok else 'FAIL'}: plex router public (no lan-allowlist), whoami still internal "
+        f"{'OK' if ok else 'FAIL'}: plex router public (no allowlist), whoami still internal "
         f"(plex_no_allowlist={plex_no_allowlist}, plex_headers={plex_has_headers}, "
         f"whoami_allowlist={whoami_allowlist})"
     )
@@ -295,18 +377,18 @@ def test_extras_services_present() -> bool:
 
 
 def test_extras_internal_routers_allowlisted() -> bool:
-    """Step-10: every extras router carries lan-allowlist + a var-driven resolver.
+    """Step-10: every extras router carries internal-allowlist + a var-driven resolver.
 
-    Each of the four routers must include the lan-allowlist middleware and select
-    its certresolver from {{ acme_resolver }} (NOT a hard-coded le-http/le-dns-cf
-    literal), so the Step-11 DNS-01 flip stays one variable and the internal split
-    holds as the stack grows.
+    Each of the four routers must include the internal-allowlist middleware (Step-2
+    migration from lan-allowlist) and select its certresolver from {{ acme_resolver }}
+    (NOT a hard-coded le-http/le-dns-cf literal), so the Step-11 DNS-01 flip stays one
+    variable and the internal split holds as the stack grows.
     """
     compose = _read(COMPOSE)
     failures = []
     for s in EXTRAS:
         mw = re.search(
-            rf'routers\.{re.escape(s)}\.middlewares\s*=\s*[^\n]*lan-allowlist', compose
+            rf'routers\.{re.escape(s)}\.middlewares\s*=\s*[^\n]*internal-allowlist', compose
         ) is not None
         cr = re.search(
             rf'routers\.{re.escape(s)}\.tls\.certresolver\s*=\s*\{{\{{\s*acme_resolver\s*\}}\}}',
@@ -320,7 +402,7 @@ def test_extras_internal_routers_allowlisted() -> bool:
     ) is not None
     ok = not failures and not hardcoded
     print(
-        f"{'OK' if ok else 'FAIL'}: extras routers lan-allowlisted + var-driven resolver "
+        f"{'OK' if ok else 'FAIL'}: extras routers internal-allowlisted + var-driven resolver "
         f"(failures={failures}, hardcoded={hardcoded})"
     )
     return ok
@@ -329,7 +411,7 @@ def test_extras_internal_routers_allowlisted() -> bool:
 def test_prometheus_never_public() -> bool:
     """Step-10: prometheus is never public (defense-in-depth, design §6).
 
-    Not in public_services AND its router carries lan-allowlist.
+    Not in public_services AND its router carries internal-allowlist.
     """
     all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
     m = re.search(r'(?ms)^public_services:\s*$(.*?)^\S', all_yml + "\nEOF")
@@ -337,7 +419,7 @@ def test_prometheus_never_public() -> bool:
     not_public = "prometheus" not in pub_block
     compose = _read(COMPOSE)
     router_allowlist = re.search(
-        r'routers\.prometheus\.middlewares\s*=\s*[^\n]*lan-allowlist', compose
+        r'routers\.prometheus\.middlewares\s*=\s*[^\n]*internal-allowlist', compose
     ) is not None
     ok = not_public and router_allowlist
     print(
@@ -365,26 +447,70 @@ def test_homepage_allowed_hosts() -> bool:
     return ok
 
 
-def test_internal_services_exactly_four() -> bool:
-    """Step-10: group_vars internal_services is exactly the four extras (design §5)."""
+# Every LAN/Tailscale-only Traefik-routed service. The four monitoring extras
+# (design §5 order) plus the Traefik dashboard and the whoami smoke route — all
+# internal-allowlisted, none in public_services. Step 8 refreshed the
+# documentation-only group_vars list so it no longer omits `traefik`/`whoami`.
+INTERNAL_SERVICES = EXTRAS + ["traefik", "whoami"]
+
+
+def test_internal_services_lists_all_internal() -> bool:
+    """Step-8: group_vars internal_services lists every internal service.
+
+    The four monitoring extras (design §5) plus the Traefik dashboard
+    (`traefik.{{ domain }}`) and the `whoami` smoke route — the documentation-only
+    list must reflect the full internal set so it does not mislead (plan Step 8).
+    """
     all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
     m = re.search(r'(?ms)^internal_services:\s*$(.*?)^\S', all_yml + "\nEOF")
     block = m.group(1) if m else ""
     entries = re.findall(r'(?m)^\s*-\s*(\S+)', block)
-    ok = entries == EXTRAS
-    print(f"{'OK' if ok else 'FAIL'}: internal_services is exactly {EXTRAS} (entries={entries})")
+    ok = sorted(entries) == sorted(INTERNAL_SERVICES)
+    print(
+        f"{'OK' if ok else 'FAIL'}: internal_services lists all internal services "
+        f"{sorted(INTERNAL_SERVICES)} (entries={entries})"
+    )
+    return ok
+
+
+def test_homepage_monitors_target_internal_urls() -> bool:
+    """Step-8: Homepage siteMonitor probes point at internal service URLs.
+
+    Off-tailnet probes to the public dashboard hostnames get a Cloudflare Access
+    302 and report false-down; the `siteMonitor` targets in
+    `homepage-services.yaml.j2` must instead hit the internal compose-network
+    service (http://<service>:<port>), never a public `*.{{ domain }}` host.
+    Anchored on the siteMonitor VALUE so the clickable `href` public links (which
+    stay public by design) cannot satisfy or redden it; non-vacuous (>=1 probe).
+    """
+    body = _read(HOMEPAGE_SERVICES)
+    monitors = re.findall(r'(?m)^\s*siteMonitor:\s*(\S+)', body)
+    internal = re.compile(r'^https?://[a-z0-9][a-z0-9.-]*:\d+')
+    non_internal = [
+        m
+        for m in monitors
+        if internal.match(m) is None or re.search(r'\{\{\s*domain\s*\}\}', m)
+    ]
+    ok = bool(monitors) and not non_internal
+    print(
+        f"{'OK' if ok else 'FAIL'}: homepage siteMonitor targets are internal "
+        f"service URLs (monitors={monitors}, non_internal={non_internal})"
+    )
     return ok
 
 
 def test_cf_token_sourced_from_vault() -> bool:
-    """Step-11: env.j2 sources CF_DNS_API_TOKEN from vault_cloudflare_dns_api_token.
+    """Step-11/Step-4: env.j2 sources both Cloudflare tokens from the vault.
 
-    The actual Ansible-Vault key is `vault_cloudflare_dns_api_token` (siblings:
-    vault_grafana_admin_password, vault_dashboard_basic_auth_hash). The earlier
-    reference `cloudflare_dns_api_token` is UNDEFINED, so `default('')` rendered
-    the token EMPTY — harmless under HTTP-01 but breaks every Cloudflare DNS-01
+    CF_DNS_API_TOKEN comes from `vault_cloudflare_dns_api_token` (Step-11) and
+    TUNNEL_TOKEN from `vault_cloudflare_tunnel_token` (Step-4) — the real
+    Ansible-Vault keys (siblings: vault_grafana_admin_password,
+    vault_dashboard_basic_auth_hash). The earlier reference
+    `cloudflare_dns_api_token` is UNDEFINED, so `default('')` rendered the DNS-01
+    token EMPTY — harmless under HTTP-01 but breaks every Cloudflare DNS-01
     challenge once acme_resolver flips to le-dns-cf. This regression guard fails
-    on the old text and passes only on the corrected vault key.
+    on the old text and passes only on the corrected vault keys; TUNNEL_TOKEN
+    must likewise be vault-sourced, never a literal.
     """
     body = _read(ENV)
     correct = re.search(
@@ -394,32 +520,121 @@ def test_cf_token_sourced_from_vault() -> bool:
     buggy = re.search(
         r'CF_DNS_API_TOKEN\s*=\s*\{\{\s*cloudflare_dns_api_token\b', body
     ) is not None
-    ok = correct and not buggy
+    tunnel = re.search(
+        r'TUNNEL_TOKEN\s*=\s*\{\{\s*vault_cloudflare_tunnel_token\b', body
+    ) is not None
+    ok = correct and not buggy and tunnel
     print(
-        f"{'OK' if ok else 'FAIL'}: CF_DNS_API_TOKEN sourced from vault_cloudflare_dns_api_token "
-        f"(correct={correct}, buggy_ref={buggy})"
+        f"{'OK' if ok else 'FAIL'}: CF/TUNNEL tokens sourced from vault "
+        f"(cf_dns={correct}, buggy_ref={buggy}, tunnel={tunnel})"
+    )
+    return ok
+
+
+def test_cloudflared_service_block() -> bool:
+    """Step-4: compose defines the outbound `cloudflared` tunnel connector (AC1).
+
+    A `cloudflared` service that (1) pulls the concrete image via the
+    `{{ docker_host_cloudflared_image }}` var (not a literal, so bumps stay one
+    default), (2) runs `tunnel --no-autoupdate run`, (3) has NO `ports:` (zero
+    inbound surface — nothing is reachable before the Step-5 Access gate), and
+    (4) `depends_on: traefik` so the connector starts after the proxy. No
+    public-hostname ingress is configured here (that is Step 5).
+    """
+    block = _compose_service_block(_read(COMPOSE), "cloudflared")
+    present = bool(block)
+    image_var = re.search(
+        r'(?m)^\s*image:\s*\{\{\s*docker_host_cloudflared_image\s*\}\}', block
+    ) is not None
+    command = re.search(r'tunnel\s+--no-autoupdate\s+run', block) is not None
+    no_ports = re.search(r'(?m)^\s*ports:\s*$', block) is None
+    # depends_on names traefik (list `- traefik` or a `traefik:` condition map).
+    depends = re.search(r'(?ms)^\s*depends_on:\s*.*?\btraefik\b', block) is not None
+    ok = present and image_var and command and no_ports and depends
+    print(
+        f"{'OK' if ok else 'FAIL'}: cloudflared service block "
+        f"(present={present}, image_var={image_var}, command={command}, "
+        f"no_ports={no_ports}, depends_on_traefik={depends})"
     )
     return ok
 
 
 def test_wildcard_dns01_gated() -> bool:
-    """Step-11: a router declares the DNS-01 wildcard tls.domains, gated to le-dns-cf.
+    """Step-3: the DNS-01 wildcard tls.domains rides the traefik-dashboard router, gated to le-dns-cf.
 
-    Traefik only requests a wildcard cert when a router declares `tls.domains`
-    (main: {{ domain }}, sans: *.{{ domain }}). HTTP-01 cannot issue wildcards, so
-    the declaration MUST be gated on `acme_resolver == 'le-dns-cf'` — an accidental
-    le-http value must not request an unsatisfiable wildcard. Text-presence here;
-    the dual-mode Jinja+YAML render harness proves the gate actually suppresses it
+    Retargeted from the docker `whoami` label (Step-11) to the stable
+    `traefik-dashboard` file-provider router in dynamic.yml.j2: proactive wildcard
+    issuance must no longer depend on the docker whoami service, closing the
+    per-host-cert rate-limit race (design §6). Traefik only requests a wildcard when
+    a router declares `tls.domains` (main: {{ domain }}, sans: *.{{ domain }});
+    HTTP-01 cannot issue wildcards, so the declaration MUST be gated on
+    `acme_resolver == 'le-dns-cf'`. It must be PRESENT on traefik-dashboard and GONE
+    from the whoami router (relocation, not duplication — a second wildcard request
+    would reintroduce the race). Text-presence here; trim_blocks render suppresses it
     under le-http.
     """
-    body = _read(COMPOSE)
-    gate = re.search(r"\{%\s*if\s+acme_resolver\s*==\s*'le-dns-cf'\s*%\}", body) is not None
-    main = re.search(r'tls\.domains\[0\]\.main\s*=\s*\{\{\s*domain\s*\}\}', body) is not None
-    sans = re.search(r'tls\.domains\[0\]\.sans\s*=\s*\*\.\{\{\s*domain\s*\}\}', body) is not None
-    ok = gate and main and sans
+    dash = _router_block(_read(DYNAMIC), "traefik-dashboard")
+    gate = re.search(r"\{%\s*if\s+acme_resolver\s*==\s*'le-dns-cf'\s*%\}", dash) is not None
+    main = re.search(r'main:\s*"?\{\{\s*domain\s*\}\}', dash) is not None
+    sans = re.search(r'sans:.*?\*\.\{\{\s*domain\s*\}\}', dash, re.S) is not None
+    # The wildcard must be RELOCATED off the docker whoami router, not duplicated.
+    compose = _read(COMPOSE)
+    whoami_wildcard_gone = re.search(r'routers\.whoami\.tls\.domains', compose) is None
+    ok = gate and main and sans and whoami_wildcard_gone
     print(
-        f"{'OK' if ok else 'FAIL'}: wildcard tls.domains declared + gated to le-dns-cf "
-        f"(gate={gate}, main={main}, sans={sans})"
+        f"{'OK' if ok else 'FAIL'}: wildcard tls.domains on traefik-dashboard, gated to le-dns-cf, off whoami "
+        f"(gate={gate}, main={main}, sans={sans}, whoami_gone={whoami_wildcard_gone})"
+    )
+    return ok
+
+
+def test_dashboard_insecure_exposure_removed() -> bool:
+    """Step-3: the unauthenticated dashboard surface is gone (AC1).
+
+    The insecure `api.insecure` :8080 dashboard is removed on three fronts: no
+    `:8080` publish in compose.yml.j2, no `docker_host_traefik_dashboard_port`
+    default, and `api.insecure` absent from traefik.yml.j2 while `api.dashboard:
+    true` stays (the dashboard is now served only via the routed api@internal
+    service behind the traefik-dashboard router).
+    """
+    compose = _read(COMPOSE)
+    defaults = _read(ROLE / "defaults" / "main.yml")
+    static = _read(STATIC)
+    port_unpublished = re.search(r':8080\b', compose) is None
+    port_default_gone = re.search(r'(?m)^\s*docker_host_traefik_dashboard_port\s*:', defaults) is None
+    insecure_absent = re.search(r'(?m)^\s*insecure\s*:\s*true', static) is None
+    dashboard_on = re.search(r'(?m)^\s*dashboard\s*:\s*true', static) is not None
+    ok = port_unpublished and port_default_gone and insecure_absent and dashboard_on
+    print(
+        f"{'OK' if ok else 'FAIL'}: insecure dashboard removed "
+        f"(no_8080={port_unpublished}, no_port_default={port_default_gone}, "
+        f"insecure_absent={insecure_absent}, dashboard_on={dashboard_on})"
+    )
+    return ok
+
+
+def test_traefik_dashboard_router_present() -> bool:
+    """Step-3: dynamic.yml.j2 defines the hardened traefik-dashboard router (AC2).
+
+    A dedicated file-provider router `traefik-dashboard` on Host(`traefik.{{ domain }}`),
+    websecure, serving the internal `api@internal` service behind BOTH
+    internal-allowlist@file + security-headers@file, with a var-driven certResolver
+    (so the Step-11 flip stays one variable). This is the stable anchor the wildcard
+    relocates onto.
+    """
+    dash = _router_block(_read(DYNAMIC), "traefik-dashboard")
+    host = re.search(r'Host\(`traefik\.\{\{\s*domain\s*\}\}`\)', dash) is not None
+    websecure = re.search(r'(?s)entryPoints:.*?\bwebsecure\b', dash) is not None
+    service = re.search(r'(?m)^\s*service:\s*api@internal\s*$', dash) is not None
+    allowlist = re.search(r'internal-allowlist@file', dash) is not None
+    headers = re.search(r'security-headers@file', dash) is not None
+    var_driven = re.search(r'certResolver:\s*"?\{\{\s*acme_resolver\s*\}\}', dash) is not None
+    hardcoded = re.search(r'certResolver:\s*"?le-(http|dns-cf)\b', dash) is not None
+    ok = host and websecure and service and allowlist and headers and var_driven and not hardcoded
+    print(
+        f"{'OK' if ok else 'FAIL'}: traefik-dashboard router present "
+        f"(host={host}, websecure={websecure}, api_internal={service}, "
+        f"allowlist={allowlist}, headers={headers}, var_resolver={var_driven}, hardcoded={hardcoded})"
     )
     return ok
 
@@ -482,15 +697,16 @@ def test_no_floating_service_image_tags() -> bool:
 
 
 def test_acme_resolver_is_dns_cf() -> bool:
-    """Step-11: the one-variable flip is committed — acme_resolver is le-dns-cf.
+    """Step 1: acme_resolver is le-dns-cf — the sole (DNS-01) resolver.
 
-    group_vars/all.yml now defaults to DNS-01. Templates still select the resolver
-    via {{ acme_resolver }} (covered by test_resolver_is_variable_driven and the
-    extras/plex literal-free checks), so flipping back to le-http re-renders cleanly.
+    group_vars/all.yml selects the DNS-01 wildcard resolver. Templates still
+    reference it via {{ acme_resolver }} (covered by test_resolver_is_variable_driven
+    and the extras/plex literal-free checks). `le-http` has been removed (Step 1),
+    so `le-dns-cf` is the only resolver the templates can name.
     """
     all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
     ok = re.search(r'(?m)^acme_resolver:\s*le-dns-cf\s*$', all_yml) is not None
-    print(f"{'OK' if ok else 'FAIL'}: group_vars acme_resolver is le-dns-cf (committed flip)")
+    print(f"{'OK' if ok else 'FAIL'}: group_vars acme_resolver is le-dns-cf (sole DNS-01 resolver)")
     return ok
 
 
@@ -499,6 +715,7 @@ def main() -> int:
         test_role_structure_exists(),
         test_entrypoints_with_redirect(),
         test_both_certresolvers(),
+        test_caserver_toggle_wired(),
         test_resolver_is_variable_driven(),
         test_middlewares_defined(),
         test_lan_allowlist_source_ranges(),
@@ -514,9 +731,13 @@ def main() -> int:
         test_extras_internal_routers_allowlisted(),
         test_prometheus_never_public(),
         test_homepage_allowed_hosts(),
-        test_internal_services_exactly_four(),
+        test_internal_services_lists_all_internal(),
+        test_homepage_monitors_target_internal_urls(),
         test_cf_token_sourced_from_vault(),
+        test_cloudflared_service_block(),
         test_wildcard_dns01_gated(),
+        test_dashboard_insecure_exposure_removed(),
+        test_traefik_dashboard_router_present(),
         test_traefik_image_pinned_to_concrete_v3(),
         test_no_floating_service_image_tags(),
         test_acme_resolver_is_dns_cf(),

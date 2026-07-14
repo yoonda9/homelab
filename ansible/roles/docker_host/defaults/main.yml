@@ -12,7 +12,7 @@ docker_host_traefik_image: traefik:v3.7.5
 docker_host_whoami_image: traefik/whoami:v1.11.0
 
 # Internal-only extras stack images (Step 10). All LAN/Tailscale-only, routed by
-# Traefik docker labels (no published host port) and gated by lan-allowlist@file.
+# Traefik docker labels (no published host port) and gated by internal-allowlist@file.
 docker_host_homepage_image: ghcr.io/gethomepage/homepage:v1.13.2
 docker_host_uptime_kuma_image: louislam/uptime-kuma:2.4.0
 docker_host_grafana_image: grafana/grafana:13.1.0
@@ -21,9 +21,26 @@ docker_host_prometheus_image: prom/prometheus:v3.12.0
 docker_host_node_exporter_image: prom/node-exporter:v1.11.1
 docker_host_cadvisor_image: gcr.io/cadvisor/cadvisor:v0.55.1
 
+# Cloudflare Tunnel connector (Step 4). Concrete pin, live-verified real/current
+# on Docker Hub (2026-07-14: current `latest`, multi-arch). Outbound-only — the
+# service publishes no ports; TUNNEL_TOKEN comes from the vault via env.j2.
+docker_host_cloudflared_image: cloudflare/cloudflared:2026.7.1
+
 # Plex CT (110) backend for the public file-provider router (Step 9). Plex does
 # not run in Docker, so Traefik reaches it over the LAN at this address.
 docker_host_plex_url: http://192.168.1.110:32400
 
 # ACME registration email (Let's Encrypt). Overridable per environment.
 docker_host_acme_email: "admin@{{ domain }}"
+
+# Production ACME store reset (Step 7). OFF by default so ordinary runs never
+# wipe live certs. Set true (`-e docker_host_acme_reset=true`) for the one-shot
+# staging->prod cutover: it stops Traefik, empties acme.json at 0600, and starts
+# Traefik so the wildcard re-issues from LE prod (a caServer flip alone reuses the
+# staging cert — acme.json is keyed by resolver name).
+docker_host_acme_reset: false
+
+# No dashboard host port: the Traefik API/dashboard is served only via the routed
+# api@internal service behind the traefik-dashboard router (dynamic.yml.j2), not an
+# insecure :8080 entrypoint (design §6). Reachable on the LAN/Tailscale at
+# https://traefik.{{ domain }} through internal-allowlist.

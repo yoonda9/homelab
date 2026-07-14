@@ -141,12 +141,14 @@ in once the Docker-host CT exists (Step 3+):
 
 | Protocol | External port | Internal target  | Notes                                  |
 | -------- | ------------- | ---------------- | -------------------------------------- |
-| TCP      | 80            | `192.168.1.111`  | ACME HTTP-01 challenge + HTTP→HTTPS     |
+| TCP      | 80            | `192.168.1.111`  | HTTP→HTTPS redirect only               |
 | TCP      | 443           | `192.168.1.111`  | HTTPS (Traefik); `plex.yoonnation.com` |
 
-> Leave this as a placeholder for now. It is required before ACME can issue a
-> certificate (design §6: verify port-forward 80→`.111` + DNS A record; switch
-> to DNS-01 when Cloudflare is ready).
+> Certificates are issued over **DNS-01** (Cloudflare), so **no inbound `:80` is
+> needed for ACME** — port 80 is forwarded only for the HTTP→HTTPS redirect. Port
+> `443` is required so `plex.yoonnation.com` (grey/DNS-only home-IP `A` record)
+> reaches Traefik directly; the internal dashboards do **not** rely on this
+> forward from WAN — they go through the Cloudflare tunnel (§7).
 
 ---
 
@@ -163,3 +165,70 @@ OpenTofu authenticates to `pve` (token + SSH), resolves the
 `tofu/auth_check.tf`), and reports **no resource changes**. A clean plan that
 shows the PVE version output means "Tofu can talk to Proxmox" — bootstrap is
 complete.
+
+---
+
+## 7. Manual Cloudflare + Tailscale setup (traefik-cloudflare-letsencrypt)
+
+Public access for the dashboards is an **outbound Cloudflare tunnel + Cloudflare
+Access**, and the tailnet direct path is a **Tailscale split-DNS** override.
+Neither is provisioned by this repo — both are **manual, operator-run** steps
+configured in the Cloudflare Zero Trust and Tailscale admin consoles. The repo
+only ships the `cloudflared` connector and consumes two vault-stored tokens.
+
+Do these **once**, in order. Full step-by-step procedures live in the dedicated
+runbooks; this section is the bootstrap checklist and the pointer to them.
+
+### 7.1 Scoped Cloudflare **DNS** token (for DNS-01 wildcard issuance)
+
+Traefik issues the `*.yoonnation.com` wildcard over **DNS-01**. Create a scoped
+API token with **`Zone:DNS:Edit` + `Zone:Zone:Read`** on the `yoonnation.com`
+zone and store it in the vault as **`vault_cloudflare_dns_api_token`** (rendered
+into the compose `.env` as `CF_DNS_API_TOKEN`). Never commit the raw token.
+
+### 7.2 Cloudflare **tunnel** token
+
+Create a **remotely-managed** tunnel in **Zero Trust → Networks → Tunnels** and
+store its connector token in the vault as **`vault_cloudflare_tunnel_token`**
+(rendered into `.env` as `TUNNEL_TOKEN`). The `cloudflared` service runs it
+outbound — **no inbound ports**.
+
+### 7.3 Access apps **before** ingress, then per-host ingress
+
+**Ordering is load-bearing** — create the Access app first, publish the ingress
+second, or the dashboard is briefly reachable unauthenticated:
+
+- **FIRST** — one **self-hosted Access application per dashboard hostname**
+  (Google SSO + One-time-PIN fallback, MFA on, a single Allow policy for
+  `emmanuelx08@gmail.com`). **Not** a `*.yoonnation.com` wildcard app (it would
+  wrongly catch Plex).
+- **THEN** — one tunnel **public-hostname ingress** per dashboard →
+  `https://traefik:443` with `originRequest.originServerName` = the hostname.
+  (`noTLSVerify: true` **only** while on LE staging; removed at the Step-7 prod
+  flip.)
+
+Full procedure: **`cloudflare-access.md`**.
+
+### 7.4 Grey (DNS-only) `plex` A-record
+
+Leave **`plex.yoonnation.com`** as a **grey (DNS-only) `A` record** to the home
+IP. Plex is **not** routed through the tunnel/Access (Cloudflare ToS bars media
+through the proxy) — it stays public via the `:443` port-forward (§5) with its own
+auth.
+
+### 7.5 Tailscale split-DNS entry (the direct dual-path)
+
+In the **Tailscale admin console → DNS**, add a **split-DNS** override scoped to
+`yoonnation.com` that resolves the dashboard hosts →
+**`192.168.1.111`** for tailnet devices (over IPv4 **and** IPv6), so on-tailnet
+clients reach the origin directly, bypassing Cloudflare. **Do not** override
+`plex.yoonnation.com` (keep its grey home-IP `A` record).
+
+Full procedure: **`tailscale-split-dns.md`**.
+
+### 7.6 Production flip and final acceptance
+
+Once the tunnel + Access + split-DNS are verified on LE **staging**, flip to LE
+**production** (stop Traefik → truncate `acme.json` → start, and **remove
+`noTLSVerify`** from every ingress), then run **`acceptance-validation.md`**
+top-to-bottom for sign-off.
