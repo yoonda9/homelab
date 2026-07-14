@@ -4,12 +4,15 @@ Per design §3 (repo layout), §4.3 (Ansible roles) and §Data Models
 ("Ansible inventory / group_vars") plus task-04 — verifies the ansible/
 tree is wired together beside tofu/:
 
-- ansible.cfg, site.yml, inventory/hosts.yml, group_vars/all.yml,
-  group_vars/vault.yml and roles/common/tasks/main.yml all exist;
+- ansible.cfg, site.yml, inventory/hosts.yml, group_vars/all/vars.yml,
+  group_vars/all/vault.yml and roles/common/tasks/main.yml all exist;
 - site.yml applies the `common` role;
-- group_vars/all.yml carries the required keys (domain, acme_resolver,
+- group_vars/all/vars.yml carries the required keys (domain, acme_resolver,
   public_services, internal_services);
-- group_vars/vault.yml is Ansible-Vault-encrypted ($ANSIBLE_VAULT header);
+- group_vars/all/vault.yml is Ansible-Vault-encrypted ($ANSIBLE_VAULT header);
+- the secrets live under group_vars/all/ (scoped to the `all` group) and NOT
+  at the top-level group_vars/vault.yml, which Ansible would map to a
+  non-existent `vault` group so the vars would never load onto any host;
 - ansible.cfg points its inventory at inventory/hosts.yml.
 
 Dual-mode (module-level test_*()->bool + main()->int), stdlib only,
@@ -42,13 +45,32 @@ def test_required_files_exist() -> bool:
         "ansible.cfg",
         "site.yml",
         "inventory/hosts.yml",
-        "group_vars/all.yml",
-        "group_vars/vault.yml",
+        "group_vars/all/vars.yml",
+        "group_vars/all/vault.yml",
         "roles/common/tasks/main.yml",
     ]
     missing = [f for f in required if not (ANSIBLE / f).is_file()]
     ok = not missing
     print(f"{'OK' if ok else 'FAIL'}: required ansible files present (missing={missing})")
+    return ok
+
+
+def test_secrets_scoped_to_all_group() -> bool:
+    """Vault secrets must live under group_vars/all/ so they load onto every host.
+
+    A file at group_vars/vault.yml maps to an Ansible group literally named
+    `vault`; the inventory has no such group, so every vault_* var silently
+    fails to load (empty CF_DNS_API_TOKEN / TUNNEL_TOKEN in the rendered .env).
+    The fix is the canonical directory layout: group_vars/all/{vars,vault}.yml.
+    This guards against the buggy top-level path being reintroduced.
+    """
+    stray = ANSIBLE / "group_vars" / "vault.yml"
+    scoped = ANSIBLE / "group_vars" / "all" / "vault.yml"
+    ok = scoped.is_file() and not stray.is_file()
+    print(
+        f"{'OK' if ok else 'FAIL'}: vault secrets scoped to group_vars/all/ "
+        f"(all/vault.yml={scoped.is_file()} stray_top_level_vault={stray.is_file()})"
+    )
     return ok
 
 
@@ -76,9 +98,9 @@ def test_site_applies_common_role() -> bool:
 
 
 def test_group_vars_required_keys() -> bool:
-    all_yml = ANSIBLE / "group_vars" / "all.yml"
+    all_yml = ANSIBLE / "group_vars" / "all" / "vars.yml"
     if not all_yml.is_file():
-        print("FAIL: group_vars/all.yml carries required keys (all.yml missing)")
+        print("FAIL: group_vars/all/vars.yml carries required keys (vars.yml missing)")
         return False
     body = all_yml.read_text()
     checks = {
@@ -89,14 +111,14 @@ def test_group_vars_required_keys() -> bool:
     }
     missing = [k for k, v in checks.items() if v is None]
     ok = not missing
-    print(f"{'OK' if ok else 'FAIL'}: group_vars/all.yml carries required keys (missing={missing})")
+    print(f"{'OK' if ok else 'FAIL'}: group_vars/all/vars.yml carries required keys (missing={missing})")
     return ok
 
 
 def test_public_services_is_plex() -> bool:
-    all_yml = ANSIBLE / "group_vars" / "all.yml"
+    all_yml = ANSIBLE / "group_vars" / "all" / "vars.yml"
     if not all_yml.is_file():
-        print("FAIL: public_services == [plex] (all.yml missing)")
+        print("FAIL: public_services == [plex] (vars.yml missing)")
         return False
     body = all_yml.read_text()
     # plex must be the public service; tolerate inline (- plex / [plex]) styles.
@@ -107,13 +129,13 @@ def test_public_services_is_plex() -> bool:
 
 
 def test_vault_is_encrypted() -> bool:
-    vault = ANSIBLE / "group_vars" / "vault.yml"
+    vault = ANSIBLE / "group_vars" / "all" / "vault.yml"
     if not vault.is_file():
-        print("FAIL: group_vars/vault.yml is Ansible-Vault-encrypted (vault.yml missing)")
+        print("FAIL: group_vars/all/vault.yml is Ansible-Vault-encrypted (vault.yml missing)")
         return False
     first_line = vault.read_text().splitlines()[0] if vault.read_text() else ""
     ok = first_line.startswith("$ANSIBLE_VAULT")
-    print(f"{'OK' if ok else 'FAIL'}: group_vars/vault.yml is Ansible-Vault-encrypted ($ANSIBLE_VAULT header)")
+    print(f"{'OK' if ok else 'FAIL'}: group_vars/all/vault.yml is Ansible-Vault-encrypted ($ANSIBLE_VAULT header)")
     return ok
 
 
@@ -518,6 +540,7 @@ def main() -> int:
     results = [
         test_ansible_directory_exists(),
         test_required_files_exist(),
+        test_secrets_scoped_to_all_group(),
         test_cfg_points_at_inventory(),
         test_site_applies_common_role(),
         test_group_vars_required_keys(),

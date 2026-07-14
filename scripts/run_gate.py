@@ -14,7 +14,7 @@ every prior step invoked by hand, and exits non-zero if ANY part fails:
      (root carries module blocks since Step 3/7) + ``tofu validate``, in tofu/.
   3. Ansible: ``ansible-lint --offline`` (production profile) + ``ansible-playbook
      --syntax-check site.yml``, in ansible/, with ``ANSIBLE_VAULT_PASSWORD=CHANGEME``
-     exported so group_vars/vault.yml decrypts on load.
+     exported so group_vars/all/vault.yml decrypts on load.
 
 OpenTofu and Ansible run through ``mise exec --`` so the pinned toolchain is
 used. Stdlib only. Aggregate-and-report: every step runs, a summary prints, and

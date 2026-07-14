@@ -42,10 +42,11 @@
     mode: "0640"
 
 # DNS-01 (le-dns-cf) is the SOLE resolver and CANNOT issue a cert without the
-# Cloudflare token. env.j2 renders it with `| default('')`, so a missing or
-# mis-named vault key (must be exactly `vault_cloudflare_dns_api_token`) would
-# otherwise render an EMPTY CF_DNS_API_TOKEN and silently break cert issuance.
-# Fail loudly here instead of shipping a broken .env.
+# Cloudflare token. env.j2 renders it with `| default('')`, so a missing key,
+# an empty value, or a vault file scoped to the wrong group (secrets MUST live
+# under group_vars/all/ — a top-level group_vars/vault.yml maps to a
+# non-existent `vault` group and never loads) would otherwise render an EMPTY
+# CF_DNS_API_TOKEN and silently break cert issuance. Fail loudly here instead.
 - name: Assert the Cloudflare DNS-01 token is present in the vault
   when: acme_resolver == 'le-dns-cf'
   ansible.builtin.assert:
@@ -55,8 +56,8 @@
     fail_msg: >-
       vault_cloudflare_dns_api_token is missing or empty. The le-dns-cf DNS-01
       resolver needs it to issue the *.{{ domain }} wildcard. Add it with
-      `ansible-vault edit group_vars/vault.yml` under EXACTLY that key name
-      (see docs/runbooks/host-bootstrap.md).
+      `ansible-vault edit group_vars/all/vault.yml` under EXACTLY that key name
+      (secrets must live under group_vars/all/; see docs/runbooks/host-bootstrap.md).
     quiet: true
 
 - name: Render the Cloudflare token env file for DNS-01

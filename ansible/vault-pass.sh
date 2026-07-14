@@ -3,7 +3,7 @@
 # vault_password_file). The password is never committed: it is read from
 # $ANSIBLE_VAULT_PASSWORD, set in the gitignored mise.local.toml
 # (template: mise.local.toml.example documents it). The shipped
-# group_vars/vault.yml holds placeholders only; rekey with `ansible-vault
+# group_vars/all/vault.yml holds placeholders only; rekey with `ansible-vault
 # rekey` before storing real secrets.
 set -euo pipefail
 

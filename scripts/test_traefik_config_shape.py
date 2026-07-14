@@ -94,14 +94,14 @@ def test_caserver_toggle_wired() -> bool:
     """Step 7: `le-dns-cf` pins `caServer` to the `acme_ca_server` toggle, now on PROD.
 
     The DNS-01 resolver must carry `caServer: "{{ acme_ca_server }}"` under its
-    `acme` block, and `group_vars/all.yml` must define `acme_ca_server` set to the
+    `acme` block, and `group_vars/all/vars.yml` must define `acme_ca_server` set to the
     LE **production** directory URL (staging was retired at the Step-7 flip). This
     keeps the staging->prod cutover a single variable, not a template edit. Anchors
     on the prod directory host and rejects the staging host so a regression back to
     `acme-staging-v02` reddens.
     """
     static = _read(STATIC)
-    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    all_yml = _read(ANSIBLE / "group_vars" / "all" / "vars.yml")
     caserver = re.search(
         r'(?s)le-dns-cf:.*?acme:.*?caServer:\s*"?\{\{\s*acme_ca_server\s*\}\}',
         static,
@@ -181,7 +181,7 @@ def test_whoami_internal_only() -> bool:
         r'routers\.whoami\.middlewares\s*=\s*[^\n]*internal-allowlist', compose
     ) is not None
     # ...and must NOT be promoted to a public service.
-    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    all_yml = _read(ANSIBLE / "group_vars" / "all" / "vars.yml")
     pub = re.search(r'(?ms)^public_services:\s*$(.*?)^\S', all_yml + "\nEOF")
     pub_block = pub.group(1) if pub else ""
     not_public = "whoami" not in pub_block
@@ -354,7 +354,7 @@ def test_plex_router_is_public_not_allowlisted() -> bool:
 
 def test_public_services_is_exactly_plex() -> bool:
     """Step-9: group_vars public_services is exactly [plex] — nothing else promoted."""
-    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    all_yml = _read(ANSIBLE / "group_vars" / "all" / "vars.yml")
     m = re.search(r'(?ms)^public_services:\s*$(.*?)^\S', all_yml + "\nEOF")
     block = m.group(1) if m else ""
     entries = re.findall(r'(?m)^\s*-\s*(\S+)', block)
@@ -413,7 +413,7 @@ def test_prometheus_never_public() -> bool:
 
     Not in public_services AND its router carries internal-allowlist.
     """
-    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    all_yml = _read(ANSIBLE / "group_vars" / "all" / "vars.yml")
     m = re.search(r'(?ms)^public_services:\s*$(.*?)^\S', all_yml + "\nEOF")
     pub_block = m.group(1) if m else ""
     not_public = "prometheus" not in pub_block
@@ -430,18 +430,18 @@ def test_prometheus_never_public() -> bool:
 
 
 def test_homepage_allowed_hosts() -> bool:
-    """Step-10: homepage sets HOMEPAGE_ALLOWED_HOSTS=homepage.{{ domain }}.
+    """Step-10: homepage sets HOMEPAGE_ALLOWED_HOSTS=home.{{ domain }}.
 
     gethomepage/homepage (v0.9.0+) rejects any request whose Host header is not
     localhost and not listed in HOMEPAGE_ALLOWED_HOSTS. Reached ONLY through
-    Traefik on Host(`homepage.{{ domain }}`), so without this env every real
+    Traefik on Host(`home.{{ domain }}`), so without this env every real
     request hits a "Host validation failed" page and the dashboard never loads.
     """
     compose = _read(COMPOSE)
     m = re.search(r'(?ms)^\s{2}homepage:\s*$(.*?)^\s{2}\S', compose + "\n  EOF:")
     block = m.group(1) if m else ""
     ok = re.search(
-        r'HOMEPAGE_ALLOWED_HOSTS\s*=\s*[^\n]*homepage\.\{\{\s*domain\s*\}\}', block
+        r'HOMEPAGE_ALLOWED_HOSTS\s*=\s*[^\n]*\bhome\.\{\{\s*domain\s*\}\}', block
     ) is not None
     print(f"{'OK' if ok else 'FAIL'}: homepage sets HOMEPAGE_ALLOWED_HOSTS for its proxied host")
     return ok
@@ -461,7 +461,7 @@ def test_internal_services_lists_all_internal() -> bool:
     (`traefik.{{ domain }}`) and the `whoami` smoke route — the documentation-only
     list must reflect the full internal set so it does not mislead (plan Step 8).
     """
-    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    all_yml = _read(ANSIBLE / "group_vars" / "all" / "vars.yml")
     m = re.search(r'(?ms)^internal_services:\s*$(.*?)^\S', all_yml + "\nEOF")
     block = m.group(1) if m else ""
     entries = re.findall(r'(?m)^\s*-\s*(\S+)', block)
@@ -699,12 +699,12 @@ def test_no_floating_service_image_tags() -> bool:
 def test_acme_resolver_is_dns_cf() -> bool:
     """Step 1: acme_resolver is le-dns-cf — the sole (DNS-01) resolver.
 
-    group_vars/all.yml selects the DNS-01 wildcard resolver. Templates still
+    group_vars/all/vars.yml selects the DNS-01 wildcard resolver. Templates still
     reference it via {{ acme_resolver }} (covered by test_resolver_is_variable_driven
     and the extras/plex literal-free checks). `le-http` has been removed (Step 1),
     so `le-dns-cf` is the only resolver the templates can name.
     """
-    all_yml = _read(ANSIBLE / "group_vars" / "all.yml")
+    all_yml = _read(ANSIBLE / "group_vars" / "all" / "vars.yml")
     ok = re.search(r'(?m)^acme_resolver:\s*le-dns-cf\s*$', all_yml) is not None
     print(f"{'OK' if ok else 'FAIL'}: group_vars acme_resolver is le-dns-cf (sole DNS-01 resolver)")
     return ok
