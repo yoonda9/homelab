@@ -1,0 +1,33 @@
+tree built: 9723 entries (comparable to the live 12,043)
+
+==================================================================
+PROBE A — command: chown -R   (what the design specifies, :242-244)
+==================================================================
+  timeout=0.001s | top-level=0:0 | un-chowned=9603 of 9723 | predicate: TRUE
+  timeout=0.002s | top-level=0:0 | un-chowned=8709 of 9723 | predicate: TRUE
+  timeout=0.003s | top-level=0:0 | un-chowned=8821 of 9723 | predicate: TRUE
+  timeout=0.004s | top-level=0:0 | un-chowned=6787 of 9723 | predicate: TRUE
+  timeout=0.006s | top-level=0:0 | un-chowned=5268 of 9723 | predicate: TRUE
+  ^ top-level NEVER pre-chowned => predicate TRUE at every interrupt => a re-run RECOVERS
+
+==================================================================
+PROBE B — ansible.builtin.file recurse=yes  (the 'same result' swap)
+==================================================================
+  top-level dir                : 1:1
+  entries still un-chowned     : 9134 of 9723
+  chown predicate (both halves): FALSE   <-- FALSE => a re-run SKIPS. WEDGED.
+
+==================================================================
+WHY — ansible/modules/file.py, ensure_directory()
+==================================================================
+  :683   changed = module.set_fs_attributes_if_different(file_args, ...)  <-- TOP-LEVEL FIRST
+  :686   if recurse: changed |= recursive_set_attributes(b_path, ...)     <-- children AFTER
+  :335   for b_root, b_dirs, b_files in os.walk(b_path):                  <-- topdown=True (default)
+
+  GNU chown -R  : post-order -> top-level LAST  -> top-level correct IFF complete.  (A) holds.
+  file recurse= : pre-order  -> top-level FIRST -> top-level correct while incomplete. (A) BREAKS.
+
+  The two modules are NOT "the same result" under (A). The module choice is
+  load-bearing for the recovery guarantee, not a performance preference.
+
+PROBE COMPLETE

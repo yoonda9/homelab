@@ -1,0 +1,60 @@
+strace: /usr/bin/strace
+useradd warning: plex's uid 999 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+plex:x:999:991::/var/lib/plexmediaserver:/usr/sbin/nologin
+tree built: 12154 entries, top-level=999:991
+
+==================================================================
+PROBE 1 — chown -R ordering: is the TOP-LEVEL dir chowned LAST?
+==================================================================
+total chown syscalls: 12154
+top-level dir chowned at syscall line: 12154
+--- first 3 chown calls ---
+458   fchownat(8</var/lib/plexmediaserver/Library/Application Support/Plex Media Server/d1>, "f1", 64000, 64000, AT_SYMLINK_NOFOLLOW) = 0
+458   fchownat(8</var/lib/plexmediaserver/Library/Application Support/Plex Media Server/d1>, "f2", 64000, 64000, AT_SYMLINK_NOFOLLOW) = 0
+458   fchownat(8</var/lib/plexmediaserver/Library/Application Support/Plex Media Server/d1>, "f3", 64000, 64000, AT_SYMLINK_NOFOLLOW) = 0
+--- last 3 chown calls ---
+458   fchownat(5</var/lib/plexmediaserver/Library>, "Application Support", 64000, 64000, AT_SYMLINK_NOFOLLOW) = 0
+458   fchownat(4</var/lib/plexmediaserver>, "Library", 64000, 64000, AT_SYMLINK_NOFOLLOW) = 0
+458   fchownat(AT_FDCWD</>, "/var/lib/plexmediaserver", 64000, 64000, AT_SYMLINK_NOFOLLOW) = 0
+
+==================================================================
+PROBE 2 — reset, then groupmod+usermod ONLY (the interrupted state)
+==================================================================
+getent:         plex:x:64000:64000::/var/lib/plexmediaserver:/usr/sbin/nologin
+top-level dir:  64000:991
+files still uid=999: 0
+files still gid=991: 12154  <-- groupmod does NOT chgrp (design 4.3)
+
+==================================================================
+PROBE 3 — evaluate BOTH predicates at that exact interrupted state
+==================================================================
+(a) current design  [passwd uid 64000 != 64000]        => FALSE
+(b) dir, uid only   [dir uid 64000 != 64000]              => FALSE
+(c) PROPOSED both   [dir 64000:991 != 64000:64000]     => TRUE
+
+TRUE = chown re-fires and recovery completes. FALSE = wedged.
+
+==================================================================
+PROBE 4 — interrupt chown -R MID-WALK, re-evaluate proposed predicate
+==================================================================
+pre-chown state: top-level=999:991
+AFTER INTERRUPT:
+  top-level dir:            999:991
+  entries still gid=991:  11916 of 12154  <-- proof the walk was incomplete
+  PROPOSED predicate [dir 999:991]: TRUE  (TRUE => re-run completes it)
+
+==================================================================
+PROBE 5 — R6: converged steady state must report changed=0
+==================================================================
+converged top-level: 64000:64000
+  chown predicate (dir both halves): FALSE   <-- must be FALSE for R6
+  stop  predicate (passwd uid):      FALSE   <-- must be FALSE for R6
+  uniform ownership: 0 entries not uid=64000, 0 not gid=64000
+
+==================================================================
+PROBE 6 — fresh rebuild: user ABSENT, dir already correct
+==================================================================
+user ABSENT (as on a fresh rebuild)
+dir=64000:64000  chown predicate: FALSE  <-- FALSE, and it needed NO getent to decide
+
+PROBE COMPLETE
