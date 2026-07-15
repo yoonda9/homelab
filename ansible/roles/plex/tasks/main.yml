@@ -87,6 +87,77 @@
 # "Read/write access is required for path: ...". Pin the ids first so the package
 # reuses them, then gate on the ownership before we install/start anything.
 
+# --- Id migration to the pinned ids (design §4.2) ----------------------------
+# A CT built before the pins carries whatever ids the package auto-allocated.
+# Moving the ids is only half the job: the state dir behind the bind mount still
+# carries the OLD ownership, so it must be chowned to match — and PMS must be
+# stopped while that happens. The block is inert once the dir already matches the
+# pins, which is the steady state (and all of Step 1: at 999:991 it never fires).
+
+- name: Stat the Plex state directory before the id pins
+  # MUST precede the pins, not merely the chown: `usermod -u` auto-chowns the
+  # home tree's uid half as a side effect, so a stat taken AFTER the pins reads a
+  # fact the guarded operation has already rewritten. Registers a stat result,
+  # not a boolean — the derivation below is the single place that decides.
+  ansible.builtin.stat:
+    path: "{{ plex_state_dir }}"
+  register: plex_state_premigration_stat
+
+- name: Derive whether the state directory needs an ownership migration
+  # DEC-007: the ONE definition site. Both guarded tasks below reference this
+  # fact by name — do not inline the expression per-task; two copies drift, and
+  # the provenance test needs the derivation to have an address.
+  #
+  # Keyed on the DIR's stat, NEVER on the getent user: the user's uid reads
+  # "done" the moment usermod lands while the dir can still be half-migrated
+  # (64000:991). That is the rejected design, and it wedges permanently.
+  #
+  # `exists` is required, not defensive: stat on an absent path has no `uid` key,
+  # so the comparison RAISES rather than mis-answering. Jinja `and`
+  # short-circuits, so `exists and (...)` is safe. Do NOT reach for
+  # `| default(0)` — it type-checks and is wrong: 0 != 64000 is TRUE, which
+  # chowns a nonexistent path and shadows the ownership gate's idmap diagnostic
+  # below, the one message that tells the operator the bind mount is missing.
+  ansible.builtin.set_fact:
+    plex_chown_needed: >-
+      {{ (plex_state_premigration_stat.stat.exists)
+      and ((plex_state_premigration_stat.stat.uid | int) != (plex_uid | int)
+      or (plex_state_premigration_stat.stat.gid | int) != (plex_gid | int)) }}
+
+- name: Read the current plex user entry
+  # Feeds the STOP predicate only — never the chown (see the provenance note
+  # above). fail_key:false so a fresh rebuild, where the user does not exist yet,
+  # leaves the key None instead of failing the play.
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ plex_service_user }}"
+    fail_key: false
+
+- name: Stop Plex Media Server before an id migration
+  ansible.builtin.service:
+    name: plexmediaserver
+    state: stopped
+  # `usermod -u` refuses while the user owns running processes (F1), so PMS must
+  # be down before the pins. Composition, not substitution: the
+  # `or plex_chown_needed` half is load-bearing — on a recovery re-run the uid
+  # already reads plex_uid, so keying on the user alone leaves PMS live while the
+  # chown rewrites its state dir underneath it.
+  when: >-
+    ((ansible_facts.getent_passwd[plex_service_user] | default(none)) is not none
+    and (ansible_facts.getent_passwd[plex_service_user][1] | int) != (plex_uid | int))
+    or plex_chown_needed
+  register: plex_stop_result
+  # Tolerate a MISSING unit (fresh CT, package not yet installed) and nothing
+  # else. `failed_when: false` would swallow every real stop failure too — this
+  # matches only the module's not-found message, so a genuine "Job for
+  # plexmediaserver.service failed" still fails the play loudly. Both directions
+  # verified by execution against the real module.
+  failed_when:
+    - plex_stop_result is failed
+    - >-
+      'Could not find the requested service'
+      not in (plex_stop_result.msg | default(''))
+
 - name: Pin the plex group GID ahead of the package install
   ansible.builtin.group:
     name: "{{ plex_service_user }}"
@@ -102,6 +173,27 @@
     system: true
     create_home: false
     state: present
+
+- name: Migrate state dir ownership to the pinned ids
+  # `command: chown -R` is REQUIRED, not preferred — do NOT "modernise" this onto
+  # ansible.builtin.file with recurse:yes, and note ansible-lint will NOT catch
+  # the swap. The file module sets the top-level dir's attrs FIRST and then walks
+  # pre-order, so an interrupted run leaves the top level already correct with the
+  # tree beneath un-chowned -> plex_chown_needed reads FALSE -> the re-run skips
+  # -> permanently wedged. GNU `chown -R` is post-order (the top level is chowned
+  # LAST), which is the entire basis of the recovery guarantee.
+  #
+  # Runs BEFORE the ownership gate below: during a migration the dir is still at
+  # the old ids while the pins are already new, so a chown after the gate would
+  # fail the play on its own gate.
+  ansible.builtin.command:
+    cmd: chown -R {{ plex_uid }}:{{ plex_gid }} {{ plex_state_dir }}
+  when: plex_chown_needed
+  # `command:` is not idempotent by declaration, so the role's own invariant
+  # (top of file) and the production lint profile both require changed_when. The
+  # task only runs when the predicate says a change is due, so `true` is honest:
+  # in Step 1 the predicate is false -> skipped, and skipped != changed.
+  changed_when: true
 
 - name: Stat the Plex state directory (the host bind mount lands here)
   ansible.builtin.stat:
