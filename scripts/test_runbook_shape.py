@@ -10,7 +10,7 @@ the import procedure and operational caveats an operator needs:
   * the host **`mountpoint`** step (`zfs set mountpoint=/tank`),
   * **verify media intact** — the migration acceptance gate,
   * **`autotrim=off`** over USB and a periodic **scrub**,
-  * the **`/tank/media` → `/media`** bind target the Step 7 Plex CT consumes.
+  * the **`/tank/Media` → `/media`** bind target the Step 7 Plex CT consumes.
 
 The migration itself (physically moving the DAS, importing the single-vdev
 pool, verifying media) is manual and explicitly outside the automation "done"
@@ -116,17 +116,22 @@ def test_runbook_documents_usb_caveats() -> bool:
 
 def test_runbook_wires_tank_media_to_plex() -> bool:
     body = _read(RUNBOOK)
-    # The host /tank/media path bound into the CT as /media (Step 7 consumes it),
-    # plus the interim empty-placeholder note.
-    has_bind = re.search(r'/tank/media', body) is not None and re.search(
-        r'\b/media\b', body
+    # The host /tank/Media path bound into the CT as /media (Step 7 consumes it),
+    # plus the interim empty-placeholder note. The capital-M `Media` matches the
+    # pre-existing dataset directory on the pool — the regexes are case-exact so
+    # a lowercase regression is caught.
+    # ct-side anchor: the bind_mounts snippet's ct_path (a bare `\b/media\b`
+    # cannot match here — `\b` needs a word char before the `/`, which only the
+    # old lowercase /tank/media ever provided).
+    has_bind = re.search(r'/tank/Media', body) is not None and re.search(
+        r'ct_path\s*=\s*"/media"', body
     ) is not None
     has_placeholder = re.search(
-        r'mkdir\s+-p\s+/tank/media', body
+        r'mkdir\s+-p\s+/tank/Media', body
     ) is not None
     ok = has_bind and has_placeholder
     print(
-        f"{'OK' if ok else 'FAIL'}: runbook wires /tank/media -> /media bind "
+        f"{'OK' if ok else 'FAIL'}: runbook wires /tank/Media -> /media bind "
         f"with interim placeholder (bind={has_bind}, placeholder={has_placeholder})"
     )
     return ok

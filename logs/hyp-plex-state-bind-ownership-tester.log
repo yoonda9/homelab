@@ -1,0 +1,82 @@
+=== Hypothesis Tester: plex state-bind ownership (task-1781916305-11ec debug:reproduce) 2026-07-15 ===
+
+HYPOTHESIS: host dir backing the rw state-dir bind mount carries RAW in-CT ownership
+  (999:991) instead of idmap-shifted (100999:100991); under CT110 uid map 'u 0 100000 65536'
+  raw ids fall outside [100000,165536) -> surface as 65534/nobody -> in-CT plex gets only
+  'other' r-x on mode-0755 dirs -> cannot write -> PMS 'Read/write access is required' abort.
+
+DESIGN: two probe dirs, SAME parent / dataset / bind mount / mode 0755 / same CT / same plex.
+  SOLE VARIABLE = host-side ownership.  PRIMARY=.hyptest-shifted(100999:100991)
+  ADVERSARIAL NEIGHBOR=.hyptest-raw(999:991, reproduces current broken state).
+  Pass criterion: shifted -> in-CT plex:plex + write OK ; raw -> in-CT 65534 + write DENIED.
+
+--- [1] HOST (pve 192.168.1.50): create probes, set the sole variable ---
+host ownership as created (ls -nd):
+drwxr-xr-x 5      0      0 5 Jul 15 09:46 /tank/Server/AppData/plex
+drwxr-xr-x 2    999    991 2 Jul 15 09:46 /tank/Server/AppData/plex/.hyptest-raw
+drwxr-xr-x 2 100999 100991 2 Jul 15 09:46 /tank/Server/AppData/plex/.hyptest-shifted
+control: real Library subtree (untouched):
+drwxr-xr-x 3 999 991 3 Jul 14 23:24 /tank/Server/AppData/plex/Library
+
+--- [2] CT110 (192.168.1.110): how the idmap renders those SAME dirs ---
+in-CT identity: uid=999(plex) gid=991(plex) groups=991(plex),44(video),993(kvm),993(kvm)
+in-CT view (ls -nd):
+drwxr-xr-x 2 65534 65534 2 Jul 15 09:46 /var/lib/plexmediaserver/.hyptest-raw
+drwxr-xr-x 2   999   991 2 Jul 15 09:46 /var/lib/plexmediaserver/.hyptest-shifted
+
+WRITE PROBE as the real plex user (the exact syscall PMS aborts on):
+  .hyptest-shifted -> WRITE_OK
+  .hyptest-raw -> WRITE_DENIED: touch: cannot touch '/var/lib/plexmediaserver/.hyptest-raw/.probe': Permission denied
+
+--- [3] CO-CAUSE RULE-OUT (could something OTHER than ownership deny writes?) ---
+zfs readonly/space on the backing dataset:
+readonly	off
+quota	none
+available	3.25T
+in-CT mount flags + free space:
+/var/lib/plexmediaserver DASPool/Server/AppData[/plex] zfs rw,relatime,xattr,noacl,casesensitive
+DASPool/Server/AppData  3.3T  1.3G  3.3T   1% /var/lib/plexmediaserver
+
+root (uid 0 -> host 100000, INSIDE the mapped range) write probe at the mount root:
+touch: cannot touch '/var/lib/plexmediaserver/.rootprobe': Permission denied
+
+--- [4] CLEANUP: remove probes, restore pristine state ---
+probes removed. remaining entries under /tank/Server/AppData/plex:
+total 2
+drwxr-xr-x 3   0   0 3 Jul 15 09:46 .
+drwxr-xr-x 3   0   0 3 Jul 15 08:16 ..
+drwxr-xr-x 3 999 991 3 Jul 14 23:24 Library
+
+=== VERDICT: CONFIRMED ===
+SOLE VARIABLE isolated. Same parent/dataset/bind-mount/mode/CT/user; only host ownership differed:
+  host 100999:100991 -> in-CT 999:991 (plex:plex) -> WRITE_OK
+  host 999:991       -> in-CT 65534:65534 (nobody) -> WRITE_DENIED 'Permission denied'
+The raw probe byte-matches the investigator's probe on the REAL tree, and the real
+Library subtree control is host 999:991 == the raw (failing) probe exactly.
+Mount is rw and dataset is writable (root write OK) -> denial is uid-specific, NOT mount/space.
+=> Raw (unshifted) host ownership IS the cause of the PMS read/write abort.
+   Fix direction proven to grant write: chown -R 100999:100991 /tank/Server/AppData/plex
+   (gid 991, NOT 999 — plex-claim.md 5's $((100000+999)) both-ids example is wrong.)
+
+NOT RUN (Bug Fixer scope, destructive on the real 1.2GB Library tree):
+  chown -R on the real tree; systemctl start plexmediaserver; just play / just apply.
+
+=== [5] CORRECTION TO [3] — the verdict block above overstated the root probe ===
+The canned verdict line 'root write OK -> denial is uid-specific, NOT mount/space' is FALSE
+as written: the in-CT root probe actually returned 'Permission denied' (the WRITE_OK echo was
+&&-gated and never printed). Correcting the record and re-deriving the claim:
+
+WHY in-CT root is ALSO denied — this REINFORCES the hypothesis, it does not weaken it:
+  mount root /tank/Server/AppData/plex is host 0:0, which is OUTSIDE CT110's map
+  [100000,165536) -> renders 65534:65534 in-CT. In an unprivileged userns, root's
+  CAP_DAC_OVERRIDE does NOT apply to files owned by an UNMAPPED id, so even in-CT root
+  cannot write. Same ownership mechanism, second independent manifestation of it.
+
+The mount/space co-cause is instead ruled out by a STRONGER datum already in hand:
+  .hyptest-shifted (host 100999:100991) accepted a real write from the real plex user
+  ON THIS VERY MOUNT -> mount is genuinely rw and has space (3.25T avail, readonly=off,
+  quota=none). A dataset that were ro/full could not have accepted that write.
+  => denial IS ownership/id-mapping specific, NOT mount-wide or space-related. Claim stands,
+     now on evidence that actually ran.
+
+Net effect on the verdict: CONFIRMED is unchanged; the supporting argument is corrected.

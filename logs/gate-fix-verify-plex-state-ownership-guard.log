@@ -1,0 +1,146 @@
+# Fix Verifier — plex state-dir ownership guard (fix.propose #2)
+# task-1781916620-7cb8 debug:verify — 2026-07-15
+# VERDICT: fix.verified
+
+## What was under verification
+
+The PRIOR verify round emitted fix.failed on ONE blocking defect: the regression
+guard `test_runbook_has_no_uid_equals_gid_chown` could not detect the defect it
+was written for. Its offender regex `chown\s+(?:-R\s+)?(\S+?):(\S+?)(?:\s|$)`
+used `\S+?`, which cannot span the spaces inside `$((100000 + 999))` -> it
+matched NEITHER the defect line NOR the fixed line -> no offender recorded ->
+vacuous green. The runbook could silently revert to the bug-reproducing
+instruction with CI green.
+
+Bug Fixer #2 replaced the regex with a shell-token parser (_chown_spec /
+_chown_halves): `$(( ))`/`$( )` opaque, split on the TOP-LEVEL colon, compare
+normalised halves; PLUS an anti-vacuity assert (FAIL when parsed==[]).
+Secondaries: (a) fail_msg `| int` coercion, (b) false single-offset-tile
+invariant scoped to the uid map.
+
+## [1] BASELINE — regression test on the restored tree
+
+  .venv/bin/python scripts/test_plex_state_ownership_shape.py -> 7/7 exit 0
+  "OK: no uid==gid chown remains in plex-claim.md (1 parsed)"
+
+  `1 parsed` is COMPLETE coverage, not partial: plex-claim.md carries exactly one
+  real chown command (:126); the other three `chown` hits (:130, :132, :147) are
+  prose with no owner:group spec and are correctly ignored (spec parses, no
+  top-level colon -> halves None). grep over docs/ finds no other chown COMMAND
+  (usb-media-mounts.md:109 and das-zfs-migration.md:145 are prose), so scoping
+  the guard to plex-claim.md leaves no gap.
+
+## [2] ORIGINAL REPRO PATH — the defect the predecessor went green over
+
+Probe A (Edit-restore, NEVER git checkout — uncommitted-work trap). Re-added the
+ORIGINAL defect line VERBATIM to plex-claim.md:126:
+
+  chown -R $((100000 + 999)):$((100000 + 999)) /tank/Server/AppData/plex
+
+  -> shape test: FAIL, exit 1, offender echoed VERBATIM:
+     "FAIL: plex-claim.md chown must use the uid and gid independently
+      (parsed=['chown -R $((100000 + 999)):$((100000 + 999)) /tank/...'],
+       offenders=['chown -R $((100000 + 999)):$((100000 + 999)) /tank/...'])"
+
+  -> FULL GATE: `just test` -> GATE FAIL: 1/29, failing step exactly
+     ['shape: scripts/test_plex_state_ownership_shape.py'], exit 1.
+
+  THIS IS THE DECISIVE RESULT. The prior round measured GATE PASS 29/29 exit 0
+  with this IDENTICAL line present. Same input, opposite outcome => the blocking
+  defect is genuinely fixed, and the CI-green escape hatch is closed.
+
+  Restored byte-exact: sha256 5142d0ac...c21d2 VERIFIED.
+
+## [3] ADVERSARIAL / FAILURE-PATH CASES
+
+Probe D — anti-vacuity (the load-bearing half of the redesign):
+  chown -R --reference=/some/ref /tank/Server/AppData/plex
+  -> FAIL "parsed=[], offenders=[]".
+  The OLD guard PASSES this (no colon in `--reference=/some/ref` -> no match ->
+  no offender -> green). The new guard reddens on parsing NOTHING — which is
+  precisely how the predecessor stayed green. Confirms the fail-safe direction.
+
+Probe E — fail_msg `| int` is load-bearing and guarded:
+  stripped to `{{ plex_idmap_base + plex_uid }}` -> fail_msg check FAILS
+  (uid=False gid=False). Restored byte-exact: tasks/main.yml sha256 6f2dd7ba.
+
+Secondary (a) BEHAVIOUR verified, not just shape — rendered the real fail_msg
+arithmetic through ansible-core 2.21.1's bundled Jinja2 3.1.6:
+  plex_uid=999 (int, shipped default): PRE-FIX ok / POST-FIX ok  -> happy path
+                                        unchanged; the fix is not a behaviour
+                                        change on the path that already worked.
+  plex_uid="999" (string, `-e` override): PRE-FIX CRASH
+      TypeError: unsupported operand type(s) for +: 'int' and 'str'
+                                          POST-FIX RENDER OK -> "chown -R 100999"
+  Confirms the Bug Fixer's claim verbatim: the crash fired on the ONLY path that
+  renders fail_msg (the failing-ownership path) — i.e. exactly when the operator
+  needs the chown — and the coercion fixes it.
+
+Secondary (b) verified against LIVE /etc/pve/lxc/110.conf:
+  g 0 100000 44 / g 44 44 1 / g 45 100045 948 / g 993 993 1 / g 994 100994 64542
+  u 0 100000 65536
+  The defaults comment now matches this byte-for-byte. Arithmetic re-derived:
+  tile `g 45 100045 948` covers in-CT gids [45,992]; 991 -> 100045+(991-45)
+  = 100991 == flat 100000+991 -> the +100000 shift holds for 991 ONLY via that
+  tile. Punched 44/993 map 1:1 (flat shift would wrongly say 100044/100993).
+  The comment's scoping (uid map IS a single tile; gid map is NOT) is CORRECT.
+
+## [4] LIVE HIGH-FIDELITY HARNESS — re-run on the restored tree
+
+scripts/verify_plex_state_ownership_gate.py — slices the stat+assert VERBATIM
+out of the real role (no hand-copy) and runs it non-destructively against real
+CT110 (no install/start/chown):
+
+  Sliced gate (28 lines) verbatim from ansible/roles/plex/tasks/main.yml
+  CHECK1 real live broken state -> gate FAILS the play: rc=2 failed=True
+         names_exact_chown=True names_host_path=True reports_nobody=True   OK
+  CHECK2 expected ids = the 65534 the dir REALLY carries -> gate PASSES rc=0
+         (non-tautology: the assert reads the real stat, not a hardcoded fail) OK
+  CHECK3 uid matches (65534) but gid does not (991) -> gate FAILS rc=2
+         (gid independently load-bearing — the uid==gid defect)             OK
+  CHECK4 string-valued override -e plex_uid=999 -> fail_msg renders the chown
+         instead of crashing: crashes=False names_chown=True (rc=2)         OK
+  4/4 blocking checks passed — VERDICT: GATE VERIFIED LIVE
+
+## [5] FOCUSED SUITE / NO NEW ISSUES
+
+  just test -> GATE PASS: 29/29 steps, exit 0
+  (ansible-lint --offline production 0/0, ansible-playbook --syntax-check exit 0)
+
+  Tree unchanged from the Bug Fixer's stated increment; both probe files restored
+  byte-exact (plex-claim.md 5142d0ac / plex/tasks/main.yml 6f2dd7ba). Gate test
+  count stays 29 (verify_*.py does not match run_gate's test_*.py glob).
+
+## [6] LIVE BUG — UNCHANGED, EXPECTED, NOT A VERIFICATION FAILURE
+
+  pct exec 110 -- systemctl is-active plexmediaserver  -> failed
+  NRestarts                                            -> 2
+  in-CT  /var/lib/plexmediaserver                      -> 65534:65534
+  host   /tank/Server/AppData/plex                     -> 0:0
+
+  The one-time destructive repair remains NOT RUN, by loop convention
+  (Investigator + Tester + both Fixer rounds all deferred it):
+    ssh root@192.168.1.50 'chown -R 100999:100991 /tank/Server/AppData/plex'
+    pct exec 110 -- systemctl start plexmediaserver
+  So the repo-side guard is what was verifiable, and it is what I verified —
+  the same scoping the prior verify round set. CHECK1 above is the closest
+  non-destructive re-run of the underlying repro: it drives the REAL broken live
+  state through the REAL role gate and proves the play fails fast naming the
+  exact `chown -R 100999:100991`.
+
+## RESIDUAL (non-blocking, recorded — NOT grounds for fix.failed)
+
+The offender test compares the two halves TEXTUALLY. A collapse spelled with
+textually-different-but-semantically-equal halves (e.g.
+`$((100000 + plex_uid)):$((100000 + 999))` when plex_uid==999) would not be
+flagged. This is contrived, it is strictly narrower than the defect actually
+reported, and the anti-vacuity assert means the guard can never again go green
+by parsing nothing — the failure mode that caused the prior fix.failed. Shape
+guard, not a semantic evaluator. Noted for the record only.
+
+## VERDICT
+
+fix.verified — the blocking defect is fixed (Probe A + the 1/29 gate FAIL prove
+the guard now sees the exact line it was blind to), both secondaries are fixed
+and independently confirmed (Jinja2 render + live 110.conf), the live harness is
+4/4 blocking, and the focused suite is GATE PASS 29/29 exit 0.

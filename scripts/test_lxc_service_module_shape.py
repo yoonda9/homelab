@@ -299,7 +299,7 @@ def test_idmap_generated_from_host_gids() -> bool:
 
 def test_plex_module_wired() -> bool:
     """AC1: module "plex" instantiates lxc_service with GPU device_passthrough
-    (renderD128 + card1 GIDs from local.host_gids), the /tank/media -> /media
+    (renderD128 + card1 GIDs from local.host_gids), the /tank/Media -> /media
     bind, and the tiled gid/uid maps."""
     main_file = TOFU_DIR / "main.tf"
     if not main_file.is_file():
@@ -316,7 +316,7 @@ def test_plex_module_wired() -> bool:
         "card1 passthrough": re.search(r"/dev/dri/card1", b),
         "render gid from host_gids": re.search(r"local\.host_gids\.render", b),
         "video gid from host_gids": re.search(r"local\.host_gids\.video", b),
-        "tank media bind host": re.search(r'host_path\s*=\s*"/tank/media"', b),
+        "tank media bind host": re.search(r'host_path\s*=\s*"/tank/Media"', b),
         "media bind ct path": re.search(r'ct_path\s*=\s*"/media"', b),
         "gid_maps tiled": re.search(r"gid_maps\s*=\s*local\.plex_gid_maps", b),
         "uid_maps tiled": re.search(r"uid_maps\s*=\s*local\.plex_uid_maps", b),

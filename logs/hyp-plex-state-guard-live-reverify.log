@@ -1,0 +1,16 @@
+Sliced gate (28 lines) verbatim from ansible/roles/plex/tasks/main.yml
+
+CHECK1 real live state -> gate FAILS the play: rc=2 failed=True names_exact_chown=True names_host_path=True reports_nobody=True
+  OK
+
+CHECK2 expected ids = the 65534 the dir actually carries -> gate PASSES: rc=0 (proves the assert reads the real stat, not a hardcoded fail)
+  OK
+
+CHECK3 adversarial: uid matches (65534) but gid does not (991) -> gate FAILS: rc=2 (proves gid is independently load-bearing — the uid==gid defect)
+  OK
+
+CHECK4 string-valued override (`-e plex_uid=999`) -> fail_msg renders the chown instead of crashing: crashes=False names_chown=True (rc=2)
+  OK
+
+4/4 blocking checks passed
+VERDICT: GATE VERIFIED LIVE

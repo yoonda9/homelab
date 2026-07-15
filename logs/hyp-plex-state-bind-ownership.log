@@ -1,0 +1,51 @@
+=== Investigator repro: DEBUG.md "Plex service failure" (task-1781916305-11ec debug:reproduce) 2026-07-15 ===
+
+[1] REPRO CONFIRMED — live CT 110 (ssh root@192.168.1.110), journalctl -u plexmediaserver.
+    Byte-matches DEBUG.md (PID 2516, restart counter 2, "Start request repeated too quickly").
+    DECISIVE line DEBUG.md omitted (status output truncated the reason):
+      Plex Media Server[2516]: PMS: failure detected. Read/write access is required for path:
+        /var/lib/plexmediaserver/Library/Application Support/Plex Media Server
+    => NOT a GPU/iHD, apt, sqv, or unit-file fault. Pure write-permission abort, 17ms, exit 1/FAILURE.
+
+[2] MOUNT IS PRESENT AND RW (rules out "mount missing" and "mount read-only"):
+      findmnt /var/lib/plexmediaserver
+      TARGET  SOURCE                         FSTYPE OPTIONS
+      /var/lib/plexmediaserver  DASPool/Server/AppData[/plex]  zfs  rw,relatime,xattr,noacl,casesensitive
+    This is the NEW read-write state-dir bind mount added in the working tree
+    (tofu/main.tf module "plex" bind_mounts: /tank/Server/AppData/plex -> /var/lib/plexmediaserver).
+
+[3] IN-CT VIEW — whole tree is nobody:nogroup (65534), mode 0755:
+      drwxr-xr-x 3 65534 65534  /var/lib/plexmediaserver
+      drwxr-xr-x 3 65534 65534  /var/lib/plexmediaserver/Library
+      drwxr-xr-x 3 65534 65534  /var/lib/plexmediaserver/Library/Application Support
+      drwxr-xr-x 14 65534 65534 /var/lib/plexmediaserver/Library/Application Support/Plex Media Server
+    in-CT plex identity: uid=999(plex) gid=991(plex) groups=991(plex),44(video),993(kvm)
+    WRITE PROBE as plex -> "touch: cannot touch '.../Plex Media Server/.probe': Permission denied"
+    (plex is neither owner nor group -> falls to "other" bits r-x -> no write. Exactly the PMS abort.)
+
+[4] HOST VIEW (ssh root@192.168.1.50 = pve) — the cause:
+      drwxr-xr-x 3   0   0  /tank/Server/AppData/plex          <- root-owned
+      drwxr-xr-x 3 999 991  /tank/Server/AppData/plex/Library  <- RAW in-CT ids, NOT shifted
+      drwxr-xr-x 14 999 991 /tank/Server/AppData/plex/Library/Application Support/Plex Media Server
+    CT 110 idmap (/etc/pve/lxc/110.conf), unprivileged: 1
+      lxc.idmap: u 0 100000 65536      <- single +100000 offset tile, NO uid punches
+      lxc.idmap: g 0 100000 44 / g 44 44 1 / g 45 100045 948 / g 993 993 1 / g 994 100994 64542
+    => in-CT uid 999 == host uid 100999; in-CT gid 991 == host gid 100991.
+       Host 0:0 and host 999:991 both fall OUTSIDE the mapped range [100000,165536)
+       -> both render as 65534 (nobody) inside the CT. Matches [3] exactly.
+
+[5] MECHANISM: the host copy carries RAW CT-side ownership (999:991) instead of the
+    idmap-shifted ownership (100999:100991) — the signature of extracting a tar taken
+    INSIDE the CT (cf. untracked ./plexmediaserver-Library.tar.xz, 1.2GB) or an rsync that
+    did not preserve shifted ids. docs/runbooks/plex-claim.md §5 "Ownership (unprivileged
+    idmap)" is the step that was skipped/misapplied; that section literally predicts this:
+    "If plexmediaserver fails to start after a rebuild with permission errors on its
+    database, re-run the id plex + chown pair with the new IDs."
+
+[6] RUNBOOK INACCURACY (for the fixer, secondary): plex-claim.md §5 example is
+      chown -R $((100000 + 999)):$((100000 + 999))
+    i.e. it assumes uid==gid. Real in-CT plex is uid=999 GID=991 -> correct target is
+    100999:100991, not 100999:100999. The runbook's own text ("e.g. uid=999(plex) gid=999(plex)")
+    encodes the same wrong assumption.
+
+NON-DESTRUCTIVE: read-only diagnostics only. No `just play`, no `just apply`, no chown run.

@@ -13,7 +13,7 @@ Run it after a clean teardown to confirm the stack comes up purely from the repo
 with no manual fiddling **beyond the already-documented host prerequisites**:
 
 - API token, provider SSH, host GIDs, router port-forward → `host-bootstrap.md`
-- DAS/ZFS pool import + `/tank/media` → `das-zfs-migration.md`
+- DAS/ZFS pool import + `/tank/Media` → `das-zfs-migration.md`
 - Plex claim / Custom server access URLs → `plex-claim.md`
 
 Do **not** duplicate those steps here — complete them once, then follow this
@@ -43,7 +43,7 @@ The reproducibility cycle. With the host prerequisites in place and
 
 ```bash
 # 1. Clean teardown — `just destroy` runs `tofu destroy` on the managed
-#    containers (110 plex, 111 docker-host). The DAS/ZFS pool and /tank/media
+#    containers (110 plex, 111 docker-host). The DAS/ZFS pool and /tank/Media
 #    are NOT tofu-managed and survive this.
 just destroy
 

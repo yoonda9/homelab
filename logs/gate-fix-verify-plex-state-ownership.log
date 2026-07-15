@@ -1,0 +1,46 @@
+=== Fix Verifier (debug:verify, task-1781916620-7cb8) — plex state-dir ownership fix ===
+
+--- [1] LIVE STATE (read-only, pre-existing; chown NOT run) ---
+host /tank/Server/AppData/plex = 0:0 755 ; Library subtree = 999:991 (RAW in-CT ids)
+CT110 in-CT /var/lib/plexmediaserver = 65534:65534 (nobody) ; id plex = uid=999 gid=991
+plexmediaserver = failed, NRestarts=2  -> ORIGINAL BUG STILL PRESENT LIVE (as designed: operator chown pending)
+
+--- [2] CT110 REAL IDMAP (corrects the Investigator's 'single offset tile' premise) ---
+g 0 100000 44 / g 44 44 1 / g 45 100045 948 / g 993 993 1 / g 994 100994 64542 / u 0 100000 65536
+UID map IS a single tile -> 999 -> 100999. GID map has 1:1 PUNCHES at 44(video) and 993(render).
+gid 991 falls in tile 'g 45 100045 948' -> 100045+(991-45)=100991. Target 100999:100991 CONFIRMED correct.
+
+--- [3] LIVE GATE HARNESS (scripts/verify_plex_state_ownership_gate.py) ---
+Sliced gate (28 lines) verbatim from ansible/roles/plex/tasks/main.yml
+
+CHECK1 real live state -> gate FAILS the play: rc=2 failed=True names_exact_chown=True names_host_path=True reports_nobody=True
+  OK
+
+CHECK2 expected ids = the 65534 the dir actually carries -> gate PASSES: rc=0 (proves the assert reads the real stat, not a hardcoded fail)
+  OK
+
+CHECK3 adversarial: uid matches (65534) but gid does not (991) -> gate FAILS: rc=2 (proves gid is independently load-bearing — the uid==gid defect)
+  OK
+
+CHECK4 string-valued override (`-e plex_uid=999`) -> fail_msg template crashes: True (rc=2)
+  NOTE: latent — `that:` uses `| int`, fail_msg does not. Not triggered by
+  the shipped int defaults. Reported as residual hardening, not a fix failure.
+
+3/3 blocking checks passed
+VERDICT: GATE VERIFIED LIVE
+
+--- [4] REGRESSION TEST ---
+OK: no uid==gid chown remains in plex-claim.md
+
+7/7 checks passed
+
+--- [5] BLOCKING DEFECT: regression guard does not guard ---
+Re-added the ORIGINAL defect verbatim to plex-claim.md:
+  chown -R $((100000 + 999)):$((100000 + 999)) /tank/Server/AppData/plex
+-> test_plex_state_ownership_shape.py 7/7 PASS exit 0
+-> full just test GATE PASS 29/29 exit 0
+Mechanism: offender regex chown\s+(?:-R\s+)?(\S+?):(\S+?)(?:\s|$) cannot span the SPACES
+inside $((100000 + 999)) -> NO match -> no offender recorded -> vacuous green.
+The CURRENT fixed line is also never matched, so the check is green for the wrong reason.
+Only bare-numeric forms (100999:100999) are actually compared.
+Files restored byte-exact: sha256 5142d0ac / 125548d7.

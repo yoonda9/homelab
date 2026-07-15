@@ -27,7 +27,7 @@ It is the single module behind every service CT: the plain docker-host CT
   to `[]`. With empty lists the matching `device_passthrough{}`,
   `mount_point{}`, and `idmap{}` blocks render **nothing** — docker-host uses
   none. Step 7 populates them for the Plex CT (renderD128 gid 993 + card1 gid
-  44 passthrough, `/tank/media`→`/media` bind, gap-free idmap tiling).
+  44 passthrough, `/tank/Media`→`/media` bind, gap-free idmap tiling).
 - Bind mounts require the provider to authenticate as `root@pam`; the idmap
   requires provider SSH (`ssh { agent = true }` in the root `providers.tf`).
 - `gid_maps`/`uid_maps` are merged into the provider's flat `idmap` blocks with

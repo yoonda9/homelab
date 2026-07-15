@@ -43,9 +43,13 @@ module "docker_host" {
 # Plex CT 110 — the GPU/media consumer of lxc_service. Unprivileged, with the
 # Intel iGPU /dev/dri nodes passed through (renderD128 gid render, card1 gid
 # video — GIDs sourced from local.host_gids so they live in one place), the
-# /tank/media DAS bind-mounted read-only at /media, and the gap-free idmap
-# tiling (local.plex_gid_maps/plex_uid_maps) that punches host GIDs 993/44 1:1
-# so the unprivileged CT can open the render nodes and read the media.
+# /tank/Media DAS bind-mounted read-only at /media, the Plex state dir
+# bind-mounted read-write from /tank/Server/AppData/plex so it survives CT
+# rebuilds, the /mnt/xtra-one and /mnt/xtra-two USB drives bound through
+# read-only at their host paths (usb-media-mounts.md), and the gap-free idmap
+# tiling (local.plex_gid_maps/plex_uid_maps)
+# that punches host GIDs 993/44 1:1 so the unprivileged CT can open the render
+# nodes and read the media.
 #
 # Fallback (design §6): if the unprivileged idmap fights GPU/DAS access at
 # apply time, flip unprivileged = false and re-apply — see the idmap fallback
@@ -84,8 +88,36 @@ module "plex" {
 
   bind_mounts = [
     {
-      host_path = "/tank/media"
+      host_path = "/tank/Media"
       ct_path   = "/media"
+      read_only = true
+    },
+    # Plex state — Preferences.xml (claim token + machine identity), library DB,
+    # metadata — lives on host storage so a CT destroy/recreate comes back
+    # claimed with libraries intact; without this, every rebuild means re-running
+    # the claim wizard and re-scanning. Host path is a plain subdirectory of the
+    # DASPool/Server/AppData dataset (DASPool mounts at /tank). Ownership must be
+    # the in-CT plex uid/gid +100000 (the uid map is a single offset tile) — see
+    # docs/runbooks/plex-claim.md §5 for the chown procedure and cutover order.
+    {
+      host_path = "/tank/Server/AppData/plex"
+      ct_path   = "/var/lib/plexmediaserver"
+      read_only = false
+    },
+    # USB media drives — host fstab automounts (see
+    # docs/runbooks/usb-media-mounts.md), bound through at the same path so
+    # CT-side Plex library paths match the host. Deliberately bound at the
+    # mount root: if a drive is absent at boot (fstab nofail), the CT starts
+    # with an empty directory here rather than failing loudly — re-scan only
+    # after confirming the drive is mounted (runbook §4 tradeoff).
+    {
+      host_path = "/mnt/xtra-one"
+      ct_path   = "/mnt/xtra-one"
+      read_only = true
+    },
+    {
+      host_path = "/mnt/xtra-two"
+      ct_path   = "/mnt/xtra-two"
       read_only = true
     },
   ]

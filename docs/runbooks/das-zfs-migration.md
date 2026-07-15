@@ -1,7 +1,7 @@
-# Runbook: DAS → ZFS migration (`/tank`) + host `/tank/media` for Plex
+# Runbook: DAS → ZFS migration (`/tank`) + host `/tank/Media` for Plex
 
 This runbook covers the **one-time, manual** migration of the QNAP DAS and its
-ZFS pool onto the Proxmox host `pve`, and establishes the host **`/tank/media`**
+ZFS pool onto the Proxmox host `pve`, and establishes the host **`/tank/Media`**
 path that the Plex CT bind-mounts as `/media` in Step 7.
 
 The migration is **explicitly outside the automation "done" scope** (per the
@@ -80,7 +80,7 @@ zfs set mountpoint=/tank <pool>                   # host mountpoint -> /tank
   to **auto-import the pool on every reboot** (the Proxmox default). Without it,
   the pool will not come back automatically after a restart.
 - **`mountpoint=/tank`** sets the host mount root. Media then lives under
-  **`/tank/media`**, which Step 7 binds into the Plex CT as `/media`.
+  **`/tank/Media`**, which Step 7 binds into the Plex CT as `/media`.
 
 ## 4. Verify media intact (migration acceptance gate)
 
@@ -92,7 +92,7 @@ zpool status <pool>     # the single vdev must be ONLINE, listed by its by-id pa
 zfs list                # datasets present with the expected mountpoints under /tank
 ```
 
-Then **spot-check that the media is intact**: browse `/tank/media`, confirm
+Then **spot-check that the media is intact**: browse `/tank/Media`, confirm
 expected directories, and compare file **counts** against the old server (and
 checksums if you captured them in step 1). When `zpool status` is ONLINE and the
 **raw data is intact**, the migration has succeeded.
@@ -118,7 +118,7 @@ zpool scrub <pool>                # run now, and schedule periodically
 - **Auto-import on reboot** is driven by `zfs-import-cache.service` + the
   cachefile set in step 3 — verify the pool re-imports after a test reboot.
 
-## 6. Wire `/tank/media` into the Plex CT (forward ref → Step 7)
+## 6. Wire `/tank/Media` into the Plex CT (forward ref → Step 7)
 
 The dataset must be **mounted on the host first** (its `mountpoint`, set in
 step 3) before it can be bound into a container.
@@ -127,17 +127,17 @@ step 3) before it can be bound into a container.
 host directory so Step 7's bind-mount mechanics can be validated end-to-end:
 
 ```bash
-mkdir -p /tank/media
+mkdir -p /tank/Media
 ```
 
 Once the pool's `mountpoint=/tank` is set and its media dataset is mounted, the
-**real `/tank/media`** supersedes this empty placeholder (same path).
+**real `/tank/Media`** supersedes this empty placeholder (same path).
 
 The Plex CT then binds it (Step 7 owns the implementation):
 
 ```
-# /tank/media on the host  ->  /media inside the CT (read-only: Plex only reads)
-bind_mounts = [{ host_path = "/tank/media", ct_path = "/media", read_only = true }]
+# /tank/Media on the host  ->  /media inside the CT (read-only: Plex only reads)
+bind_mounts = [{ host_path = "/tank/Media", ct_path = "/media", read_only = true }]
 ```
 
 - **Unprivileged ownership (Step 7's job).** Under an unprivileged CT, host IDs

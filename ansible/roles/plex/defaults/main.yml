@@ -24,6 +24,35 @@ plex_video_gid: 44
 # render/video groups so it can open /dev/dri for QSV transcoding.
 plex_service_user: plex
 
+# plex uid/gid, PINNED ahead of the plexmediaserver package install so the
+# package reuses them instead of auto-allocating. They are allocated
+# INDEPENDENTLY, so uid != gid — do not collapse them into one value (the
+# host-side chown in docs/runbooks/plex-claim.md §5 used to, and that is
+# exactly what breaks the state-dir bind mount). These are the IDs CT 110
+# already holds; pinning them keeps a CT rebuild from drifting off the
+# host-side ownership of plex_state_host_path.
+plex_uid: 999
+plex_gid: 991
+
+# Plex state directory. The host bind mount plex_state_host_path lands here
+# (tofu/main.tf module "plex"), carrying Preferences.xml, the library DB and
+# metadata so a CT rebuild comes back claimed.
+plex_state_dir: /var/lib/plexmediaserver
+plex_state_host_path: /tank/Server/AppData/plex
+
+# The +100000 shift the state-dir ownership gate uses to print the exact
+# host-side chown to run. CT 110's UID map is a single offset tile
+# (`u 0 100000 65536`), so any in-CT uid N is host uid N + 100000. The GID map
+# is NOT a single tile: tofu/locals.tf punches the GPU GIDs above
+# (plex_render_gid 993, plex_video_gid 44) through 1:1, tiling the map as
+# `g 0 100000 44` / `g 44 44 1` / `g 45 100045 948` / `g 993 993 1` /
+# `g 994 100994 64542`. The shift holds for plex_gid only because 991 lands
+# inside the `g 45 100045 948` offset tile — it would NOT hold for a punched
+# gid. That is safe here (the package cannot allocate 44 or 993; the video and
+# render groups already hold them), but it is a property of plex_gid's tile,
+# not a blanket invariant.
+plex_idmap_base: 100000
+
 # Deterministic VA-API driver selection for the Plex service (design §6 iHD row).
 plex_libva_driver: iHD
 

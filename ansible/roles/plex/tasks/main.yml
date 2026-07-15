@@ -78,6 +78,59 @@
     state: present
     enabled: true
 
+# --- State-dir ownership gate (unprivileged idmap) --------------------------
+# plex_state_dir is a bind mount from the host (plex_state_host_path). CT 110 is
+# unprivileged with a single offset idmap tile, so the host directory must carry
+# the SHIFTED ids (in-CT id + plex_idmap_base). A copy that preserved raw in-CT
+# ownership lands outside the mapped range and surfaces in-CT as 65534 (nobody),
+# leaving plex without write access — PMS then aborts in milliseconds with
+# "Read/write access is required for path: ...". Pin the ids first so the package
+# reuses them, then gate on the ownership before we install/start anything.
+
+- name: Pin the plex group GID ahead of the package install
+  ansible.builtin.group:
+    name: "{{ plex_service_user }}"
+    gid: "{{ plex_gid }}"
+    system: true
+    state: present
+
+- name: Pin the plex user UID ahead of the package install
+  ansible.builtin.user:
+    name: "{{ plex_service_user }}"
+    uid: "{{ plex_uid }}"
+    group: "{{ plex_service_user }}"
+    system: true
+    create_home: false
+    state: present
+
+- name: Stat the Plex state directory (the host bind mount lands here)
+  ansible.builtin.stat:
+    path: "{{ plex_state_dir }}"
+  register: plex_state_stat
+
+- name: Assert the Plex state directory carries idmap-shifted ownership
+  ansible.builtin.assert:
+    that:
+      - plex_state_stat.stat.exists
+      - plex_state_stat.stat.isdir
+      - plex_state_stat.stat.uid | int == plex_uid | int
+      - plex_state_stat.stat.gid | int == plex_gid | int
+    fail_msg: >-
+      {{ plex_state_dir }} must be owned by {{ plex_service_user }}
+      ({{ plex_uid }}:{{ plex_gid }}) but reports
+      {{ plex_state_stat.stat.uid | default('missing') }}:{{ plex_state_stat.stat.gid | default('missing') }}.
+      65534:65534 (nobody) means the host directory behind the bind mount carries
+      RAW in-CT ownership instead of idmap-shifted ownership, so plex cannot write
+      and Plex Media Server aborts with "Read/write access is required for path".
+      This role CANNOT repair it — in an unprivileged userns even in-CT root cannot
+      chown ids outside the map. Fix it on the Proxmox host, targeting the BASE
+      directory (not just Library/), then re-run:
+      chown -R {{ (plex_idmap_base | int) + (plex_uid | int) }}:{{ (plex_idmap_base | int) + (plex_gid | int) }} {{ plex_state_host_path }}
+      See docs/runbooks/plex-claim.md §5 "Ownership (unprivileged idmap)".
+    success_msg: >-
+      {{ plex_state_dir }} is owned by {{ plex_service_user }}
+      ({{ plex_uid }}:{{ plex_gid }}) — the host bind mount is idmap-shifted correctly.
+
 - name: Install Plex Media Server
   ansible.builtin.apt:
     name: plexmediaserver
