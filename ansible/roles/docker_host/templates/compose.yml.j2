@@ -21,33 +21,18 @@ services:
       - {{ docker_host_project_dir }}/traefik.yml:/etc/traefik/traefik.yml:ro
       - {{ docker_host_project_dir }}/dynamic:/etc/traefik/dynamic:ro
       - {{ docker_host_project_dir }}/acme.json:/acme.json
-    # Docker-network aliases so the cloudflared connector can reach Traefik by the
-    # PUBLIC hostname. The simplified Cloudflare tunnel UI exposes only the Service
-    # URL (no originRequest.originServerName / noTLSVerify), so we set each ingress
-    # origin to the FQDN (https://<host>.{{ domain }}); Docker's embedded DNS then
-    # resolves these aliases to THIS container. cloudflared's TLS SNI therefore
-    # matches the LE cert Traefik serves (a bare `traefik` SNI hits the self-signed
-    # default cert -> 502), and Traefik routes on the preserved Host header. Every
-    # tunnelled dashboard host needs an alias here; plex stays out (port-forward).
-    networks:
-      default:
-        aliases:
-          - traefik.{{ domain }}
-          - whoami.{{ domain }}
-          - home.{{ domain }}
-          - grafana.{{ domain }}
-          - uptime.{{ domain }}
-          - prometheus.{{ domain }}
 
   # --- Cloudflare Tunnel connector (Step 4, design §4/§A). ---
   # Outbound-only connector to a remotely-managed tunnel: NO published ports, so
   # there is zero inbound surface and no dashboard is ever reachable before the
   # Step-5 Cloudflare Access gate exists. TUNNEL_TOKEN is read from the sibling
-  # .env (rendered from vault_cloudflare_tunnel_token), never a literal. NO
-  # public-hostname ingress is configured yet — Step 5 adds Access first, then
-  # the tunnel ingress. cloudflared reaches Traefik over the internal compose
-  # network; its source is in the 172.16.0.0/12 range already admitted by the
-  # internal-allowlist middleware.
+  # .env (rendered from vault_cloudflare_tunnel_token), never a literal. Each
+  # dashboard-managed public hostname points its Service URL at http://traefik:80
+  # (plain HTTP over the internal compose network — TLS is terminated at the
+  # Cloudflare edge, so there is no SNI/cert to match and no origin-side TLS
+  # config the simplified UI can't express). Traefik serves it via the per-host
+  # <svc>-web routers below. cloudflared's source is in the 172.16.0.0/12 range
+  # already admitted by the internal-allowlist middleware.
   cloudflared:
     image: {{ docker_host_cloudflared_image }}
     restart: unless-stopped
@@ -73,6 +58,15 @@ services:
       # issuance no longer depends on this docker service. Traefik's global cert store
       # then serves that one wildcard for whoami and every other matching host.
       - traefik.http.routers.whoami.middlewares=internal-allowlist@file,security-headers@file
+      # Plain-HTTP twin router for the Cloudflare tunnel (cloudflared -> http://traefik:80;
+      # edge-terminated TLS). No `tls` -> served directly; our security-headers sets no
+      # sslRedirect so there is no redirect loop. It keeps internal-allowlist, so a WAN
+      # request arriving via the plex :80 port-forward with this Host is still 403'd. The
+      # websecure router above still serves LAN/Tailscale direct with the real LE cert.
+      - traefik.http.routers.whoami-web.rule=Host(`whoami.{{ domain }}`)
+      - traefik.http.routers.whoami-web.entrypoints=web
+      - traefik.http.routers.whoami-web.service=whoami
+      - traefik.http.routers.whoami-web.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.whoami.loadbalancer.server.port=80
 
   # --- Extras stack (Step 10): LAN/Tailscale-only dashboards & monitoring. ---
@@ -105,6 +99,11 @@ services:
       - traefik.http.routers.homepage.tls=true
       - traefik.http.routers.homepage.tls.certresolver={{ acme_resolver }}
       - traefik.http.routers.homepage.middlewares=internal-allowlist@file,security-headers@file
+      # Plain-HTTP twin for the tunnel (see whoami-web).
+      - traefik.http.routers.homepage-web.rule=Host(`home.{{ domain }}`)
+      - traefik.http.routers.homepage-web.entrypoints=web
+      - traefik.http.routers.homepage-web.service=homepage
+      - traefik.http.routers.homepage-web.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.homepage.loadbalancer.server.port=3000
 
   uptime-kuma:
@@ -119,6 +118,11 @@ services:
       - traefik.http.routers.uptime-kuma.tls=true
       - traefik.http.routers.uptime-kuma.tls.certresolver={{ acme_resolver }}
       - traefik.http.routers.uptime-kuma.middlewares=internal-allowlist@file,security-headers@file
+      # Plain-HTTP twin for the tunnel (see whoami-web).
+      - traefik.http.routers.uptime-kuma-web.rule=Host(`uptime.{{ domain }}`)
+      - traefik.http.routers.uptime-kuma-web.entrypoints=web
+      - traefik.http.routers.uptime-kuma-web.service=uptime-kuma
+      - traefik.http.routers.uptime-kuma-web.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.uptime-kuma.loadbalancer.server.port=3001
 
   grafana:
@@ -139,6 +143,11 @@ services:
       - traefik.http.routers.grafana.tls=true
       - traefik.http.routers.grafana.tls.certresolver={{ acme_resolver }}
       - traefik.http.routers.grafana.middlewares=internal-allowlist@file,security-headers@file
+      # Plain-HTTP twin for the tunnel (see whoami-web).
+      - traefik.http.routers.grafana-web.rule=Host(`grafana.{{ domain }}`)
+      - traefik.http.routers.grafana-web.entrypoints=web
+      - traefik.http.routers.grafana-web.service=grafana
+      - traefik.http.routers.grafana-web.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.grafana.loadbalancer.server.port=3000
 
   prometheus:
@@ -156,6 +165,11 @@ services:
       - traefik.http.routers.prometheus.tls=true
       - traefik.http.routers.prometheus.tls.certresolver={{ acme_resolver }}
       - traefik.http.routers.prometheus.middlewares=internal-allowlist@file,security-headers@file
+      # Plain-HTTP twin for the tunnel (see whoami-web).
+      - traefik.http.routers.prometheus-web.rule=Host(`prometheus.{{ domain }}`)
+      - traefik.http.routers.prometheus-web.entrypoints=web
+      - traefik.http.routers.prometheus-web.service=prometheus
+      - traefik.http.routers.prometheus-web.middlewares=internal-allowlist@file,security-headers@file
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
 
   # Scrape targets only: NO Traefik labels, NO router — Prometheus reaches them

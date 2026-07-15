@@ -50,6 +50,19 @@ http:
       tls:
         certResolver: "{{ acme_resolver }}"
 
+    # Public plex over plain HTTP (WAN port-forward :80 -> .111). Unlike the
+    # tunnel hosts this KEEPS the http->https upgrade the removed `web` entrypoint
+    # redirect used to provide, via the redirect-to-https middleware. No `tls`
+    # block — it only redirects; the websecure plex router above serves the TLS
+    # traffic. This is why dropping the global entrypoint redirect is safe.
+    plex-web:
+      rule: "Host(`plex.{{ domain }}`)"
+      entryPoints:
+        - web
+      service: plex
+      middlewares:
+        - redirect-to-https@file
+
     # Hardened Traefik dashboard/API (Step 3, design §6). Serves the built-in
     # api@internal service on traefik.{{ domain }} over websecure, internal-only via
     # internal-allowlist + security-headers — replacing the removed insecure :8080
@@ -74,6 +87,20 @@ http:
             sans:
               - "*.{{ domain }}"
 {% endif %}
+
+    # Plain-HTTP twin of traefik-dashboard for the Cloudflare tunnel
+    # (cloudflared -> http://traefik:80; edge-terminated TLS). Same allowlist +
+    # headers, no `tls` (a global entrypoint redirect would loop the tunnel). The
+    # websecure router above still serves LAN/Tailscale direct, and it retains the
+    # wildcard tls.domains so proactive issuance is unchanged.
+    traefik-dashboard-web:
+      rule: "Host(`traefik.{{ domain }}`)"
+      entryPoints:
+        - web
+      service: api@internal
+      middlewares:
+        - internal-allowlist@file
+        - security-headers@file
 
   services:
     plex:

@@ -7,8 +7,10 @@ Cloudflare DNS-01 defined) with a LAN-only `whoami` smoke route:
 - roles/docker_host/ exists with tasks/main.yml and a templates/ dir holding
   compose.yml.j2 plus the Traefik static (traefik.yml.j2) + dynamic
   (dynamic.yml.j2) config templates;
-- the static config defines `web` (:80, redirect->websecure) and `websecure`
-  (:443) entrypoints and a SINGLE Cloudflare DNS-01 certresolver (le-dns-cf);
+- the static config defines `web` (:80, plain-HTTP Cloudflare-tunnel ingress with
+  NO global redirect — a :80->:443 entrypoint redirect would loop the HTTP tunnel;
+  the http->https upgrade moved to the per-router plex-web redirect) and
+  `websecure` (:443) entrypoints and a SINGLE Cloudflare DNS-01 certresolver;
   `le-http` is removed (only DNS-01 issues wildcards) and staging vs prod is a
   single `caServer: "{{ acme_ca_server }}"` toggle (LE staging until Step 7);
 - the active resolver on the whoami router is variable-driven ({{ acme_resolver }}),
@@ -60,15 +62,33 @@ def test_role_structure_exists() -> bool:
 
 
 def test_entrypoints_with_redirect() -> bool:
-    body = _read(STATIC)
-    # web entrypoint on :80 that redirects to websecure; websecure on :443.
-    web = re.search(r'(?ms)^\s*web:\s*$.*?address:\s*"?:80', body) is not None
-    redirect = re.search(r'(?s)redirections:.*?to:\s*websecure', body) is not None
-    websecure = re.search(r'(?ms)^\s*websecure:\s*$.*?address:\s*"?:443', body) is not None
-    ok = web and redirect and websecure
+    """web(:80) is the plain-HTTP tunnel ingress (NO global redirect); websecure(:443).
+
+    Name kept for acceptance traceability; the assertion is retargeted to the
+    Option-1 (edge-terminated TLS) invariant. cloudflared sends plain HTTP to
+    traefik:80, so the `web` entrypoint must NOT carry an entrypoint-level
+    redirection block — a global 301 bounces the tunnel's HTTP request to HTTPS
+    and, since the tunnel re-enters on :80, loops forever (the old Error-1000 /
+    redirect-loop class). The http->https upgrade instead rides the per-router
+    `plex-web` redirect (dynamic.yml.j2) so the public port-forwarded plex path
+    is preserved. Asserts web(:80) + websecure(:443) exist, no entrypoint-level
+    redirection anywhere in the static config, and the plex-web upgrade router.
+    """
+    static = _read(STATIC)
+    dynamic = _read(DYNAMIC)
+    web = re.search(r'(?ms)^\s*web:\s*$.*?address:\s*"?:80', static) is not None
+    websecure = re.search(r'(?ms)^\s*websecure:\s*$.*?address:\s*"?:443', static) is not None
+    # The loop-causer: an entrypoint-level `redirections:` block must be gone.
+    no_ep_redirect = re.search(r'(?s)redirections:', static) is None
+    # The upgrade relocated onto the public plex-web file-provider router.
+    plex_web_redirect = re.search(
+        r'(?ms)^\s{4}plex-web:\s*$.*?redirect-to-https', dynamic
+    ) is not None
+    ok = web and websecure and no_ep_redirect and plex_web_redirect
     print(
-        f"{'OK' if ok else 'FAIL'}: entrypoints web(:80 redirect)->websecure(:443) "
-        f"(web={web}, redirect={redirect}, websecure={websecure})"
+        f"{'OK' if ok else 'FAIL'}: web(:80 plain)/websecure(:443), no entrypoint redirect, "
+        f"plex-web upgrade (web={web}, websecure={websecure}, "
+        f"no_ep_redirect={no_ep_redirect}, plex_web_redirect={plex_web_redirect})"
     )
     return ok
 
@@ -710,6 +730,47 @@ def test_acme_resolver_is_dns_cf() -> bool:
     return ok
 
 
+def test_tunnel_web_routers_present() -> bool:
+    """Option-1: every tunneled host has a plain-HTTP (:web) router for cloudflared.
+
+    cloudflared points each public hostname at http://traefik:80 (edge-terminated
+    TLS), so every internal host needs a `<svc>-web` router on the `web` entrypoint
+    ALONGSIDE its websecure router: the four extras + whoami as docker labels, and
+    `traefik-dashboard-web` in the file provider. Each web router must (1) sit on
+    the `web` entrypoint, (2) bind the same backend service, (3) keep
+    internal-allowlist so a WAN request via the plex :80 port-forward is still
+    403'd, and (4) carry NO `tls` (the edge already terminated it; a tls router
+    would not answer plain HTTP). Guards against regressing to the SNI /
+    network-alias hack that caused the Error-1000 loop.
+    """
+    compose = _read(COMPOSE)
+    dynamic = _read(DYNAMIC)
+    failures = []
+    for s in EXTRAS + ["whoami"]:
+        web_ep = re.search(
+            rf'routers\.{re.escape(s)}-web\.entrypoints\s*=\s*web\b', compose
+        ) is not None
+        svc = re.search(
+            rf'routers\.{re.escape(s)}-web\.service\s*=\s*{re.escape(s)}\b', compose
+        ) is not None
+        allowlist = re.search(
+            rf'routers\.{re.escape(s)}-web\.middlewares\s*=\s*[^\n]*internal-allowlist', compose
+        ) is not None
+        no_tls = re.search(rf'routers\.{re.escape(s)}-web\.tls\b', compose) is None
+        if not (web_ep and svc and allowlist and no_tls):
+            failures.append(f"{s}(ep={web_ep},svc={svc},allow={allowlist},no_tls={no_tls})")
+    # The dashboard's web twin lives in the file provider on the `web` entrypoint.
+    dash_web = re.search(
+        r'(?ms)^\s{4}traefik-dashboard-web:\s*$.*?entryPoints:\s*.*?\bweb\b', dynamic
+    ) is not None
+    ok = not failures and dash_web
+    print(
+        f"{'OK' if ok else 'FAIL'}: tunnel <svc>-web routers present + allowlisted, no tls "
+        f"(failures={failures}, traefik_dashboard_web={dash_web})"
+    )
+    return ok
+
+
 def main() -> int:
     results = [
         test_role_structure_exists(),
@@ -741,6 +802,7 @@ def main() -> int:
         test_traefik_image_pinned_to_concrete_v3(),
         test_no_floating_service_image_tags(),
         test_acme_resolver_is_dns_cf(),
+        test_tunnel_web_routers_present(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

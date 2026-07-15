@@ -9,14 +9,15 @@ global:
   sendAnonymousUsage: false
 
 entryPoints:
+  # :80 is the plain-HTTP ingress for the Cloudflare tunnel (cloudflared ->
+  # http://traefik:80; TLS is terminated at the Cloudflare edge). It deliberately
+  # carries NO entrypoint-level redirect: a global 301 would bounce the tunnel's
+  # HTTP request to HTTPS and, because the tunnel re-enters on :80, loop forever.
+  # The http->https upgrade is applied PER ROUTER instead — the public plex-web
+  # router carries redirect-to-https (dynamic.yml.j2), while the internal <svc>-web
+  # routers (compose.yml.j2) serve directly since the edge already did TLS.
   web:
     address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-          permanent: true
   websecure:
     address: ":443"
   # Internal metrics endpoint scraped by Prometheus (Step 10). Not published to
