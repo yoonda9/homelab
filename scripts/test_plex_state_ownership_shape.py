@@ -146,8 +146,20 @@ TARGET_GID = 64000
 # those to 64000/64000, and the collapse then goes green (verified by execution —
 # RED 16/17 at 999/991, GREEN 17/17 at 64000/64000, same test, no edit). A guard
 # whose fixture comes from config is armed only until the config moves.
-PROBE_UID = 64000
-PROBE_GID = 991
+#
+# They must ALSO appear NOWHERE ELSE — not TARGET_*, not a default, not any real
+# state. Asymmetry alone is not enough: a fixture id that COINCIDES with the value
+# the code would hardcode cannot tell the NAME from the CONSTANT. With
+# PROBE_UID = 64000 = TARGET_UID, substituting the predicate's uid half with the
+# literal 64000 read IDENTICALLY to `plex_uid` on every row here and scored 18/18
+# GREEN at Step 2's defaults — the name-vs-constant axis was held only by
+# test_predicate_is_inert_at_the_current_defaults, whose discrimination expires on
+# the very date Step 2 lands (verified by execution, both worlds). 4242/4243 are
+# bound to nothing in this repo, so no config flip and no hardcode can flatten
+# them. Both non-coincidences are ASSERTED below rather than trusted, because a
+# coincidence is silent: it makes the guard vacuous without changing a line of it.
+PROBE_UID = 4242
+PROBE_GID = 4243
 
 
 def _read(path: pathlib.Path) -> str:
@@ -922,11 +934,22 @@ def test_predicate_reads_uid_and_gid_independently() -> bool:
     and the collapse turns green there, while Step 3 retires this harness. Armed
     only while the machinery is inert, unarmed exactly when it fires.
 
-    So the ids here are LITERALS (PROBE_UID != PROBE_GID by construction) and the
-    rows below pin each half against its OWN name. No config change can disarm
-    this; that is the entire point of it, and the reason the equality check below
-    is a real check rather than a comment. Every mutation named in the rows was
-    executed, not argued.
+    So the ids here are LITERALS, and they are constrained on TWO axes, because
+    the rows below must pin each half against its own NAME on both:
+
+      * ASYMMETRY (PROBE_UID != PROBE_GID) — equal ids cannot tell `plex_uid`
+        from `plex_gid`, which is the name-vs-name axis;
+      * NON-COINCIDENCE (PROBE_* != TARGET_*) — an id equal to the value the code
+        would hardcode cannot tell the NAME `plex_uid` from the CONSTANT 64000,
+        which is the name-vs-VALUE axis. This one is easy to miss: the rows read
+        identically either way, so the guard stays green while proving nothing.
+
+    An earlier version asserted only the first and claimed the rows pinned each
+    half against its own name. That claim was HALF-FALSE — PROBE_UID was 64000,
+    i.e. TARGET_UID, so the uid half was pinned against a constant the predicate
+    could equally have hardcoded. Both axes are asserted below rather than left to
+    a comment, for the same reason: a coincidence returns silently. Every mutation
+    named in the rows was executed, not argued.
     """
     if PROBE_UID == PROBE_GID:
         print(
@@ -935,16 +958,32 @@ def test_predicate_reads_uid_and_gid_independently() -> bool:
             f"vacuous by construction and is the defect it exists to catch"
         )
         return False
+    if PROBE_UID == TARGET_UID or PROBE_GID == TARGET_GID:
+        print(
+            f"FAIL: PROBE_UID/PROBE_GID ({PROBE_UID}:{PROBE_GID}) must NOT COINCIDE with "
+            f"TARGET_UID/TARGET_GID ({TARGET_UID}:{TARGET_GID}) — an id equal to the "
+            f"value the predicate would hardcode makes these rows read the same whether "
+            f"the role says `plex_uid` or the literal {TARGET_UID}, so this guard would "
+            f"go vacuous on the name-vs-constant axis without changing a line"
+        )
+        return False
+    # These rows bind plex_uid/plex_gid to PROBE_UID/PROBE_GID, so a uid half
+    # hardcoded to PROBE_UID itself is invisible HERE — and caught by the state
+    # table, which binds the names to TARGET_*. The reverse holds too: a uid half
+    # hardcoded to TARGET_UID is invisible to the table and caught here. That
+    # mutual cover is the whole reason the two fixtures must not share an id, and
+    # it is exactly what the PROBE_* == TARGET_* coincidence destroyed.
     rows = [
         # Exact match on BOTH halves => nothing to do. Reddens the gid-half
-        # collapse (gid 991 != plex_uid 64000 -> True) and the uid/gid swap.
+        # collapse (dir gid PROBE_GID != plex_uid PROBE_UID -> True) and the
+        # uid/gid swap.
         (
             "dir already at the probe ids",
             {"exists": True, "uid": PROBE_UID, "gid": PROBE_GID},
             False,
         ),
-        # The state the historic defect PRODUCES: `chown -R 64000:64000` applied
-        # where the gid should still be 991. Reddens dropping the gid half.
+        # The shape the historic defect PRODUCES: a collapsed `chown -R id:id`
+        # applied where the gid should still differ. Reddens dropping the gid half.
         (
             "only the gid is stale (the uid==gid chown's own leftovers)",
             {"exists": True, "uid": PROBE_UID, "gid": PROBE_UID},
@@ -952,7 +991,9 @@ def test_predicate_reads_uid_and_gid_independently() -> bool:
         ),
         # Reddens dropping the uid half — which NOTHING else in this file catches:
         # substitute the uid half with the gid half and all 17 other checks stay
-        # green in both defaults worlds. Verified by probe, not assumed.
+        # green in both defaults worlds. Verified by probe, not assumed. The dir
+        # uid here need only differ from PROBE_UID; 999 is a stale id standing in
+        # for "whatever the package allocated before the pins".
         (
             "only the uid is stale",
             {"exists": True, "uid": 999, "gid": PROBE_GID},
