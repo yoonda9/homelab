@@ -1,0 +1,44 @@
+=== ansible version (must be the pinned one) ===
+ansible [core 2.21.1]
+
+=== PROBE 1 — stated definition vs an absent dir (expect: hard error) ===
+    "msg": "exists=False · keys present=['exists']"
+}
+--
+[ERROR]: Task failed: Finalization of task args for 'ansible.builtin.debug' failed: Error while resolving value for 'msg': object of type 'dict' has no attribute 'uid'
+
+--
+8         msg: "exists={{ s.stat.exists }} · keys present={{ s.stat.keys() | list }}"
+9     - name: "the design's STATED definition, verbatim"
+--
+ 8         msg: "exists={{ s.stat.exists }} · keys present={{ s.stat.keys() | list }}"
+ 9     - name: "the design's STATED definition, verbatim"
+--
+
+=== PROBE 2 — the real :111 gate vs an absent dir (expect: clean, missing:missing) ===
+    "assertion": "plex_state_stat.stat.exists",
+    "changed": false,
+    "evaluated_to": false,
+    "msg": "/var/tmp/tmp.8RqOqULlkt/definitely-absent must be owned by plex (64000:64000) but reports missing:missing."
+}
+--
+PLAY RECAP *********************************************************************
+localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=1   
+
+=== PROBE 3 — R12 satisfiable? + the |default(0) attractor ===
+    "msg": "chown_needed=False"
+    "msg": "| default(0) yields chown_needed=True -> chown -R fires on a NONEXISTENT path, shadowing :111"
+PLAY RECAP *********************************************************************
+
+=== PROBE 4 — Provenance guard vs both designs (expect: PASS/PASS = vacuous) ===
+  accepted (dir, both halves)        chown when: 'chown_needed'   guard -> PASS
+  REJECTED (getent-keyed, wedges)    chown when: 'chown_needed'   guard -> PASS
+
+  Both PASS. The guard cannot fail: a bare name carries no provenance.
+
+=== CONCLUSIONS ===
+  1. CONCERN real  — stated definition hard-errors on absent.
+  2. FAIL real     — provenance guard PASSES for the rejected design.
+  3. R12 is NOT a new policy — :111 already handles absent deliberately
+     (exists asserted first + | default('missing')). Preserve it.
+  4. R12 is satisfiable; the mechanism remains the Architect's call.
