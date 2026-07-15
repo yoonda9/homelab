@@ -1,0 +1,139 @@
+[WARNING]: Found both group and host with same name: plex
+
+PLAY [Baseline configuration for all managed hosts] ****************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [plex]
+
+TASK [Check for a pre-existing Plex apt source] ********************************
+ok: [plex]
+
+TASK [Trust the pre-existing Plex apt source before the baseline apt update] ***
+ok: [plex]
+
+TASK [common : Install baseline packages] **************************************
+ok: [plex]
+
+TASK [common : Install unattended-upgrades] ************************************
+ok: [plex]
+
+TASK [common : Enable periodic unattended security upgrades] *******************
+ok: [plex]
+
+TASK [common : Set the system timezone] ****************************************
+ok: [plex]
+
+TASK [common : Record the configured timezone] *********************************
+ok: [plex]
+
+TASK [common : Ensure the service group exists] ********************************
+ok: [plex]
+
+TASK [common : Ensure the service user exists] *********************************
+ok: [plex]
+
+TASK [common : Harden sshd configuration] **************************************
+ok: [plex] => (item={'regexp': '^#?PermitRootLogin', 'line': 'PermitRootLogin prohibit-password'})
+ok: [plex] => (item={'regexp': '^#?PasswordAuthentication', 'line': 'PasswordAuthentication no'})
+ok: [plex] => (item={'regexp': '^#?X11Forwarding', 'line': 'X11Forwarding no'})
+
+PLAY [Docker host with Traefik reverse proxy] **********************************
+skipping: no hosts matched
+
+PLAY [Plex media server with Intel QSV hardware transcoding] *******************
+
+TASK [Gathering Facts] *********************************************************
+ok: [plex]
+
+TASK [plex : Ensure the apt keyring directory exists] **************************
+ok: [plex]
+
+TASK [plex : Install the deb822 source manager dependency] *********************
+ok: [plex]
+
+TASK [plex : Enable the Debian non-free components (the iHD media driver lives there)] ***
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: INJECT_FACTS_AS_VARS default to `True` is deprecated, top-level facts will not be auto injected after the change. This feature will be removed from ansible-core version 2.24.
+Origin: /home/user/Work/homelab/ansible/roles/plex/tasks/main.yml:29:9
+
+27     uris: "{{ plex_debian_mirror }}"
+28     suites:
+29       - "{{ ansible_distribution_release }}"
+           ^ column 9
+
+Use `ansible_facts["fact_name"]` (no `ansible_` prefix) instead.
+
+ok: [plex]
+
+TASK [plex : Install the Intel iHD media driver and VA-API tooling] ************
+ok: [plex]
+
+TASK [plex : Add the Plex apt GPG key] *****************************************
+ok: [plex]
+
+TASK [plex : Add the Plex apt repository] **************************************
+ok: [plex]
+
+TASK [plex : Stat the Plex state directory before the id pins] *****************
+ok: [plex]
+
+TASK [plex : Derive whether the state directory needs an ownership migration] ***
+ok: [plex]
+
+TASK [plex : Read the current plex user entry] *********************************
+ok: [plex]
+
+TASK [plex : Stop Plex Media Server before an id migration] ********************
+skipping: [plex]
+
+TASK [plex : Pin the plex group GID ahead of the package install] **************
+ok: [plex]
+
+TASK [plex : Pin the plex user UID ahead of the package install] ***************
+ok: [plex]
+
+TASK [plex : Migrate state dir ownership to the pinned ids] ********************
+skipping: [plex]
+
+TASK [plex : Stat the Plex state directory (the host bind mount lands here)] ***
+ok: [plex]
+
+TASK [plex : Assert the Plex state directory carries idmap-shifted ownership] ***
+ok: [plex] => {
+    "changed": false,
+    "msg": "/var/lib/plexmediaserver is owned by plex (999:991) — the host bind mount is idmap-shifted correctly."
+}
+
+TASK [plex : Install Plex Media Server] ****************************************
+ok: [plex]
+
+TASK [plex : Ensure the render group maps to the host render GID for /dev/dri access] ***
+ok: [plex]
+
+TASK [plex : Ensure the video group maps to the host video GID for /dev/dri access] ***
+ok: [plex]
+
+TASK [plex : Add the plex user to the render/video groups so QSV can open /dev/dri] ***
+ok: [plex]
+
+TASK [plex : Ensure the plexmediaserver systemd override directory exists] *****
+ok: [plex]
+
+TASK [plex : Pin LIBVA_DRIVER_NAME so QSV selects the iHD driver deterministically] ***
+ok: [plex]
+
+TASK [plex : Ensure Plex Media Server is enabled and running] ******************
+ok: [plex]
+
+TASK [plex : Probe the VA-API driver on the render node] ***********************
+ok: [plex]
+
+TASK [plex : Assert the Intel iHD driver is active (QSV hardware-transcode gate)] ***
+ok: [plex] => {
+    "changed": false,
+    "msg": "VA-API reports the iHD driver — QSV hardware transcoding is ready."
+}
+
+PLAY RECAP *********************************************************************
+plex                       : ok=34   changed=0    unreachable=0    failed=0    skipped=2    rescued=0    ignored=0   
+
