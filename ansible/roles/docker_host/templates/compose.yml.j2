@@ -21,6 +21,23 @@ services:
       - {{ docker_host_project_dir }}/traefik.yml:/etc/traefik/traefik.yml:ro
       - {{ docker_host_project_dir }}/dynamic:/etc/traefik/dynamic:ro
       - {{ docker_host_project_dir }}/acme.json:/acme.json
+    # Docker-network aliases so the cloudflared connector can reach Traefik by the
+    # PUBLIC hostname. The simplified Cloudflare tunnel UI exposes only the Service
+    # URL (no originRequest.originServerName / noTLSVerify), so we set each ingress
+    # origin to the FQDN (https://<host>.{{ domain }}); Docker's embedded DNS then
+    # resolves these aliases to THIS container. cloudflared's TLS SNI therefore
+    # matches the LE cert Traefik serves (a bare `traefik` SNI hits the self-signed
+    # default cert -> 502), and Traefik routes on the preserved Host header. Every
+    # tunnelled dashboard host needs an alias here; plex stays out (port-forward).
+    networks:
+      default:
+        aliases:
+          - traefik.{{ domain }}
+          - whoami.{{ domain }}
+          - home.{{ domain }}
+          - grafana.{{ domain }}
+          - uptime.{{ domain }}
+          - prometheus.{{ domain }}
 
   # --- Cloudflare Tunnel connector (Step 4, design §4/§A). ---
   # Outbound-only connector to a remotely-managed tunnel: NO published ports, so
