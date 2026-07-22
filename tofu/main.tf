@@ -120,6 +120,19 @@ module "plex" {
       ct_path   = "/mnt/xtra-two"
       read_only = true
     },
+    # Transcode ramdisk — the host tmpfs the operator provisions in
+    # /etc/fstab (docs/runbooks/plex-ramdisk.md: size=4G, uid=100999,
+    # gid=100991) passed through so Plex writes transcode scratch into RAM
+    # instead of the ZFS/DAS pool. The host ownership is the +100000 idmap
+    # shift of the in-CT plex 999:991 (same single-offset uid map the
+    # /var/lib/plexmediaserver entry above documents), so /transcode lands in
+    # the CT owned by plex:plex rather than nobody. read_only MUST stay false —
+    # Plex writes here; a read-only mount makes the ramdisk useless.
+    {
+      host_path = "/mnt/plex-transcode"
+      ct_path   = "/transcode"
+      read_only = false
+    },
   ]
 
   gid_maps = local.plex_gid_maps
