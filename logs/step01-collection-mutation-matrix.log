@@ -1,0 +1,57 @@
+=== M1: ansible.cfg collections_path commented out ===
+OK: community.general vendored at ansible/galaxy_roles/ansible_collections/community/general with MANIFEST.json + plugins/modules/xml.py
+OK: vendored community.general version matches requirements.yml pin (pinned='13.2.0' installed='13.2.0')
+OK: vendored community.general tracked in git (premise sibling_role_tracked=True manifest=True xml_module=True)
+FAIL: ansible.cfg collections_path covers 'galaxy_roles' (entries=[])
+FAIL: 1/4 checks failed
+exit=1
+
+=== M2: requirements.yml pin drifted to 13.1.0 (vendored is 13.2.0) ===
+OK: community.general vendored at ansible/galaxy_roles/ansible_collections/community/general with MANIFEST.json + plugins/modules/xml.py
+FAIL: vendored community.general version matches requirements.yml pin (pinned='13.1.0' installed='13.2.0')
+OK: vendored community.general tracked in git (premise sibling_role_tracked=True manifest=True xml_module=True)
+OK: ansible.cfg collections_path covers 'galaxy_roles' (entries=['galaxy_roles'])
+FAIL: 1/4 checks failed
+exit=1
+
+=== M3: community.general entry moved from collections: into roles: (whole-file grep would still match) ===
+7:# an EXACT version (never `latest`) for reproducibility, mirroring the repo's
+14:roles:
+16:    version: 8.0.0
+17:  - name: community.general
+18:    version: 13.2.0
+22:# community.general provides community.general.xml, which a later step uses to
+25:# dependency. Pinned to an EXACT version (never `latest`) for reproducibility,
+29:# unaffected until a role actually calls community.general.xml.
+30:# collections block removed (M3)
+OK: community.general vendored at ansible/galaxy_roles/ansible_collections/community/general with MANIFEST.json + plugins/modules/xml.py
+FAIL: vendored community.general version matches requirements.yml pin (pinned='' installed='13.2.0')
+OK: vendored community.general tracked in git (premise sibling_role_tracked=True manifest=True xml_module=True)
+OK: ansible.cfg collections_path covers 'galaxy_roles' (entries=['galaxy_roles'])
+FAIL: 1/4 checks failed
+exit=1
+--- sibling requirements shape test (also scoped) ---
+OK: ansible/requirements.yml exists at /home/user/Work/homelab/ansible/requirements.yml
+OK: ansible/requirements.yml is structurally valid YAML (no_tabs=True roles_key=True has_item=True)
+OK: requirements.yml lists a role src/name = geerlingguy.docker
+OK: geerlingguy.docker pinned to an exact version (version='8.0.0')
+FAIL: requirements.yml lists a collection name = community.general
+FAIL: community.general is pinned to an exact version (entry not found)
+FAIL: 2/6 checks failed
+exit=1
+
+=== M4: xml module + MANIFEST un-tracked from the index (the ORIGINAL defect) ===
+OK: community.general vendored at ansible/galaxy_roles/ansible_collections/community/general with MANIFEST.json + plugins/modules/xml.py
+OK: vendored community.general version matches requirements.yml pin (pinned='13.2.0' installed='13.2.0')
+FAIL: vendored community.general tracked in git (premise sibling_role_tracked=True manifest=False xml_module=False)
+OK: ansible.cfg collections_path covers 'galaxy_roles' (entries=['galaxy_roles'])
+FAIL: 1/4 checks failed
+exit=1
+
+=== M5: vendored MANIFEST.json missing on disk ===
+FAIL: community.general vendored at ansible/galaxy_roles/ansible_collections/community/general with MANIFEST.json + plugins/modules/xml.py
+FAIL: vendored community.general version matches requirements.yml pin (pinned='13.2.0' installed='')
+OK: vendored community.general tracked in git (premise sibling_role_tracked=True manifest=True xml_module=True)
+OK: ansible.cfg collections_path covers 'galaxy_roles' (entries=['galaxy_roles'])
+FAIL: 2/4 checks failed
+exit=1

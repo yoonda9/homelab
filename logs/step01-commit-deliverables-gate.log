@@ -1,0 +1,506 @@
+python scripts/run_gate.py
+OK: docs/runbooks/acceptance-validation.md exists and is non-empty (chars=11811)
+OK: runbook gates WAN direct :443 + dashboard Host -> 403 (missing=[])
+OK: runbook covers the direct dual-path over v4+v6 -> 192.168.1.111 (missing=[])
+OK: runbook checks Access allow/deny by identity (access=True, allow=True, deny=True, identity=True)
+OK: runbook confirms prod cert + no leftover staging cert (prod_trusted=True, no_staging=True)
+OK: runbook checks no noTLSVerify remains on any ingress
+OK: runbook documents printing LOOP_COMPLETE on a full acceptance pass
+OK: no le-http/api.insecure references remain in docs/runbooks (offenders={})
+PASS: 8/8
+OK: ansible/ dir exists at /home/user/Work/homelab/ansible
+OK: required ansible files present (missing=[])
+OK: vault secrets scoped to group_vars/all/ (all/vault.yml=True stray_top_level_vault=False)
+OK: ansible.cfg points inventory at inventory/hosts.yml
+OK: site.yml applies the common role
+OK: group_vars/all/vars.yml carries required keys (missing=[])
+OK: public_services lists plex
+OK: group_vars/all/vault.yml is Ansible-Vault-encrypted ($ANSIBLE_VAULT header)
+OK: common role has no unguarded command/shell/raw (found=[])
+OK: roles/plex/tasks/main.yml exists at /home/user/Work/homelab/ansible/roles/plex/tasks/main.yml
+OK: plex role installs the iHD driver (intel-media-va-driver-non-free)
+OK: plex role runs vainfo and asserts the iHD driver (gate)
+OK: plex install task refreshes cache after repo (update_cache=True no_cache_valid_time=True)
+OK: plex iHD-driver task refreshes cache after repo (update_cache=True no_cache_valid_time=True)
+OK: plex repo trusted scoped to plex (plex_trusted=True debian_non_free_verified=True)
+OK: plex source trusted before baseline apt (baseline_pre_tasks=True references_source=True trusts_it=True)
+OK: plex render/video groups non_unique (render_non_unique=True video_non_unique=True)
+OK: site.yml has a plex play (hosts: plex, roles: [plex])
+OK: gen_inventory.py renders a plex group from plex_* outputs
+OK: docker install delegated to geerlingguy.docker (role_wired=True compose_plugin=True custom_install_gone=True description_aligned=True [install_task=False deb822=False packages_var=False python3_debian=False])
+OK: acme reset task recreates acme.json at 0600 without preserving mtime (recreates=True no_preserve=True)
+PASS: 21/21
+OK: scripts/build_template.sh executable bit set
+OK: shebang #!/usr/bin/env bash
+OK: set -euo pipefail in first 10 lines
+OK (skip): shellcheck not installed
+OK: shfmt -i 2 -d clean
+OK: PROXMOX_HOST preflight
+OK: PROXMOX_USER preflight
+OK: PROXMOX_TOKEN_ID preflight
+OK: PROXMOX_TOKEN_SECRET preflight
+OK: ubuntu26 case branch
+OK: fedora case branch
+OK: windows11 case branch
+OK: usage / error on unknown OS
+OK: command -v genisoimage preflight
+OK: genisoimage invocation
+OK: autounattend.iso output path
+OK: packer/autounattend/windows11 input
+OK: packer init (line 77) precedes packer build (line 80)
+OK: packer build uses -force
+OK: packer build uses -only=...
+OK: packer build targets directory '.' (not a single .pkr.hcl file)
+OK: packer build line has no '<name>.pkr.hcl' positional arg
+OK: ubuntu26 → proxmox-clone.ubuntu26 (DEC-019 cloud-image flow)
+OK: fedora → proxmox-clone.fedora (DEC-019 cloud-image flow)
+OK: windows11 → proxmox-iso.windows11 (stays on ISO)
+OK: fedora NOT pinned to proxmox-iso.fedora (no revert)
+OK: build_template.sh invokes bootstrap_cloud_template.sh ubuntu26
+OK: build_template.sh invokes bootstrap_cloud_template.sh fedora
+OK: shebang #!/usr/bin/env bash
+OK: set -euo pipefail in first 10 lines
+OK: executable bit set
+OK: references 'qm create' for source VM
+OK: references 'qm importdisk' for cloud image
+OK: references 'qm template' to flag golden
+OK: idempotent guard via 'qm status'
+OK: tpl-cloud-ubuntu26 source name
+OK: tpl-cloud-fedora44 source name
+OK: PROXMOX_HOST referenced for ssh target
+OK: guard reads 'qm config' (not just qm status)
+OK: guard parses '^name:' line from qm config
+OK: guard checks '^template:' line
+OK: guard checks '^scsi0:' line
+OK: guard compares existing name to $TPL_NAME
+OK: captures 'qm importdisk' stdout into a shell variable
+OK: parses imported disk name (unused*:local-lvm:vm-*)
+OK: scsi0 attach does NOT hardcode 'vm-...-disk-0' literal
+OK: scsi0 attach references the parsed disk variable
+OK: bootstrap does NOT attach '--ide2 <storage>:cloudinit' (dual-cidata SSH-timeout regression)
+OK: guard detects '^ide2:' in existing template config
+OK: guard runs 'qm set $SRC_VMID --delete ide2' to self-heal
+OK: ide2 repair runs before the success-path 'exit 0'
+OK: bootstrap runs 'qm resize $SRC_VMID scsi0 +NG' (additive grow)
+OK: resize runs after scsi0 attach and before qm template
+OK (skip): shellcheck not installed
+OK: PVE 9 verbatim DEBUG.md line → got='vm-9001-disk-1' expected='vm-9001-disk-1'
+OK: PVE 8 legacy form → got='vm-9001-disk-1' expected='vm-9001-disk-1'
+OK: multi-line noisy stream with PVE 9 result buried at end → got='vm-9001-disk-1' expected='vm-9001-disk-1'
+OK: adversarial mid-line 'unused0' lookalike (must NOT match) → got='' expected=''
+PASS: 19/19
+OK: docs/runbooks/cloudflare-access.md exists and is non-empty (chars=5953)
+OK: runbook states the load-bearing Access-before-ingress ordering (missing=[])
+OK: runbook requires per-host self-hosted apps (not a wildcard) (missing=[])
+OK: runbook pins the identity policy (Google IdP + MFA + single allow + deny) (missing=[])
+OK: runbook specifies the per-host ingress target + staging-only noTLSVerify (missing=[])
+OK: runbook excludes Plex from the tunnel/Access (mentions=True, excluded=True)
+PASS: 6/6
+OK: module dir exists at /home/user/Work/homelab/tofu/modules/dev_vm
+OK: required files present (missing=[])
+OK: tofu validate ([32m[1mSuccess![0m The configuration is valid.[0m)
+OK: variable os has validation accepting the three short-names
+OK: main.tf has initialization with ip_config/ipv4/address=dhcp
+OK: no consumer cidata variables leaked (found=[])
+PASS: 6/6
+OK: ansible/requirements.yml exists at /home/user/Work/homelab/ansible/requirements.yml
+OK: ansible/requirements.yml is structurally valid YAML (no_tabs=True roles_key=True has_item=True)
+OK: requirements.yml lists a role src/name = geerlingguy.docker
+OK: geerlingguy.docker pinned to an exact version (version='8.0.0')
+OK: requirements.yml lists a collection name = community.general
+OK: community.general pinned to an exact version (version='13.2.0')
+PASS: 6/6
+OK: community.general vendored at ansible/galaxy_roles/ansible_collections/community/general with MANIFEST.json + plugins/modules/xml.py
+OK: vendored community.general version matches requirements.yml pin (pinned='13.2.0' installed='13.2.0')
+OK: vendored community.general tracked in git (premise sibling_role_tracked=True manifest=True xml_module=True)
+OK: ansible.cfg collections_path covers 'galaxy_roles' (entries=['galaxy_roles'])
+PASS: 4/4
+OK: ansible.cfg roles_path includes both 'roles' and 'galaxy_roles' (entries=['roles', 'galaxy_roles'])
+OK: geerlingguy.docker vendored at ansible/galaxy_roles/geerlingguy.docker with tasks/main.yml
+OK: vendored geerlingguy.docker version matches requirements.yml pin (pinned='8.0.0' installed='8.0.0')
+OK: ansible/.ansible-lint exclude_paths covers galaxy_roles/ (exclude_paths=True galaxy_listed=True)
+OK: justfile `galaxy` recipe installs requirements.yml into galaxy_roles (recipe=True install_cmd=True)
+PASS: 5/5
+OK: root justfile exists (path=justfile)
+OK: justfile defines ['default', 'plan', 'apply', 'fmt', 'play', 'gen-inventory', 'test'] as recipe headers (missing=[])
+OK: default recipe is `@just --list` and the first recipe (body=True, first=True)
+OK: test recipe body runs `python scripts/run_gate.py` (the full offline gate)
+OK: plan/apply/fmt/destroy carry [working-directory: 'tofu'] and play carries 'ansible' (bad=[])
+OK: mise.toml [tools] pins bare `just` (value='1.53.0', parsed=(1, 53), floor>=(1, 38))
+OK: justfile defines ['infra', 'config', 'provision', 'destroy'] composite recipes (missing=[])
+OK: provision depends on apply/gen-inventory/play (deps='(apply approve) gen-inventory play', missing=[])
+OK: infra depends on apply (deps='(apply approve)')
+OK: config depends on gen-inventory/play (deps='gen-inventory play', missing=[])
+OK: apply auto-approve hatch wired (AUTO_decl=True, approve_param=True, gated_flag=True)
+OK: justfile defines ['build', 'build-all', 'bootstrap'] template recipes (missing=[])
+OK: build takes an `os` param and runs `scripts/build_template.sh {{os}}`
+OK: bootstrap takes an `os` param and runs `scripts/bootstrap_cloud_template.sh {{os}}`
+OK: build-all depends on build for ['ubuntu26', 'fedora', 'windows11'] (deps='(build "ubuntu26") (build "fedora") (build "windows11")', build=True, missing_os=[])
+PASS: 15/15
+OK: module dir exists at /home/user/Work/homelab/tofu/modules/lxc_service
+OK: required files present (missing=[])
+OK: resource is proxmox_virtual_environment_container
+OK: variable unprivileged defaults true
+OK: versions.tf pins bpg/proxmox >= 0.108.0
+OK: dynamic device_passthrough gated on var.device_passthroughs
+OK: dynamic mount_point gated on var.bind_mounts
+OK: dynamic idmap gated on local.idmap_entries (from var.gid_maps + var.uid_maps)
+OK: idmap type literals are gid/uid (gid=True uid=True no_bad=True)
+OK: idmap gid tiling gap-free + 1:1 punches at 44/993 (missing=set())
+OK: uid map is single full-offset tile 0->100000 size 65536
+OK: idmap derived from values(local.host_gids), no GID literals in main.tf
+OK: module plex wired (missing=[])
+OK: module plex passes nesting = true
+OK: docker_host keyctl enabled (features wires var.keyctl=True, docker_host passes keyctl=true=True)
+OK: operator ssh keys wired into both module calls (var_declared=True missing=[])
+OK: plex outputs present (missing=[])
+OK: tofu validate ([32m[1mSuccess![0m The configuration is valid.[0m)
+PASS: 18/18
+OK: mise.toml exists and parses as TOML
+OK: [tools] pins ['opentofu', 'packer', 'python', 'pipx:ansible'] with non-empty versions (bad=[])
+OK: [tools] pins the `just` task runner (value='1.53.0')
+OK: mise.toml has no [tasks.*] blocks (migrated to the justfile) (found=[])
+OK: [env] has PROXMOX_VE_ENDPOINT + PROXMOX_VE_INSECURE and _.python.venv(path=.venv, create=true) (endpoint=True, insecure=True, venv=True)
+OK: mise.local.toml.example exists and is tracked (exists=True, tracked=True)
+OK: mise.local.toml ignored (exit 0, want 0) and mise.local.toml.example NOT ignored (exit 1, want 1)
+OK: no .envrc remains (on_disk=[], tracked=[], gitignore_block=False)
+OK: no plaintext secrets committed (mise.toml leaks=[], .example non-placeholder=[])
+OK: docs/runbooks/acceptance-validation.md documents the rebuild cycle + adversarial WAN-block (missing=[])
+PASS: 10/10
+OK: packer validate -only=proxmox-clone.ubuntu26 . (The configuration is valid.)
+OK: packer validate -only=proxmox-clone.fedora . (The configuration is valid.)
+OK: packer validate -only=proxmox-iso.windows11 . (Warning: A checksum of 'none' was specified. Since ISO files are so big, | a checksum is highly recommended. |  |   on windows11.pkr.hcl line 6: |   (source code not available) |  |  | The configuration is valid.)
+OK: ubuntu26.pkr.hcl: template_name = "pkr-ubuntu26"
+OK: ubuntu26.pkr.hcl: vm_id = 9100
+OK: fedora.pkr.hcl: template_name = "pkr-fedora-workstation"
+OK: fedora.pkr.hcl: vm_id = 9101
+OK: windows11.pkr.hcl: template_name = "pkr-win11"
+OK: windows11.pkr.hcl: vm_id = 9102
+OK: required_plugins.proxmox ~> 1.2 declared in ['_variables.pkr.hcl'] (want exactly 1)
+PASS: 3/3
+OK: ubuntu26: zero boot_command in code lines (found 0)
+OK: ubuntu26: zero http_directory in code lines (found 0)
+OK: ubuntu26: exactly one additional_iso_files block with cd_label = "cidata" (found 1 of 1 total)
+OK: ubuntu26: cd_files cite ${path.root}/seed/ubuntu26/{user-data,meta-data}
+OK: ubuntu26: seed source files exist: /home/user/Work/homelab/packer/seed/ubuntu26/{user-data,meta-data}
+OK: fedora: zero boot_command in code lines (found 0)
+OK: fedora: zero http_directory in code lines (found 0)
+OK: fedora: exactly one additional_iso_files block with cd_label = "cidata" (found 1 of 1 total)
+OK: fedora: cd_files cite ${path.root}/seed/fedora/{user-data,meta-data}
+OK: fedora: seed source files exist: /home/user/Work/homelab/packer/seed/fedora/{user-data,meta-data}
+PASS: 10/10
+OK: ubuntu26 last-shell: cloud-init clean
+OK: ubuntu26 last-shell: machine-id truncate
+OK: ubuntu26 last-shell: ssh host keys removal
+OK: fedora last-shell: cloud-init clean
+OK: fedora last-shell: machine-id truncate
+OK: fedora last-shell: ssh host keys removal
+OK: fedora has earlier 'dnf install -y cloud-init' provisioner
+OK: windows11: pre-sysprep sshd verifier (idx=2) precedes sysprep (idx=3)
+PASS: 4/4
+OK: windows11.pkr.hcl: communicator = "winrm"
+OK: windows11.pkr.hcl: winrm_use_ssl = false
+OK: windows11.pkr.hcl: winrm_username = "user"
+OK: windows11.pkr.hcl: winrm_password = "password"
+OK: windows11.pkr.hcl: winrm_timeout = "4h"
+OK: autounattend.xml: winrm quickconfig
+OK: autounattend.xml: TCP/5985 firewall rule
+OK: provisioner order install(0) < verify(2) < sysprep(3)
+PASS: 3/3
+OK: boot_iso count=1 (expect 1), additional_iso_files count=2 (expect 2)
+OK: boot_iso targets local:iso/Win11_24H2_EnglishInternational_x64.iso on SATA
+OK: exactly one additional_iso_files for virtio-win-0.1.262.iso on SATA (found 1)
+OK: exactly one additional_iso_files uses iso_url+iso_download_pve for autounattend-win11.iso (found 1)
+OK: bios = "ovmf"
+OK: machine = "q35"
+OK: tpm_config version v2.0
+OK: efi_config pre_enrolled_keys
+PASS: 5/5
+OK: module plex bind_mounts parse (entries=5, known_present=['"/tank/Media"', '"/tank/Server/AppData/plex"'])
+OK: module plex has exactly one bind_mounts entry pairing host_path "/mnt/plex-transcode" with ct_path "/transcode" (host_path matches=1, paired=1)
+OK: the /transcode bind entry sets read_only = false (read_only='false')
+OK: tofu host_path for /transcode equals the runbook fstab tmpfs target (runbook='/mnt/plex-transcode', tofu=['/mnt/plex-transcode'])
+OK: the /mnt/plex-transcode bind is scoped to module plex (in_plex=True, other_modules=[], in_module_default=False, bind_mounts_default_parsed=True)
+PASS: 5/5
+OK: docs/runbooks/plex-ramdisk.md exists and is non-empty (chars=7021)
+OK: runbook carries the exact fstab tmpfs line (opts='size=4G,mode=0755,uid=100999,gid=100991', missing=[])
+OK: runbook explains the shifted-id (+100000) ownership rationale (missing=[])
+OK: runbook justifies the fixed size=4G cap for host stability (cap=True, stability=True, graceful=True)
+OK: runbook scopes the host apply as an operator step (mkdir/fstab/mount -a on pve) (missing=[])
+OK: runbook documents findmnt/stat verification of the mounted tmpfs + shifted owner (missing=[])
+PASS: 6/6
+OK: plex_uid=999 and plex_gid=991 pinned as independent ints
+OK: plex gid/uid pinned before the plexmediaserver install
+OK: state-dir ownership asserted on uid AND gid independently
+OK: the state-dir ownership gate precedes the plexmediaserver install
+OK: fail_msg names the host-side chown with both shifted ids
+OK: plex-claim.md reads the uid and the gid separately
+OK: no uid==gid chown remains in plex-claim.md (1 parsed)
+OK: the early stat of plex_state_dir precedes both id pins
+OK: the stop task precedes both id pins (F1)
+OK: the chown sits after the uid pin and before the ownership gate
+OK: the stop and the chown both carry a plex_chown_needed predicate
+OK: the chown is the post-order `command: chown -R` form with changed_when
+OK: plex_chown_needed derives from plex_state_premigration_stat, not from getent
+    chown_needed fresh rebuild (user absent, dir 64000:64000) -> False
+    chown_needed steady state (user 64000, dir 64000:64000) -> False
+    chown_needed migration run (user 999, dir 999:991) -> True
+    chown_needed interrupted recovery (user 64000, dir 64000:991) -> True
+    chown_needed host-side recovery (user 999, dir already 64000:64000) -> False
+    chown_needed state dir absent (bind mount missing) -> False
+OK: plex_chown_needed matches the §6.3 state table on all 6 rows at 64000:64000
+OK: plex_chown_needed returns real bools and discriminates across the table
+OK: plex_chown_needed is FALSE at the pinned defaults 999:991 (inert)
+    chown_needed dir already at the probe ids -> False
+    chown_needed only the gid is stale (the uid==gid chown's own leftovers) -> True
+    chown_needed only the uid is stale -> True
+OK: plex_chown_needed reads uid against plex_uid and gid against plex_gid independently at 4242:4243 (defaults-independent)
+    stop fresh rebuild (user absent, dir 64000:64000) -> False
+    stop steady state (user 64000, dir 64000:64000) -> False
+    stop migration run (user 999, dir 999:991) -> True
+    stop interrupted recovery (user 64000, dir 64000:991) -> True
+    stop host-side recovery (user 999, dir already 64000:64000) -> True
+    stop state dir absent (bind mount missing) -> False
+OK: the stop's real when: composes plex_chown_needed across the state table
+
+18/18 checks passed
+re-exec: /home/user/Work/homelab/.venv/bin/python
+     ->  /home/user/.local/share/mise/installs/pipx-ansible-core/2.21.1/venvs/ansible-core/bin/python
+OK: tofu/versions.tf floors bpg/proxmox at >= 0.108.0 (source=True, floor=True)
+OK: tofu/providers.tf has ssh{} block with agent=true (block=True, PROXMOX_VE_SSH_USERNAME=True)
+OK: root config has an auth-exercising proxmox_* data source
+OK: host-bootstrap.md covers token/SSH/GID/port-forward (missing=[])
+OK: root@pam ticket is the sole API auth for device passthrough (user=root@pam True, password placeholder True, api_token absent True, providers.tf documents it True)
+OK: preflight guards PROXMOX_VE_API_TOKEN in the live env (flags_token=True, empty_ok=True, ticket_ok=True, wired_into_apply=True)
+OK: no secret literals in committed HCL (leaks=[])
+PASS: 7/7
+OK: 2a: README mentions 'cloud image'
+OK: 2b: README mentions proxmox-clone (True) AND proxmox-iso (True)
+OK: 2c: README mentions NoCloud (True) AND cidata (True)
+OK: 2d: README references all 3 templates: ['pkr-ubuntu26', 'pkr-fedora-workstation', 'pkr-windows11']
+OK: 2e: README has 'build_template.sh ubuntu26'
+OK: 2f: README has 'build_template.sh fedora'
+OK: 2g: README has 'build_template.sh windows11'
+OK: 2h: README mentions bootstrap_cloud_template.sh (True) + tpl-cloud-ubuntu26 (True) + tpl-cloud-fedora44 (True)
+OK: 2i: README mentions all 4 env vars: ['PROXMOX_HOST', 'PROXMOX_USER', 'PROXMOX_TOKEN_ID', 'PROXMOX_TOKEN_SECRET']
+OK: 2j: README contains none of ['autoinstall', 'kickstart', 'boot_command', 'http_directory']
+OK: 2k: README first line is '# Home Lab Auto Deploy' (got '# Home Lab Auto Deploy')
+PASS: 11/11
+OK: 1a: git ls-files packer/http empty (found 0 entries: [])
+OK: 1b: all 4 seed files tracked: ['packer/seed/ubuntu26/user-data', 'packer/seed/ubuntu26/meta-data', 'packer/seed/fedora/user-data', 'packer/seed/fedora/meta-data']
+OK: 1c: scripts tracked: ['scripts/bootstrap_cloud_template.sh', 'scripts/test_pkr_cloud_seed.py']
+OK: 1d: git check-ignore --no-index packer/downloaded_iso_path/foo.qcow2 (exit 0, want 0)
+OK: 1e: git check-ignore --no-index packer/downloaded_iso_path (exit 0, want 0)
+OK: 1f: git check-ignore --no-index packer/seed/ubuntu26/user-data (exit 1, want 1 — NOT ignored)
+OK: 1g: git check-ignore --no-index scripts/bootstrap_cloud_template.sh (exit 1, want 1 — NOT ignored)
+PASS: 7/7
+OK: docs/runbooks/das-zfs-migration.md exists and is non-empty (chars=8573)
+OK: runbook documents discovery-based import (missing=[])
+OK: runbook documents the verify-media-intact acceptance gate
+OK: runbook documents USB/ZFS operational caveats (missing=[])
+OK: runbook wires /tank/Media -> /media bind with interim placeholder (bind=True, placeholder=True)
+PASS: 5/5
+OK: host-bootstrap.md delegates the punch GIDs in /etc/subgid (missing=[])
+OK: host-bootstrap.md states /etc/subuid needs no extra delegation
+OK: host-bootstrap.md shows the newgidmap startup-failure symptom
+OK: das-zfs-migration.md idmap-fallback note references the /etc/subgid delegation / newgidmap failure
+PASS: 4/4
+OK: docs/runbooks/tailscale-split-dns.md exists and is non-empty (chars=5500)
+OK: runbook maps the dashboard hosts -> 192.168.1.111 via Tailscale split-DNS (missing=[])
+OK: runbook documents the on/off-tailnet dual-path (missing=[])
+OK: runbook notes both paths serve the same LE wildcard cert (same_cert=True)
+OK: runbook covers both IPv4 and IPv6 direct resolution (v4=True, v6=True)
+OK: runbook keeps off-tailnet Plex resolution unaffected (mentions=True, preserved=True, not_broken=True)
+PASS: 6/6
+OK: tofu/locals.tf template_ids = {'ubuntu26': 9100, 'fedora': 9101, 'win11': 9102}
+OK: ubuntu26: locals=9100, packer=9100
+OK: fedora: locals=9101, packer=9101
+OK: win11: locals=9102, packer=9102
+PASS: 2/2
+OK: docker_host role + templates present (missing=[])
+OK: web(:80 plain)/websecure(:443), no entrypoint redirect, plex-web upgrade (web=True, websecure=True, no_ep_redirect=True, plex_web_redirect=True)
+OK: single DNS-01 certresolver le-dns-cf (cf-dns01=True, le-http_gone=True)
+OK: caServer wired to acme_ca_server prod toggle (caServer=True, defined=True, prod=True, not_staging=True)
+OK: router resolver is variable-driven (var=True, hardcoded=False)
+OK: middlewares defined (redirect-to-https=True, security-headers=True, internal-allowlist=True)
+OK: internal-allowlist carries 192.168.1.0/24 + 100.64.0.0/10 + fd7a:115c:a1e0::/48 + 172.16.0.0/12
+OK: whoami internal-only (service=True, image=True, internal-allowlist=True, not_public=True)
+OK: docker_host tasks idempotent + builtin-only (unguarded=[], community=False)
+OK: no plaintext secret literals in role (leaks=[])
+OK: site.yml applies docker_host role to the docker_host group
+OK: plex public router present (host=True, websecure=True, service=True, var_resolver=True, hardcoded=False)
+OK: plex service backend -> 192.168.1.110:32400 (service=True, literal=False, var=True)
+OK: plex router public (no allowlist), whoami still internal (plex_no_allowlist=True, plex_headers=True, whoami_allowlist=True)
+OK: public_services is exactly [plex] (entries=['plex'])
+OK: extras services present (missing=[])
+OK: extras routers internal-allowlisted + var-driven resolver (failures=[], hardcoded=False)
+OK: prometheus never public (not_public=True, router_allowlist=True)
+OK: homepage sets HOMEPAGE_ALLOWED_HOSTS for its proxied host
+OK: internal_services lists all internal services ['grafana', 'homepage', 'prometheus', 'traefik', 'uptime-kuma', 'whoami'] (entries=['homepage', 'uptime-kuma', 'grafana', 'prometheus', 'traefik', 'whoami'])
+OK: homepage siteMonitor targets are internal service URLs (monitors=['http://grafana:3000', 'http://prometheus:9090', 'http://uptime-kuma:3001'], non_internal=[])
+OK: CF/TUNNEL tokens sourced from vault (cf_dns=True, buggy_ref=False, tunnel=True)
+OK: cloudflared service block (present=True, image_var=True, command=True, no_ports=True, depends_on_traefik=True)
+OK: wildcard tls.domains on traefik-dashboard, gated to le-dns-cf, off whoami (gate=True, main=True, sans=True, whoami_gone=True)
+OK: insecure dashboard removed (no_8080=True, no_port_default=True, insecure_absent=True, dashboard_on=True)
+OK: traefik-dashboard router present (host=True, websecure=True, api_internal=True, allowlist=True, headers=True, var_resolver=True, hardcoded=False)
+OK: traefik image pinned to concrete v3.x.y (image='traefik:v3.7.5', concrete=True, not_stale=True, not_floating=True)
+OK: all 9 docker_host_*_image defaults concrete-pinned (floating=[])
+OK: group_vars acme_resolver is le-dns-cf (sole DNS-01 resolver)
+OK: tunnel <svc>-web routers present + allowlisted, no tls (failures=[], traefik_dashboard_web=True)
+PASS: 30/30
+[0m[1mInitializing modules...[0m
+
+[0m[1mInitializing provider plugins...[0m
+- Reusing previous version of bpg/proxmox from the dependency lock file
+- Using previously-installed bpg/proxmox v0.110.0
+
+[0m[1m[32mOpenTofu has been successfully initialized![0m[32m[0m
+[0m[32m
+You may now begin working with OpenTofu. Try running "tofu plan" to see
+any changes that are required for your infrastructure. All OpenTofu commands
+should now work.
+
+If you ever set or change modules or backend configuration for OpenTofu,
+rerun this command to reinitialize your working directory. If you forget, other
+commands will detect it and remind you to do so if necessary.[0m
+[32m[1mSuccess![0m The configuration is valid.[0m
+[2mWARNING  Skipped installing old role dependencies due to running in offline mode.[0m
+[2mWARNING  Skipped installing collection dependencies due to running in offline mode.[0m
+[2mWARNING  Ignored exception from JinjaRule.matchyaml while processing group_vars/all/vault.yml (vars): Decryption failed (no vault secrets were found that could decrypt).[0m
+[2mWARNING  Ignored exception from VariableNamingRule.matchyaml while processing group_vars/all/vault.yml (vars): Decryption failed (no vault secrets were found that could decrypt).[0m
+
+[32mPassed[0m: 0 failure(s), 0 warning(s) in 31 files processed of 35 encountered. Profile 'production' was required, and it passed.
+[WARNING]: Found both group and host with same name: plex
+
+playbook: site.yml
+
+=== shape: scripts/test_acceptance_validation_runbook_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_acceptance_validation_runbook_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_ansible_layout_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_ansible_layout_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_build_template_runner.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_build_template_runner.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_cloudflare_access_runbook_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_cloudflare_access_runbook_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_dev_vm_module_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_dev_vm_module_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_galaxy_requirements_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_galaxy_requirements_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_galaxy_vendored_collection_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_galaxy_vendored_collection_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_galaxy_vendored_role_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_galaxy_vendored_role_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_justfile_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_justfile_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_lxc_service_module_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_lxc_service_module_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_mise_config_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_mise_config_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_packer_hcl_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_packer_hcl_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_pkr_cloud_seed.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_pkr_cloud_seed.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_pkr_seal_step.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_pkr_seal_step.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_pkr_win11_communicator.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_pkr_win11_communicator.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_pkr_win11_iso_attachment.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_pkr_win11_iso_attachment.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_plex_ramdisk_bind_mount_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_plex_ramdisk_bind_mount_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_plex_ramdisk_runbook_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_plex_ramdisk_runbook_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_plex_state_ownership_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_plex_state_ownership_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_provider_auth_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_provider_auth_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_readme_cloud_image_flow.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_readme_cloud_image_flow.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_repo_artifacts.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_repo_artifacts.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_runbook_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_runbook_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_subgid_delegation_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_subgid_delegation_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_tailscale_split_dns_runbook_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_tailscale_split_dns_runbook_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_template_id_contract.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_template_id_contract.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== shape: scripts/test_traefik_config_shape.py ===
+$ /home/user/Work/homelab/.venv/bin/python /home/user/Work/homelab/scripts/test_traefik_config_shape.py  (cwd=/home/user/Work/homelab)
+-> OK (exit 0)
+
+=== tofu fmt -check ===
+$ mise exec -- tofu fmt -check -recursive  (cwd=/home/user/Work/homelab/tofu)
+-> OK (exit 0)
+
+=== tofu init ===
+$ mise exec -- tofu init -backend=false -input=false  (cwd=/home/user/Work/homelab/tofu)
+-> OK (exit 0)
+
+=== tofu validate ===
+$ mise exec -- tofu validate  (cwd=/home/user/Work/homelab/tofu)
+-> OK (exit 0)
+
+=== ansible-lint --offline ===
+$ mise exec -- ansible-lint --offline --profile production  (cwd=/home/user/Work/homelab/ansible)
+-> OK (exit 0)
+
+=== ansible-playbook --syntax-check ===
+$ mise exec -- ansible-playbook --syntax-check site.yml  (cwd=/home/user/Work/homelab/ansible)
+-> OK (exit 0)
+
+============================================================
+GATE PASS: 32/32 steps

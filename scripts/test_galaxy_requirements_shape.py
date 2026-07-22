@@ -30,6 +30,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 REQUIREMENTS = REPO_ROOT / "ansible" / "requirements.yml"
 ROLE = "geerlingguy.docker"
+COLLECTION = "community.general"
 
 
 def _try_yaml():
@@ -51,6 +52,27 @@ def _geerlingguy_item(body: str):
     for item in re.findall(r"(?ms)^[ \t]*-[ \t]+.*?(?=^[ \t]*-[ \t]+|\Z)", body):
         if re.search(
             r"""(?m)(?:src|name)\s*:\s*["']?geerlingguy\.docker["']?\s*$""", item
+        ):
+            return item
+    return None
+
+
+def _collection_item(body: str):
+    """Return the `collections:` list item text naming community.general, or None.
+
+    The search is SCOPED to the block under a top-level `collections:` key
+    (from that key to the next top-level, column-0 key or EOF). Scoping matters
+    for non-vacuity: it means a `roles:` entry can never satisfy a collection
+    check, and the collection's `name:` (collections use `name:`, not `src:`)
+    is matched against community.general specifically, not any list bullet.
+    """
+    m = re.search(r"(?ms)^collections\s*:\s*$(?P<block>.*?)(?=^\S|\Z)", body)
+    if not m:
+        return None
+    block = m.group("block")
+    for item in re.findall(r"(?ms)^[ \t]*-[ \t]+.*?(?=^[ \t]*-[ \t]+|\Z)", block):
+        if re.search(
+            r"""(?m)(?:name|src)\s*:\s*["']?community\.general["']?\s*$""", item
         ):
             return item
     return None
@@ -122,12 +144,45 @@ def test_geerlingguy_docker_exact_pin() -> bool:
     return exact
 
 
+def test_lists_community_general() -> bool:
+    """A collections entry must name community.general (needed for community.general.xml)."""
+    if not REQUIREMENTS.is_file():
+        print("FAIL: requirements.yml lists community.general (file missing)")
+        return False
+    ok = _collection_item(REQUIREMENTS.read_text()) is not None
+    print(f"{'OK' if ok else 'FAIL'}: requirements.yml lists a collection name = {COLLECTION}")
+    return ok
+
+
+def test_community_general_exact_pin() -> bool:
+    """The community.general entry must pin an EXACT version (not latest/empty)."""
+    if not REQUIREMENTS.is_file():
+        print("FAIL: community.general is pinned to an exact version (file missing)")
+        return False
+    item = _collection_item(REQUIREMENTS.read_text())
+    if item is None:
+        print("FAIL: community.general is pinned to an exact version (entry not found)")
+        return False
+    m = re.search(r"""(?m)^\s*version\s*:\s*["']?(?P<v>[^"'\s#]+)""", item)
+    version = m.group("v") if m else ""
+    # An exact pin is a concrete version (starts with a digit, optional leading
+    # 'v'); `latest`, a floating range, or an empty value must NOT qualify.
+    exact = bool(re.fullmatch(r"v?\d[\w.\-+]*", version)) and version.lower() != "latest"
+    print(
+        f"{'OK' if exact else 'FAIL'}: community.general pinned to an exact version "
+        f"(version={version!r})"
+    )
+    return exact
+
+
 def main() -> int:
     results = [
         test_requirements_file_exists(),
         test_requirements_valid_yaml(),
         test_lists_geerlingguy_docker(),
         test_geerlingguy_docker_exact_pin(),
+        test_lists_community_general(),
+        test_community_general_exact_pin(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

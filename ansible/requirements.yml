@@ -14,3 +14,17 @@
 roles:
   - src: geerlingguy.docker
     version: 8.0.0
+
+# Ansible Galaxy collection requirements.
+#
+# community.general provides community.general.xml, which a later step uses to
+# edit Plex's Preferences.xml (TranscoderTempDirectory) idempotently — the repo
+# otherwise constrains to ansible.builtin, so this is a deliberate, documented
+# dependency. Pinned to an EXACT version (never `latest`) for reproducibility,
+# mirroring the exact-pin convention above and across opentofu / packer / just.
+# Installed via `just galaxy` (ansible-galaxy collection install). Declaring it
+# here does not yet reference it, so ansible-playbook --syntax-check is
+# unaffected until a role actually calls community.general.xml.
+collections:
+  - name: community.general
+    version: 13.2.0

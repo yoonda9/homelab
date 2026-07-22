@@ -49,12 +49,14 @@ play:
 play-prod:
     ansible-playbook site.yml -e docker_host_acme_reset=true
 
-# Install/refresh the pinned Galaxy roles (ansible/requirements.yml) into the
-# vendored ansible/galaxy_roles/ dir. The result is committed so the offline
-# gate (just test) and `just play` resolve the roles on disk with no network.
+# Install/refresh the pinned Galaxy roles AND collections (ansible/requirements.yml)
+# into the vendored ansible/galaxy_roles/ dir (collections land under
+# galaxy_roles/ansible_collections/). The result is committed so the offline gate
+# (just test) and `just play` resolve them on disk with no network.
 [working-directory: 'ansible']
 galaxy:
     ansible-galaxy role install -r requirements.yml -p galaxy_roles
+    ansible-galaxy collection install -r requirements.yml -p galaxy_roles
 
 # Render ansible/inventory/hosts.yml from `tofu output` (runs from repo root).
 gen-inventory:
