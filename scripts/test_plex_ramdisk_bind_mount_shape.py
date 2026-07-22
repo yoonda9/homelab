@@ -49,10 +49,28 @@ def _strip_comments(body: str) -> str:
     return re.sub(r"#[^\n]*", "", body)
 
 
-def _module_body(body: str, name: str) -> str:
-    """Inner text of `module "<name>" { ... }`, comments stripped ('' if absent)."""
-    block = re.search(r'module\s+"%s"\s*\{(.*?)\n\}' % re.escape(name), body, re.DOTALL)
+def _block_body(body: str, kind: str, name: str) -> str:
+    """Inner text of `<kind> "<name>" { ... }`, comments stripped ('' if absent).
+
+    Scoping to the NAMED block before looking for an attribute is load-bearing:
+    a bare `attr = [` regex over a whole HCL file binds to the FIRST match, not
+    the declaration meant, so a guard written that way can be structurally
+    incapable of firing (mem-1784757961-4fb7 — `default = [` matched
+    `device_passthroughs` and made the module-default clause always False)."""
+    block = re.search(
+        r'%s\s+"%s"\s*\{(.*?)\n\}' % (re.escape(kind), re.escape(name)), body, re.DOTALL
+    )
     return _strip_comments(block.group(1)) if block else ""
+
+
+def _module_body(body: str, name: str) -> str:
+    """Inner text of `module "<name>" { ... }` in main.tf."""
+    return _block_body(body, "module", name)
+
+
+def _variable_body(body: str, name: str) -> str:
+    """Inner text of `variable "<name>" { ... }` in a module's variables.tf."""
+    return _block_body(body, "variable", name)
 
 
 def _module_names(body: str) -> list:
@@ -197,15 +215,23 @@ def test_transcode_bind_scoped_to_plex_module() -> bool:
         for m in _module_names(body)
         if m != "plex" and _transcode_entries(_bind_mounts(body, m))
     )
-    default_listing = _bracketed(
-        _strip_comments(_read(LXC_VARIABLES_TF)), "default"
+    # Scoped to `variable "bind_mounts"`, NOT the whole file: the first
+    # `default = [` in variables.tf belongs to device_passthroughs.
+    var_body = _variable_body(_read(LXC_VARIABLES_TF), "bind_mounts")
+    # Premise: the block was found and does declare a `default`. Without this,
+    # a renamed variable would empty the listing and silently re-vacuate the
+    # clause — the exact failure this check was rewritten to close.
+    premise = bool(re.search(r"\bdefault\s*=", var_body))
+    default_entries = _transcode_entries(
+        [_attrs(e) for e in _objects(_bracketed(var_body, "default"))]
     )
-    in_default = HOST_PATH in default_listing
+    in_default = bool(default_entries)
     in_plex = bool(_transcode_entries(_bind_mounts(body, "plex")))
-    ok = in_plex and not elsewhere and not in_default
+    ok = premise and in_plex and not elsewhere and not in_default
     print(
         f"{'OK' if ok else 'FAIL'}: the {HOST_PATH} bind is scoped to module plex "
-        f"(in_plex={in_plex}, other_modules={elsewhere}, in_module_default={in_default})"
+        f"(in_plex={in_plex}, other_modules={elsewhere}, in_module_default={in_default}, "
+        f"bind_mounts_default_parsed={premise})"
     )
     return ok
 
