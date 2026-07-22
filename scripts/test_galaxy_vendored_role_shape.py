@@ -7,8 +7,10 @@ once `docker_host` references it in Step 2 — the gate never reaches Galaxy.
 
 This test guards the "make it resolvable" wiring:
 
-- `ansible/ansible.cfg` `roles_path` includes a dedicated `galaxy_roles` dir
-  (alongside the existing `roles` dir, so our own roles still resolve);
+- `ansible/ansible.cfg` `[defaults]` `roles_path` includes a dedicated
+  `galaxy_roles` dir (alongside the existing `roles` dir, so our own roles still
+  resolve). The section is part of the check: the same line under
+  `[ssh_connection]` is silently ignored and the role stops resolving;
 - the pinned role is vendored on disk at
   `ansible/galaxy_roles/geerlingguy.docker` as a real role (has `tasks/main.yml`);
 - the vendored version matches the EXACT pin in `ansible/requirements.yml`
@@ -28,6 +30,7 @@ actual inner content, not just a section opener. The real gate is the
 standalone __main__ exit code.
 """
 
+import configparser
 import pathlib
 import re
 import sys
@@ -39,19 +42,41 @@ REQUIREMENTS = ANSIBLE_DIR / "requirements.yml"
 ANSIBLE_LINT_CFG = ANSIBLE_DIR / ".ansible-lint"
 JUSTFILE = REPO_ROOT / "justfile"
 GALAXY_DIR_NAME = "galaxy_roles"
+# The only ansible.cfg section in which Ansible honours roles_path. A key under
+# any other section is silently ignored (see _ini_value).
+DEFAULTS_SECTION = "defaults"
 ROLE = "geerlingguy.docker"
 VENDORED_ROLE = ANSIBLE_DIR / GALAXY_DIR_NAME / ROLE
 INSTALL_INFO = VENDORED_ROLE / "meta" / ".galaxy_install_info"
 
 
-def _roles_path_entries() -> list[str]:
-    """Return the colon-separated roles_path entries from ansible.cfg, or []."""
+def _ini_value(section: str, *keys: str) -> str:
+    """Return the first of `keys` set under `[section]` of ansible.cfg, or "".
+
+    SECTION-SCOPED on purpose. Ansible honours roles_path only under
+    `[defaults]`, so a whole-file `^roles_path\\s*=` regex reads as green over a
+    line that has drifted into `[ssh_connection]` — which is where an ini key
+    appended at end-of-file lands — while the role it is supposed to make
+    resolvable stops resolving. stdlib configparser reads this file directly;
+    `interpolation=None` keeps a literal `%` in a path from raising.
+    """
     if not ANSIBLE_CFG.is_file():
-        return []
-    m = re.search(r"(?m)^\s*roles_path\s*=\s*(?P<val>.+?)\s*$", ANSIBLE_CFG.read_text())
-    if not m:
-        return []
-    return [p.strip() for p in m.group("val").split(":") if p.strip()]
+        return ""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(ANSIBLE_CFG)
+    except configparser.Error:
+        return ""
+    for key in keys:
+        if parser.has_option(section, key):
+            return parser.get(section, key).strip()
+    return ""
+
+
+def _roles_path_entries() -> list[str]:
+    """Return the colon-separated `[defaults]` roles_path entries from ansible.cfg, or []."""
+    value = _ini_value(DEFAULTS_SECTION, "roles_path")
+    return [p.strip() for p in value.split(":") if p.strip()]
 
 
 def _pinned_version() -> str:
@@ -75,14 +100,14 @@ def _installed_version() -> str:
 
 
 def test_roles_path_includes_galaxy_dir() -> bool:
-    """ansible.cfg roles_path must include galaxy_roles AND keep the local roles dir."""
+    """ansible.cfg `[defaults]` roles_path must include galaxy_roles AND the local roles dir."""
     entries = _roles_path_entries()
     has_galaxy = GALAXY_DIR_NAME in entries
     has_local = "roles" in entries
     ok = has_galaxy and has_local
     print(
-        f"{'OK' if ok else 'FAIL'}: ansible.cfg roles_path includes both 'roles' and "
-        f"'{GALAXY_DIR_NAME}' (entries={entries})"
+        f"{'OK' if ok else 'FAIL'}: ansible.cfg [{DEFAULTS_SECTION}] roles_path includes "
+        f"both 'roles' and '{GALAXY_DIR_NAME}' (entries={entries})"
     )
     return ok
 

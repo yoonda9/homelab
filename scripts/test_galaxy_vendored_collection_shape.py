@@ -20,10 +20,14 @@ repo cannot keep offline:
   untracked and NOT gitignored, so `just galaxy`'s own comment — "The result is
   committed so the offline gate (just test) and `just play` resolve them on
   disk with no network" — was false for collections on every checkout but one;
-- `ansible/ansible.cfg` declares a `collections_path` covering `galaxy_roles`.
-  `roles_path` does not cover collections: without this key Ansible looks only
-  in `~/.ansible/collections` and `/usr/share/ansible/collections`, so a
-  committed-but-unreferenced tree still would not resolve with no network.
+- `ansible/ansible.cfg` declares a `collections_path` covering `galaxy_roles`,
+  UNDER `[defaults]`. `roles_path` does not cover collections: without this key
+  Ansible looks only in `~/.ansible/collections` and
+  `/usr/share/ansible/collections`, so a committed-but-unreferenced tree still
+  would not resolve with no network. The section matters as much as the value —
+  the same line under `[ssh_connection]` (where an appended-at-EOF key lands) is
+  silently ignored and the module stops resolving, so this file reads the key
+  section-scoped with `configparser` rather than by a whole-file regex.
 
 Dual-mode (module-level test_*()->bool + main()->int), stdlib only, mirroring
 scripts/test_galaxy_vendored_role_shape.py (mem-1781891042-4495). The gate
@@ -32,6 +36,7 @@ the `collections:` block so a `roles:` entry can never satisfy a collection
 check (mem-1781892715-142d). The real gate is the standalone __main__ exit code.
 """
 
+import configparser
 import json
 import pathlib
 import re
@@ -43,6 +48,9 @@ ANSIBLE_DIR = REPO_ROOT / "ansible"
 ANSIBLE_CFG = ANSIBLE_DIR / "ansible.cfg"
 REQUIREMENTS = ANSIBLE_DIR / "requirements.yml"
 GALAXY_DIR_NAME = "galaxy_roles"
+# The only ansible.cfg section in which Ansible honours roles_path /
+# collections_path. Keys under any other section are silently ignored.
+DEFAULTS_SECTION = "defaults"
 COLLECTION = "community.general"
 COLLECTIONS_ROOT = ANSIBLE_DIR / GALAXY_DIR_NAME / "ansible_collections"
 VENDORED_COLLECTION = COLLECTIONS_ROOT / "community" / "general"
@@ -99,16 +107,33 @@ def _is_tracked(path: pathlib.Path) -> bool:
     return proc.returncode == 0
 
 
-def _collections_path_entries() -> list[str]:
-    """Return the collections_path(s) entries from ansible.cfg, or []."""
+def _ini_value(section: str, *keys: str) -> str:
+    """Return the first of `keys` set under `[section]` of ansible.cfg, or "".
+
+    SECTION-SCOPED on purpose. Ansible honours these keys only under
+    `[defaults]`, so a whole-file `^key\\s*=` regex reads as green over a line
+    that has drifted into `[ssh_connection]` — which is exactly where an ini key
+    appended at end-of-file lands — while the module it is supposed to make
+    resolvable stops resolving. stdlib configparser reads this file directly;
+    `interpolation=None` keeps a literal `%` in a path from raising.
+    """
     if not ANSIBLE_CFG.is_file():
-        return []
-    m = re.search(
-        r"(?m)^\s*collections_paths?\s*=\s*(?P<val>.+?)\s*$", ANSIBLE_CFG.read_text()
-    )
-    if not m:
-        return []
-    return [p.strip() for p in m.group("val").split(":") if p.strip()]
+        return ""
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(ANSIBLE_CFG)
+    except configparser.Error:
+        return ""
+    for key in keys:
+        if parser.has_option(section, key):
+            return parser.get(section, key).strip()
+    return ""
+
+
+def _collections_path_entries() -> list[str]:
+    """Return the `[defaults]` collections_path(s) entries from ansible.cfg, or []."""
+    value = _ini_value(DEFAULTS_SECTION, "collections_path", "collections_paths")
+    return [p.strip() for p in value.split(":") if p.strip()]
 
 
 def test_collection_vendored_on_disk() -> bool:
@@ -154,15 +179,15 @@ def test_vendored_collection_tracked_in_git() -> bool:
 
 
 def test_ansible_cfg_collections_path() -> bool:
-    """ansible.cfg must declare a collections_path covering galaxy_roles/."""
+    """ansible.cfg `[defaults]` must declare a collections_path covering galaxy_roles/."""
     entries = _collections_path_entries()
     ok = any(
         e == GALAXY_DIR_NAME or e.rstrip("/").endswith("/" + GALAXY_DIR_NAME)
         for e in entries
     )
     print(
-        f"{'OK' if ok else 'FAIL'}: ansible.cfg collections_path covers "
-        f"'{GALAXY_DIR_NAME}' (entries={entries})"
+        f"{'OK' if ok else 'FAIL'}: ansible.cfg [{DEFAULTS_SECTION}] collections_path "
+        f"covers '{GALAXY_DIR_NAME}' (entries={entries})"
     )
     return ok
 
