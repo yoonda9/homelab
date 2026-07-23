@@ -58,6 +58,28 @@ resource "proxmox_virtual_environment_container" "this" {
   initialization {
     hostname = var.name
 
+    # Pin the CT's resolvers EXPLICITLY. Without this block PVE writes no
+    # `nameserver:`/`searchdomain:` key into /etc/pve/lxc/<id>.conf and instead
+    # copies the *PVE host's* /etc/resolv.conf into the container at create/start
+    # time. On this host that file is owned by Tailscale (see
+    # docs/runbooks/tailscale-split-dns.md), so it reads
+    # `nameserver 100.100.100.100` — MagicDNS, which is only routable from
+    # INSIDE the tailnet. The service CTs are not tailnet members, so every
+    # lookup hangs, `apt update` fails, and `just play` dies on the `common`
+    # role's first task. SSH still works (the inventory uses raw IPs), which is
+    # what makes the failure look selective. Diagnosed on CT 110 2026-07-23.
+    #
+    # Renders only when configured, mirroring the dynamic blocks below, so a
+    # bare instantiation with the empty defaults still plans clean.
+    dynamic "dns" {
+      for_each = length(var.dns_servers) > 0 || var.dns_domain != "" ? [1] : []
+      content {
+        # `servers` (list), NOT the deprecated singular `server`.
+        servers = var.dns_servers
+        domain  = var.dns_domain != "" ? var.dns_domain : null
+      }
+    }
+
     ip_config {
       ipv4 {
         address = var.ip_cidr

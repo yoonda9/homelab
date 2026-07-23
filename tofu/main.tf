@@ -27,6 +27,8 @@ module "docker_host" {
   ip_cidr          = local.net.docker_host_cidr
   gateway          = local.net.gateway
   bridge           = local.net.bridge
+  dns_servers      = local.net.dns_servers
+  dns_domain       = local.net.dns_domain
   template_file_id = proxmox_download_file.debian13_lxc.id
   nesting          = true
   # Running Docker in an UNPRIVILEGED LXC needs BOTH nesting=1 AND keyctl=1.
@@ -62,6 +64,8 @@ module "plex" {
   ip_cidr          = local.net.plex_cidr
   gateway          = local.net.gateway
   bridge           = local.net.bridge
+  dns_servers      = local.net.dns_servers
+  dns_domain       = local.net.dns_domain
   template_file_id = proxmox_download_file.debian13_lxc.id
   unprivileged     = true
   # The Debian 13 template ships systemd 257, which hangs on first boot in an

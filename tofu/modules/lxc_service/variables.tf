@@ -18,6 +18,21 @@ variable "gateway" {
   description = "IPv4 default gateway, e.g. \"192.168.1.1\"."
 }
 
+# Explicit per-CT DNS. Empty (the default) means the CT inherits the PVE host's
+# /etc/resolv.conf, which is NOT safe here — see the initialization.dns comment
+# in main.tf.
+variable "dns_servers" {
+  type        = list(string)
+  default     = []
+  description = "Resolvers written into the CT's /etc/resolv.conf, e.g. [\"192.168.1.1\", \"8.8.8.8\"]. Empty = inherit the PVE host's resolv.conf (see main.tf)."
+}
+
+variable "dns_domain" {
+  type        = string
+  default     = ""
+  description = "DNS search domain for the CT, e.g. \"home.arpa\". Empty = inherit the PVE host's search domain."
+}
+
 variable "node" {
   type    = string
   default = "pve"

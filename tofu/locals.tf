@@ -19,11 +19,20 @@ locals {
 
   # net — homelab L3 facts shared by every service CT: the gateway/bridge plus
   # the per-service static CIDRs (.110 plex, .111 docker-host).
+  #
+  # dns_servers is LAN-router-first with a public fallback, and must be set
+  # explicitly: with no per-CT DNS the containers inherit the PVE host's
+  # resolv.conf, which Tailscale owns (MagicDNS 100.100.100.100 — unroutable
+  # from a non-tailnet CT). Both resolvers verified answering from CT 110 on
+  # 2026-07-23. See the initialization.dns comment in
+  # modules/lxc_service/main.tf.
   net = {
     gateway          = "192.168.1.1"
     bridge           = "vmbr0"
     plex_cidr        = "192.168.1.110/24"
     docker_host_cidr = "192.168.1.111/24"
+    dns_servers      = ["192.168.1.1", "8.8.8.8"]
+    dns_domain       = "home.arpa"
   }
 
   # host_gids — render/video group GIDs as they exist on `pve` (verified via
