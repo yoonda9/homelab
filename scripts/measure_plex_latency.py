@@ -38,10 +38,21 @@ tests). `scripts/test_plex_latency_harness_shape.py` pins the properties above;
 it drives the pipeline below with an injected prober, which is why
 `run_measurement` takes a `probe` argument.
 
+A failed request is a measurement of NOTHING: it contributes to neither the TTFB
+series nor the total series, so the two always summarise the same samples. How
+long the failure took to surface is kept separately as `failed_after_ms` — it is
+a diagnostic, not a latency, because on a timeout it is just `--timeout`.
+
 Usage::
 
     export PLEX_TOKEN=...            # optional; adds the library endpoints
     python scripts/measure_plex_latency.py --label baseline --vantage external
+
+Exit codes: ``0`` measured everything it set out to; ``1`` at least one target
+returned no successful sample (the record is still written first, so nothing is
+lost); ``2`` bad arguments. From an external vantage the direct leg is RFC1918
+and cannot answer, so pass ``--skip-direct`` there — otherwise a correct capture
+spends ``repeats x timeout`` hanging and then exits 1.
 
 See `docs/runbooks/plex-latency-baseline.md` for the off-LAN procedure.
 """
@@ -61,7 +72,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 #: Bumped when the record layout changes, so Step 4 can refuse to diff across
 #: incompatible shapes rather than silently comparing different things.
-SCHEMA_VERSION = 1
+#: v2 — failed samples no longer contribute a `total_ms`; targets gained
+#: `succeeded`/`failed`; records gained `direct_probed`.
+SCHEMA_VERSION = 2
 
 #: The token comes from here and from nowhere else. See the module docstring.
 TOKEN_ENV = "PLEX_TOKEN"
@@ -103,50 +116,37 @@ def resolve_token(env=None):
     return token or None
 
 
-def build_targets(host=DEFAULT_HOST, direct=DEFAULT_DIRECT, authenticated=False):
+def build_targets(host=DEFAULT_HOST, direct=DEFAULT_DIRECT, authenticated=False, probe_direct=True):
     """The ordered probe list: the Traefik leg and the direct leg, paired.
 
     Order is fixed so two runs' records line up positionally as well as by name.
     Authenticated paths are added for BOTH legs, so the A/B holds for the
     library probe too, and only when a token is in play.
+
+    `probe_direct=False` drops the direct leg entirely. That is the honest shape
+    for an external run, where the backend address is RFC1918 and unreachable by
+    construction — see `--skip-direct`. It costs the A/B, so the record stamps
+    `direct_probed` and never leaves that implicit.
     """
-    targets = [
-        {
-            "name": f"{VIA_TRAEFIK}{UNAUTH_PATH}",
-            "via": VIA_TRAEFIK,
-            "path": UNAUTH_PATH,
-            "url": f"https://{host}{UNAUTH_PATH}",
-            "auth": False,
-        },
-        {
-            "name": f"{VIA_DIRECT}{UNAUTH_PATH}",
-            "via": VIA_DIRECT,
-            "path": UNAUTH_PATH,
-            "url": f"http://{direct}{UNAUTH_PATH}",
-            "auth": False,
-        },
-    ]
+    paths = [(UNAUTH_PATH, False)]
     if authenticated:
-        for path in AUTH_PATHS:
-            targets.append(
-                {
-                    "name": f"{VIA_TRAEFIK}{path}",
-                    "via": VIA_TRAEFIK,
-                    "path": path,
-                    "url": f"https://{host}{path}",
-                    "auth": True,
-                }
-            )
-            targets.append(
-                {
-                    "name": f"{VIA_DIRECT}{path}",
-                    "via": VIA_DIRECT,
-                    "path": path,
-                    "url": f"http://{direct}{path}",
-                    "auth": True,
-                }
-            )
-    return targets
+        paths += [(path, True) for path in AUTH_PATHS]
+
+    legs = [(VIA_TRAEFIK, f"https://{host}")]
+    if probe_direct:
+        legs.insert(1, (VIA_DIRECT, f"http://{direct}"))
+
+    return [
+        {
+            "name": f"{via}{path}",
+            "via": via,
+            "path": path,
+            "url": f"{origin}{path}",
+            "auth": auth,
+        }
+        for path, auth in paths
+        for via, origin in legs
+    ]
 
 
 def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
@@ -160,6 +160,13 @@ def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
 
     Exactly one attempt. A failure is recorded as an error sample rather than
     retried, so an unhealthy server is never hammered by a measurement.
+
+    A FAILED sample has `ttfb_ms` **and** `total_ms` set to None. The tempting
+    alternative — null the TTFB but keep the elapsed time as the total — would
+    file the *timeout duration* as a total load time: a number that changes when
+    `--timeout` changes and that reads downstream as a genuinely slow endpoint.
+    The elapsed time is still useful as a diagnostic, so it is kept under
+    `failed_after_ms`, a field no summary ever touches.
     """
     parts = urllib.parse.urlsplit(url)
     connector = (
@@ -185,15 +192,19 @@ def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
             "ttfb_ms": round(ttfb, 3),
             "total_ms": round(total, 3),
             "bytes": len(body),
+            "failed_after_ms": None,
             "error": None,
         }
     except (OSError, http.client.HTTPException) as exc:
-        elapsed = (time.perf_counter() - start) * 1000.0
         return {
             "status": None,
             "ttfb_ms": None,
-            "total_ms": round(elapsed, 3),
+            "total_ms": None,
             "bytes": 0,
+            # NOT a latency: how long the failure took to surface, which on a
+            # timeout is just `--timeout`. Segregated from both series so it can
+            # never be summarised into one.
+            "failed_after_ms": round((time.perf_counter() - start) * 1000.0, 3),
             "error": f"{type(exc).__name__}: {exc}",
         }
     finally:
@@ -226,6 +237,7 @@ def measure_target(target, repeats=DEFAULT_REPEATS, timeout=DEFAULT_TIMEOUT, tok
     ]
     statuses = sorted({s["status"] for s in samples if s["status"] is not None})
     errors = sorted({s["error"] for s in samples if s["error"]})
+    succeeded = sum(1 for s in samples if s["error"] is None)
     return {
         "name": target["name"],
         "via": target["via"],
@@ -233,6 +245,12 @@ def measure_target(target, repeats=DEFAULT_REPEATS, timeout=DEFAULT_TIMEOUT, tok
         "url": target["url"],
         "authenticated": target["auth"],
         "requested": repeats,
+        # `succeeded` + `failed` == `requested`, and both series below summarise
+        # exactly the `succeeded` samples. Recorded explicitly so Step 4 can tell
+        # "fast" from "we only got two samples out of five" without re-deriving
+        # it, and so a partially-populated target cannot pass for a whole one.
+        "succeeded": succeeded,
+        "failed": len(samples) - succeeded,
         "statuses": statuses,
         "errors": errors,
         "ttfb": summarize([s["ttfb_ms"] for s in samples]),
@@ -240,7 +258,18 @@ def measure_target(target, repeats=DEFAULT_REPEATS, timeout=DEFAULT_TIMEOUT, tok
     }
 
 
-def build_record(label, vantage, host, direct, repeats, timeout, authenticated, targets, now=None):
+def build_record(
+    label,
+    vantage,
+    host,
+    direct,
+    repeats,
+    timeout,
+    authenticated,
+    targets,
+    now=None,
+    direct_probed=True,
+):
     """One self-describing JSONL record: everything needed to pair two runs.
 
     `now` is injectable so the record's clock is testable. It carries no token —
@@ -255,6 +284,10 @@ def build_record(label, vantage, host, direct, repeats, timeout, authenticated, 
         "vantage": vantage,
         "host": host,
         "direct": direct,
+        # Whether the A/B was actually run. A record with only the Traefik leg is
+        # a legitimate external capture, but it is NOT the same measurement as a
+        # two-leg run and Step 4 must be able to tell them apart.
+        "direct_probed": direct_probed,
         "repeats": repeats,
         "timeout_s": timeout,
         "authenticated": authenticated,
@@ -272,9 +305,10 @@ def run_measurement(
     token=None,
     probe=None,
     now=None,
+    probe_direct=True,
 ):
     """Measure every target and return the finished record. Performs no writes."""
-    targets = build_targets(host, direct, authenticated=bool(token))
+    targets = build_targets(host, direct, authenticated=bool(token), probe_direct=probe_direct)
     results = [
         measure_target(target, repeats=repeats, timeout=timeout, token=token, probe=probe)
         for target in targets
@@ -289,6 +323,7 @@ def run_measurement(
         authenticated=bool(token),
         targets=results,
         now=now,
+        direct_probed=probe_direct,
     )
 
 
@@ -310,11 +345,13 @@ def render_report(record):
     lines = [
         f"Plex latency — label={record['label']} vantage={record['vantage']} "
         f"at {record['timestamp']}",
-        f"  host={record['host']}  direct={record['direct']}  "
+        f"  host={record['host']}  direct={record['direct']}"
+        f"{'' if record.get('direct_probed', True) else ' (SKIPPED)'}  "
         f"repeats={record['repeats']}  timeout={record['timeout_s']}s  "
         f"authenticated={record['authenticated']}",
         "",
-        f"  {'endpoint':<28} {'TTFB min/med/max (ms)':>26}  {'total min/med/max (ms)':>26}  status",
+        f"  {'endpoint':<28} {'n':>5} {'TTFB min/med/max (ms)':>26}  "
+        f"{'total min/med/max (ms)':>26}  status",
     ]
     for target in record["targets"]:
         ttfb = target["ttfb"]
@@ -322,17 +359,30 @@ def render_report(record):
         ttfb_cell = f"{_cell(ttfb['min_ms'])}/{_cell(ttfb['median_ms'])}/{_cell(ttfb['max_ms'])}"
         total_cell = f"{_cell(total['min_ms'])}/{_cell(total['median_ms'])}/{_cell(total['max_ms'])}"
         status = ",".join(str(s) for s in target["statuses"]) or "-"
-        lines.append(f"  {target['name']:<28} {ttfb_cell:>26}  {total_cell:>26}  {status}")
+        # How many samples the statistics rest on. Without it, a median over one
+        # surviving sample of five is typographically identical to a clean run.
+        n_cell = f"{target.get('succeeded', ttfb['count'])}/{target['requested']}"
+        lines.append(
+            f"  {target['name']:<28} {n_cell:>5} {ttfb_cell:>26}  {total_cell:>26}  {status}"
+        )
         for error in target["errors"]:
             lines.append(f"      ! {error}")
 
     # The headline number: what Traefik costs on the same unauthenticated probe.
+    # It needs BOTH legs to have answered; when it cannot be computed, say so
+    # rather than omitting the line, so a reader is never left to assume the
+    # A/B was measured and simply came out flat.
     by_via = {t["via"]: t for t in record["targets"] if t["path"] == UNAUTH_PATH}
     traefik, direct = by_via.get(VIA_TRAEFIK), by_via.get(VIA_DIRECT)
-    if traefik and direct:
-        a, b = traefik["ttfb"]["median_ms"], direct["ttfb"]["median_ms"]
-        if a is not None and b is not None:
-            lines += ["", f"  Traefik overhead on {UNAUTH_PATH} (median TTFB): {a - b:+.1f} ms"]
+    a = traefik["ttfb"]["median_ms"] if traefik else None
+    b = direct["ttfb"]["median_ms"] if direct else None
+    if a is not None and b is not None:
+        lines += ["", f"  Traefik overhead on {UNAUTH_PATH} (median TTFB): {a - b:+.1f} ms"]
+    else:
+        why = "the direct leg was skipped" if not record.get("direct_probed", True) else (
+            "one leg returned no successful samples"
+        )
+        lines += ["", f"  Traefik overhead on {UNAUTH_PATH} (median TTFB): n/a — {why}"]
     return "\n".join(lines)
 
 
@@ -355,6 +405,16 @@ def _parser():
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Traefik hostname (default: {DEFAULT_HOST})")
     parser.add_argument(
         "--direct", default=DEFAULT_DIRECT, help=f"backend host:port (default: {DEFAULT_DIRECT})"
+    )
+    parser.add_argument(
+        "--skip-direct",
+        action="store_true",
+        help=(
+            "do not probe the backend directly. Use this from an EXTERNAL vantage, where the "
+            "backend address is RFC1918 and unreachable by construction; without it the run "
+            "hangs for repeats x timeout and exits 1 on a perfectly good capture. It gives up "
+            "the Traefik-vs-direct A/B, so the record is stamped direct_probed=false."
+        ),
     )
     parser.add_argument(
         "--repeats", type=int, default=DEFAULT_REPEATS, help=f"samples per endpoint (default: {DEFAULT_REPEATS})"
@@ -385,6 +445,12 @@ def main(argv=None):
             " a LAN run is a smoke test, not the baseline.",
             file=sys.stderr,
         )
+    if args.skip_direct:
+        print(
+            "note: --skip-direct. Traefik leg only; there is no Traefik-vs-direct comparison in"
+            " this run, and the record says so (direct_probed=false).",
+            file=sys.stderr,
+        )
 
     record = run_measurement(
         label=args.label,
@@ -394,6 +460,7 @@ def main(argv=None):
         repeats=args.repeats,
         timeout=args.timeout,
         token=token,
+        probe_direct=not args.skip_direct,
     )
     print(render_report(record))
 
@@ -403,6 +470,9 @@ def main(argv=None):
 
     unreachable = [t["name"] for t in record["targets"] if t["ttfb"]["count"] == 0]
     if unreachable:
+        # stdout is block-buffered when piped into a log, stderr is not, so
+        # without this the warning surfaces ABOVE the report it refers to.
+        sys.stdout.flush()
         print(f"\nWARNING: no successful samples for: {unreachable}", file=sys.stderr)
         return 1
     return 0

@@ -18,9 +18,15 @@ two runs *incomparable* or unsafe, not the script's prose:
      unlabelled run, or a LAN run mistaken for an off-LAN one, poisons the
      baseline the plan defines as external-network,
   5. the summary statistics are actually computed from the samples,
-  6. the harness is import-safe and offline-safe — `scripts/run_gate.py` runs
+  6. a FAILED sample contributes a measurement to NEITHER series — an endpoint
+     that never returned a byte must not report a `total` median (which would be
+     the timeout duration wearing a latency's clothes), and `ttfb` and `total`
+     must always summarise the SAME set of samples,
+  7. `--label` and `--vantage` are mandatory, so a convenient LAN run cannot
+     self-file as the plan's external-network baseline,
+  8. the harness is import-safe and offline-safe — `scripts/run_gate.py` runs
      this file with NO network, so the test must never perform a real request,
-  7. neither the JSONL record nor the stdout report echoes the token.
+  9. neither the JSONL record nor the stdout report echoes the token.
 
 Behaviour is exercised, not grepped: the record-building and statistics paths
 run end to end against an INJECTED fake prober with scripted timings, under a
@@ -30,6 +36,13 @@ coincidence with a default, and each check is registered in `TESTS` — a
 `test_*` function missing from that tuple is green-by-omission
 (mem-1784137124-c346).
 
+Two levels of fake, deliberately: `FakeProbe` replaces the harness's timer and
+can only ever report success, so on its own it leaves `time_request`'s
+except-branch completely unexercised (mem-1785119466-0e93). `FakeTransport` sits
+one level lower — it replaces `http.client.HTTP(S)Connection`, so the harness's
+REAL `time_request` runs against it — and it has a failure mode, which is what
+makes properties 6 testable at all.
+
 Follows the repo's dual-mode shape-test convention (see
 `test_plex_ramdisk_bind_mount_shape.py`): module-level `test_<name>() -> bool`
 printing `OK` / `FAIL: ...` (no `assert`), plus `main() -> int` summing them.
@@ -38,7 +51,9 @@ Stdlib only.
 
 import contextlib
 import datetime
+import http.client
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -134,6 +149,12 @@ class FakeProbe:
 
     Records every call so a check can assert *which* URLs were probed, how many
     times, and which of them were handed the token.
+
+    Every result it returns is a SUCCESS, which is the right fixture for the
+    statistics and record-shape checks and the wrong one for anything about
+    failure — it bypasses `time_request` entirely. The error path is covered by
+    `FakeTransport` instead; do not add a failure mode here, or the two fakes
+    will disagree about what a failed sample looks like.
     """
 
     def __init__(self, ttfbs=FAKE_TTFB, totals=FAKE_TOTAL):
@@ -151,6 +172,114 @@ class FakeProbe:
             "bytes": 11,
             "error": None,
         }
+
+
+class _FakeResponse:
+    """The bare surface `time_request` uses: a status line and a readable body."""
+
+    status = 200
+
+    def read(self):
+        return b"probe-body"
+
+
+class FakeTransport:
+    """Stand-in for `http.client.HTTP(S)Connection` — the harness's real I/O boundary.
+
+    `FakeProbe` above replaces the *timer*, so every check that uses it drives
+    only the success path and `time_request`'s except-branch stays unexercised —
+    the outcome-provenance blind spot of mem-1785119466-0e93. This fake sits one
+    level lower: it is installed over `http.client`, so the harness's OWN
+    `time_request` runs for real against it, and it HAS a failure mode. Hosts
+    listed in `failing_hosts` raise the `TimeoutError` the socket layer would
+    raise on an unreachable endpoint — the exact live case, since the plan's
+    external vantage cannot reach the RFC1918 direct leg.
+
+    No socket is created either way, so this stays valid under `_no_network()`.
+
+
+    `flaky_hosts` maps a host to the 0-based attempt indices that fail, which is
+    the PARTIAL outage — the only shape in which "how many samples were
+    requested" and "how many were measured" disagree. Without such a row, a
+    count taken off the wrong list is invisible: with every attempt succeeding
+    or every attempt failing, the two numbers coincide (mem-1784139112-e13c).
+    """
+
+    def __init__(self, failing_hosts=(), flaky_hosts=None):
+        self.failing_hosts = set(failing_hosts)
+        self.flaky_hosts = {host: set(idx) for host, idx in (flaky_hosts or {}).items()}
+        self.attempts: dict = {}
+        self.opened: list = []
+
+    @contextlib.contextmanager
+    def installed(self):
+        saved = (http.client.HTTPConnection, http.client.HTTPSConnection)
+        transport = self
+
+        class _Conn:
+            def __init__(self, host, port=None, timeout=None, **kwargs):
+                attempt = transport.attempts.get(host, 0)
+                transport.attempts[host] = attempt + 1
+                transport.opened.append((host, port, timeout))
+                self.fails = (
+                    host in transport.failing_hosts
+                    or attempt in transport.flaky_hosts.get(host, ())
+                )
+
+            def request(self, method, path, headers=None, **kwargs):
+                if self.fails:
+                    raise TimeoutError("the read operation timed out")
+
+            def getresponse(self):
+                return _FakeResponse()
+
+            def close(self):
+                return None
+
+        http.client.HTTPConnection = _Conn
+        http.client.HTTPSConnection = _Conn
+        try:
+            yield self
+        finally:
+            (http.client.HTTPConnection, http.client.HTTPSConnection) = saved
+
+
+def _transport_run(failing_hosts=(), flaky_hosts=None, repeats=len(FAKE_TTFB), **kwargs):
+    """Drive the harness's REAL prober (`probe=None`) over `FakeTransport`.
+
+    Returns `(record, transport, error)`. Deliberately does not inject a probe:
+    the point is to execute `time_request` itself, including its except-branch.
+    """
+    transport = FakeTransport(failing_hosts, flaky_hosts)
+    try:
+        with _no_network(), transport.installed():
+            record = MOD.run_measurement(
+                label=PROBE_LABEL,
+                vantage=PROBE_VANTAGE,
+                host=PROBE_HOST,
+                direct=PROBE_DIRECT,
+                repeats=repeats,
+                now=PROBE_NOW,
+                **kwargs,
+            )
+    except NetworkAttempted as exc:
+        return None, transport, f"NetworkAttempted: {exc}"
+    return record, transport, None
+
+
+def _parse_argv(argv):
+    """Run the harness's REAL parser on `argv`; never let it exit this process.
+
+    Returns `(namespace_or_None, exit_code_or_None)`. argparse writes usage to
+    stderr on failure, which would spam the gate log, so both streams are
+    captured.
+    """
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(buffer), contextlib.redirect_stdout(buffer):
+            return MOD._parser().parse_args(argv), None
+    except SystemExit as exc:
+        return None, exc.code
 
 
 def _fake_run(token=None, repeats=len(FAKE_TTFB), probe=None):
@@ -368,6 +497,233 @@ def test_summary_statistics_are_computed_from_samples() -> bool:
     return ok
 
 
+def test_failed_sample_is_a_measurement_of_nothing() -> bool:
+    """AC: a request that never returned a byte yields NO latency in either field.
+
+    Exercises the real `time_request` over a transport that raises the socket
+    layer's own `TimeoutError`. The tempting shape — null the TTFB but keep the
+    elapsed time as `total_ms` — records the *timeout duration* as a total load
+    time: a number that moves when `--timeout` moves and reads downstream as a
+    genuinely slow endpoint. So both fields must be None, and the elapsed time,
+    if kept at all, must live in a field no summary ever touches.
+    """
+    if not _guard("failed sample records no latency"):
+        return False
+    transport = FakeTransport(failing_hosts={PROBE_HOST})
+    with _no_network(), transport.installed():
+        sample = MOD.time_request(f"https://{PROBE_HOST}/identity", timeout=0.25)
+    reached_transport = bool(transport.opened)
+    took_error_path = bool(sample.get("error")) and "TimeoutError" in str(sample.get("error"))
+    ok = (
+        reached_transport
+        and took_error_path
+        and sample.get("status") is None
+        and sample.get("ttfb_ms") is None
+        and sample.get("total_ms") is None
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: a failed sample carries no latency in either field "
+        f"(ttfb_ms={sample.get('ttfb_ms')!r}, total_ms={sample.get('total_ms')!r}, "
+        f"status={sample.get('status')!r}, error={sample.get('error')!r}, "
+        f"transport_used={reached_transport})"
+    )
+    return ok
+
+
+def test_ttfb_and_total_summarise_the_same_samples() -> bool:
+    """AC: per target, `ttfb` and `total` always cover an identical sample set.
+
+    Models the live external-vantage case exactly: the Traefik leg answers and
+    the direct RFC1918 leg is unreachable. The dead leg must summarise to
+    `count 0` on BOTH series with every statistic None — not `ttfb count 0`
+    beside `total count N`, and not a suspiciously fast pair either — and the
+    report must decline to print a Traefik-overhead figure it cannot compute.
+    The counts must also agree on the HEALTHY leg, so the check cannot be
+    satisfied by a harness that simply reports zero everywhere.
+    """
+    if not _guard("both series over the same samples"):
+        return False
+    direct_host = PROBE_DIRECT.split(":")[0]
+    record, transport, error = _transport_run(failing_hosts={direct_host})
+    if record is None:
+        print(f"FAIL: ttfb and total summarise the same samples ({error})")
+        return False
+    targets = {t["via"]: t for t in record["targets"]}
+    live, dead = targets.get("traefik"), targets.get("direct")
+    if not live or not dead:
+        print(f"FAIL: ttfb and total summarise the same samples (missing leg: {sorted(targets)})")
+        return False
+    # Read through `.get` throughout: a harness that stops emitting one of these
+    # fields must make this check print FAIL, not raise a KeyError that aborts
+    # every check after it.
+    def _series(target, series, stat):
+        return (target.get(series) or {}).get(stat)
+
+    # The invariant, asserted for EVERY target rather than only the dead one.
+    agree = all(
+        _series(t, "ttfb", "count") == _series(t, "total", "count") == t.get("succeeded")
+        and (t.get("succeeded"), t.get("failed")) != (None, None)
+        and (t.get("succeeded") or 0) + (t.get("failed") or 0) == t.get("requested")
+        for t in record["targets"]
+    )
+    dead_is_empty = (
+        _series(dead, "ttfb", "count") == 0
+        and _series(dead, "total", "count") == 0
+        and all(
+            _series(dead, series, stat) is None
+            for series in ("ttfb", "total")
+            for stat in ("min_ms", "median_ms", "max_ms")
+        )
+        and bool(dead.get("errors"))
+    )
+    live_is_measured = (
+        live.get("succeeded") == len(FAKE_TTFB)
+        and not live.get("errors")
+        and _series(live, "total", "median_ms") is not None
+    )
+    report = MOD.render_report(record)
+    overhead_claimed = "overhead" in report and "n/a" not in report.split("overhead")[-1]
+    ok = (
+        bool(transport.opened)
+        and agree
+        and dead_is_empty
+        and live_is_measured
+        and not overhead_claimed
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: ttfb and total summarise the same samples "
+        f"(counts_agree={agree}, dead_leg ttfb={_series(dead, 'ttfb', 'count')}"
+        f"/total={_series(dead, 'total', 'count')} "
+        f"median_total={_series(dead, 'total', 'median_ms')!r}, "
+        f"live_leg={live.get('succeeded')}/{live.get('requested')}, "
+        f"overhead_claimed_without_both_legs={overhead_claimed})"
+    )
+    return ok
+
+
+def test_partial_failure_does_not_inflate_the_sample_count() -> bool:
+    """AC: the reported count is what was MEASURED, not what was requested.
+
+    The discriminator row for every count in the record. When a leg is wholly up
+    or wholly down, "samples requested" and "samples summarised" are the same
+    number and any confusion between them is invisible; only a PARTIAL outage
+    separates them. Two of five attempts fail here, so a count sourced from the
+    requested list instead of the surviving samples reports 5 where 3 is true —
+    a median over three samples advertised as a five-sample measurement.
+    """
+    if not _guard("partial failure sample count"):
+        return False
+    failed_attempts = {1, 3}
+    expected_ok = len(FAKE_TTFB) - len(failed_attempts)
+    record, transport, error = _transport_run(flaky_hosts={PROBE_HOST: failed_attempts})
+    if record is None:
+        print(f"FAIL: a partial failure does not inflate the sample count ({error})")
+        return False
+    flaky = next((t for t in record["targets"] if t["via"] == "traefik"), None)
+    if flaky is None:
+        print("FAIL: a partial failure does not inflate the sample count (no traefik target)")
+        return False
+    counts = ((flaky.get("ttfb") or {}).get("count"), (flaky.get("total") or {}).get("count"))
+    ok = (
+        bool(transport.opened)
+        and flaky.get("requested") == len(FAKE_TTFB)
+        and flaky.get("succeeded") == expected_ok
+        and flaky.get("failed") == len(failed_attempts)
+        and counts == (expected_ok, expected_ok)
+        and bool(flaky.get("errors"))
+        and (flaky.get("ttfb") or {}).get("median_ms") is not None
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: a partial failure does not inflate the sample count "
+        f"(requested={flaky.get('requested')}, succeeded={flaky.get('succeeded')}, "
+        f"failed={flaky.get('failed')}, series_counts={counts}, expected={expected_ok})"
+    )
+    return ok
+
+
+def test_label_and_vantage_are_mandatory() -> bool:
+    """AC: the run cannot be started without a label and a vantage.
+
+    This is the step's own stated structural defence — the plan's baseline is
+    definitionally off-LAN, and the failure mode it exists to prevent is a
+    convenient LAN run being filed as the baseline because it was easy to take.
+    A `default=` on either flag reinstates exactly that, so the parser is driven
+    for real: every incomplete argv must exit non-zero, and an unknown vantage
+    must be refused rather than recorded verbatim.
+    """
+    if not _guard("label and vantage mandatory"):
+        return False
+    complete, complete_rc = _parse_argv(["--label", PROBE_LABEL, "--vantage", "external"])
+    refused = {
+        "no args": _parse_argv([])[1],
+        "label only": _parse_argv(["--label", PROBE_LABEL])[1],
+        "vantage only": _parse_argv(["--vantage", "external"])[1],
+        "unknown vantage": _parse_argv(["--label", PROBE_LABEL, "--vantage", PROBE_VANTAGE])[1],
+    }
+    all_refused = all(rc not in (None, 0) for rc in refused.values())
+    complete_ok = (
+        complete_rc is None
+        and complete is not None
+        and complete.label == PROBE_LABEL
+        and complete.vantage == "external"
+    )
+    ok = all_refused and complete_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: --label and --vantage are mandatory and validated "
+        f"(refused={refused}, complete_parses={complete_ok})"
+    )
+    return ok
+
+
+def test_direct_leg_is_skippable_and_the_record_says_so() -> bool:
+    """AC: the A/B can be dropped on purpose, and the record admits it.
+
+    From an external vantage the direct leg is RFC1918 and unreachable by
+    construction, so a CORRECT baseline capture otherwise spends
+    repeats x timeout hanging and then exits non-zero. `--skip-direct` is the
+    affordance for that; the danger is a run that quietly lost half the A/B, so
+    `direct_probed` must record which shape the run had. Default stays BOTH legs.
+    """
+    if not _guard("direct leg skippable"):
+        return False
+    # A harness with no such affordance raises TypeError on the keyword; that is
+    # a FAIL to report, not a traceback that aborts the checks after this one.
+    try:
+        skipped = MOD.build_targets(PROBE_HOST, PROBE_DIRECT, probe_direct=False)
+        default = MOD.build_targets(PROBE_HOST, PROBE_DIRECT)
+        record, _, error = _transport_run(probe_direct=False)
+        both, _, both_error = _transport_run()
+    except TypeError as exc:
+        print(f"FAIL: the direct leg is skippable and recorded (TypeError: {exc})")
+        return False
+    skipped_vias = sorted({t["via"] for t in skipped})
+    default_vias = sorted({t["via"] for t in default})
+    flags = [
+        opt
+        for action in MOD._parser()._actions
+        for opt in action.option_strings
+        if "skip-direct" in opt
+    ]
+    ok = (
+        error is None
+        and both_error is None
+        and record is not None
+        and both is not None
+        and skipped_vias == ["traefik"]
+        and default_vias == ["direct", "traefik"]
+        and record.get("direct_probed") is False
+        and both.get("direct_probed") is True
+        and bool(flags)
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: the direct leg is skippable and recorded "
+        f"(skipped_vias={skipped_vias}, default_vias={default_vias}, "
+        f"direct_probed={None if record is None else record.get('direct_probed')!r}/"
+        f"{None if both is None else both.get('direct_probed')!r}, flags={flags})"
+    )
+    return ok
+
+
 def test_harness_is_offline_safe() -> bool:
     """AC: importing and driving the harness performs NO real request.
 
@@ -444,6 +800,11 @@ TESTS = (
     test_authenticated_targets_require_a_token,
     test_record_carries_label_vantage_and_utc_timestamp,
     test_summary_statistics_are_computed_from_samples,
+    test_failed_sample_is_a_measurement_of_nothing,
+    test_ttfb_and_total_summarise_the_same_samples,
+    test_partial_failure_does_not_inflate_the_sample_count,
+    test_label_and_vantage_are_mandatory,
+    test_direct_leg_is_skippable_and_the_record_says_so,
     test_harness_is_offline_safe,
     test_token_never_reaches_the_record_or_report,
 )
