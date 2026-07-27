@@ -1,0 +1,74 @@
+BASELINE: rc=0 PASS: 25/25
+  harness sha=9fd2d16bfdd9db5e shape sha=79e9f1a3780d2db4
+ROW S1 ttfb = 0.0: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 0.0, 'direct/identity': 0.0} ms in [16.0, 45.0), gaps={'traefi
+ROW S2 ms->s unit slip (* 1000.0 -> * 1.0): RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 0.0, 'direct/identity': 0.0} ms in [16.0, 45.0), gaps={'traefi
+ROW S3 TTFB captured ABOVE conn.request: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 0.0, 'direct/identity': 0.0} ms in [16.0, 45.0), gaps={'traefi
+ROW S4 TTFB HALVED (* 500.0): RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 10.0, 'direct/identity': 10.1} ms in [16.0, 45.0), gaps={'trae
+ROW M1 total_ms = round(ttfb, 3): SKIPPED — pattern not found in measure_plex_latency.py
+ROW M2 TTFB captured BELOW response.read(): RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 70.3, 'direct/identity': 70.2} ms in [16.0, 45.0), gaps={'trae
+ROW V1 CONNECT_DELAY_S = 0.0: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.0], floors=
+ROW V2 the getresponse sleep removed: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 0.0, 'direct/identity': 0.0} ms in [16.0, 45.0), gaps={'traefi
+ROW V3 CONNECT_FLOOR_MS = 0.0: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.02], floors
+ROW V4 the two clocks made EQUAL: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.05], floors
+ROW V5 connect_delay never reaches the transport: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.0], floors=
+ROW O1 build_targets for-clauses swapped (leg-major): RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: probes Traefik and the direct backend (traefik=['https://plex.probe-vantage-7431.invalid/identity'], direct=['http://10.253.7.43:59137/identity'
+ROW T1 DEFAULT_TIMEOUT = 0.05: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: the CLI wires $PLEX_TOKEN and --timeout (authed_paths=['/identity', '/library/sections'], anon_paths=['/identity'], token_sent_on_auth_probes=Tr
+ROW T2 --timeout parser default decoupled: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: the CLI wires $PLEX_TOKEN and --timeout (authed_paths=['/identity', '/library/sections'], anon_paths=['/identity'], token_sent_on_auth_probes=Tr
+ROW R1 the wire sends DELETE, not GET: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: every request on the wire is a read-only GET with no body (methods={'healthy': ['DELETE'], 'answered 401': ['DELETE'], 'dead socket': ['DELETE']
+ROW R2 always HTTPConnection: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: the connector matches the URL scheme and port (opened={'plex.probe-vantage-7431.invalid': [('http', None)], '10.253.7.43': [('http', 59137)]}, e
+ROW R3 the 2xx band widened to < 400: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: the success band is exactly 2xx (rejected 5/7 of (100, 199, 300, 301, 404, 502, 401), measured 4/4 of (200, 201, 204, 299), straddles_both_edges
+ROW R4 DEFAULT_REPEATS = 1: RED (decisive) rc=1 FAIL: min/median/max computed from the samples (ttfb=[(11.0, 37.0, 91.0)], total=[(22.0, 74.0, 182.0)], counts=[5], probe_calls=10, targets=2, default_repeats=1 parser_default=1 (both must be >= 5))
+    caught by: FAIL: min/median/max computed from the samples (ttfb=[(11.0, 37.0, 91.0)], total=[(22.0, 74.0, 182.0)], counts=[5], probe_calls=10, targets=2, default
+ROW R5 failed_after_ms hardcoded on the socket road: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 20.1, 'direct/identity': 20.1} ms in [16.0, 45.0), gaps={'trae
+ROW R6 the port dropped from the connector: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: the connector matches the URL scheme and port (opened={'plex.probe-vantage-7431.invalid': [('https', None)], '10.253.7.43': [('http', None)]}, e
+
+RESTORED: rc=0 PASS: 25/25
+  harness sha=9fd2d16bfdd9db5e (was 9fd2d16bfdd9db5e) shape sha=79e9f1a3780d2db4 (was 79e9f1a3780d2db4)
+DECISIVE 19/20
+BASELINE: rc=0 PASS: 25/25
+  harness sha=9fd2d16bfdd9db5e shape sha=79e9f1a3780d2db4
+ROW M1 total_ms = round(ttfb, 3): RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 20.1, 'direct/identity': 20.1} ms in [16.0, 45.0), gaps={'trae
+ROW M3 ttfb_ms = round(total, 3): RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 70.2, 'direct/identity': 70.2} ms in [16.0, 45.0), gaps={'trae
+ROW V6 TTFB_CEILING_MS opened to infinity: GREEN (SURVIVED) rc=0 PASS: 25/25
+ROW V7 the elapsed floors dropped to 0 on both roads: GREEN (SURVIVED) rc=0 PASS: 25/25
+ROW R7 failed_after_ms hardcoded on the non-2xx road: SKIPPED — pattern not found in measure_plex_latency.py
+
+RESTORED: rc=0 PASS: 25/25
+  harness sha=9fd2d16bfdd9db5e (was 9fd2d16bfdd9db5e) shape sha=79e9f1a3780d2db4 (was 79e9f1a3780d2db4)
+DECISIVE 2/5
+BASELINE: rc=0 PASS: 25/25
+  harness sha=9fd2d16bfdd9db5e shape sha=a92568ff136690d7
+ROW V6 TTFB_CEILING_MS opened to infinity: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.02], floors
+ROW V8 TTFB_CEILING_MS opened to the SUM of both spans: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.02], floors
+ROW V9 DELAY_FLOOR_MS = 0.0: RED (decisive) rc=1 FAIL: 1/25
+    caught by: FAIL: ttfb is the status line and total is the drained body (the fixture has no clock on both spans: read delays=[0.05], connect delays=[0.02], floors
+ROW V7 the elapsed floors dropped to 0 (check-side; expected GREEN on correct code): GREEN (SURVIVED) rc=0 PASS: 25/25
+
+RESTORED: rc=0 PASS: 25/25
+  harness sha=9fd2d16bfdd9db5e (was 9fd2d16bfdd9db5e) shape sha=a92568ff136690d7 (was a92568ff136690d7)
+DECISIVE 3/4
+ROW C1 floors ZEROED + failed_after_ms hardcoded: GREEN rc=0 PASS: 25/25
+ROW C2 floors KEPT  + failed_after_ms hardcoded: RED rc=1 FAIL: 1/25
+RESTORED: rc=0 PASS: 25/25 shape=a92568ff136690d7 harness=9fd2d16bfdd9db5e

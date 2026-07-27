@@ -233,6 +233,41 @@ READ_DELAY_MS = READ_DELAY_S * 1000.0
 #: away, so the tolerance never has to be tight to be decisive.
 DELAY_FLOOR_MS = 0.8 * READ_DELAY_MS
 
+# The SECOND clock, and it is a different SPAN rather than a bigger number.
+#
+# TTFB is an INTERVAL: from before the connection is opened to the moment the
+# status line is available. `READ_DELAY_S` above sits in `read()`, which is on
+# the far side of that endpoint — so it bounds TTFB from ABOVE and never from
+# below, and every predicate written against it gets EASIER as TTFB shrinks
+# (`total - ttfb >= floor` grows, `ttfb < c` is an upper bound, `total >= floor`
+# does not mention TTFB at all). With one clock there was no lower bound on a
+# transport-driven TTFB anywhere in this file, and four mutations that drive it
+# toward zero all stayed green: `ttfb = 0.0`; the ms->s unit slip
+# (`* 1000.0` -> `* 1.0`); the TTFB capture moved ABOVE `conn.request` — the
+# exact mirror of the "slid below `read()`" mutation the previous round closed;
+# and TTFB HALVED (`* 500.0`), which also survived the FULL gate and printed a
+# completely plausible live table ("Traefik overhead +4.4 ms" where the truth is
+# +8.4 ms). Nobody catches a 2x scale error by eye on a number never measured
+# before, and that number is the plan's decision variable: Step 1 produces it and
+# Step 4 diffs against it (mem-1785127552-a55b).
+#
+# So this delay is slept in `getresponse()` — where a real server's think-time
+# and the network's round trip actually land, INSIDE the TTFB span — which puts a
+# floor under TTFB and lets the ceiling stay decisive.
+#
+# It must be DISTINCT from `READ_DELAY_S`, and that is asserted: with the two
+# equal, "the harness attributed this span to TTFB" and "...to the drain" are
+# arithmetically indistinguishable and the check silently stops discriminating.
+CONNECT_DELAY_S = 0.02
+CONNECT_DELAY_MS = CONNECT_DELAY_S * 1000.0
+#: The floor the one-clock fixture could not supply. Same 0.8 slack, same reason.
+CONNECT_FLOOR_MS = 0.8 * CONNECT_DELAY_MS
+#: The ceiling, relaxed from `0.5 * READ_DELAY_MS` now that a correct TTFB is no
+#: longer microseconds: it must admit `CONNECT_DELAY_MS` and still exclude a TTFB
+#: that has swallowed the drain (`CONNECT + READ`), so it sits half a read below
+#: that. The two bounds together are what pin TTFB to its own span.
+TTFB_CEILING_MS = CONNECT_DELAY_MS + 0.5 * READ_DELAY_MS
+
 # A status sequence for ONE host, consumed per attempt: answers, then starts
 # refusing, then breaks. The shape of a token that expires MID-CAPTURE, and the
 # only shape in which `statuses` and `errors` hold more than one element — with
@@ -465,7 +500,12 @@ class FakeTransport:
     """
 
     def __init__(
-        self, failing_hosts=(), flaky_hosts=None, status_by_host=None, delay_s=0.0
+        self,
+        failing_hosts=(),
+        flaky_hosts=None,
+        status_by_host=None,
+        delay_s=0.0,
+        connect_delay_s=0.0,
     ):
         self.failing_hosts = set(failing_hosts)
         self.flaky_hosts = {host: set(idx) for host, idx in (flaky_hosts or {}).items()}
@@ -479,6 +519,13 @@ class FakeTransport:
         # `failed_after_ms` — the two quantities the clockless fixture could only
         # assert trivia about.
         self.delay_s = delay_s
+        # The other half of the clock, and the half that lands INSIDE the TTFB
+        # span. Kept as its own attribute rather than folded into `delay_s`
+        # because the two must be DISTINCT for a check to attribute a span to one
+        # of them: with one number in both places, "TTFB measured the wait for the
+        # status line" and "TTFB measured the drain too" produce the same
+        # arithmetic (mem-1785127552-a55b).
+        self.connect_delay_s = connect_delay_s
         self.attempts: dict = {}
         self.opened: list = []
         # One dict per attempted request: host, METHOD, path, BODY, headers. The
@@ -562,6 +609,14 @@ class FakeTransport:
                     raise TimeoutError("the read operation timed out")
 
             def getresponse(self):
+                # Where the server's think-time and the round trip really land:
+                # BEFORE the status line, so this time is inside TTFB and inside
+                # total, and the drain below is inside total only. That is the
+                # whole point of a second clock — an interval needs a measurable
+                # cost on both sides of its endpoint, or the bound it buys is
+                # one-sided and every mutation toward zero survives.
+                if transport.connect_delay_s:
+                    time.sleep(transport.connect_delay_s)
                 return _FakeResponse(
                     transport._status_for(self.host, self.attempt), transport.delay_s
                 )
@@ -591,6 +646,7 @@ def _transport_run(
     status_by_host=None,
     repeats=len(FAKE_TTFB),
     delay_s=0.0,
+    connect_delay_s=0.0,
     **kwargs,
 ):
     """Drive the harness's REAL prober (`probe=None`) over `FakeTransport`.
@@ -599,12 +655,20 @@ def _transport_run(
     the point is to execute `time_request` itself, including its except-branch
     AND its non-2xx branch.
 
-    `delay_s` gives the fixture a clock. It defaults to 0 because every sample
-    pays it and most checks do not need it; the checks that measure a DURATION
-    rather than a value must pass it, and must assert against the transport they
-    actually drove rather than against the constant they meant to pass.
+    `delay_s` and `connect_delay_s` give the fixture a clock, in the drain and in
+    the wait for the status line respectively — two SPANS, not one duration, so
+    an interval quantity can be bounded from both sides. Both default to 0
+    because every sample pays them and most checks do not need them; the checks
+    that measure a DURATION must pass them, and must assert against the transport
+    they actually drove rather than against the constants they meant to pass.
     """
-    transport = FakeTransport(failing_hosts, flaky_hosts, status_by_host, delay_s=delay_s)
+    transport = FakeTransport(
+        failing_hosts,
+        flaky_hosts,
+        status_by_host,
+        delay_s=delay_s,
+        connect_delay_s=connect_delay_s,
+    )
     try:
         with _no_network(), transport.installed():
             record = MOD.run_measurement(
@@ -972,6 +1036,10 @@ def test_probes_traefik_and_direct_backend() -> bool:
     against sentinel targets (the URLs must be built from the arguments, not
     from a hardcoded household address) plus the shipped default, which must
     still name the backend port 32400.
+
+    Also pins the ORDER the two legs come back in, because `build_targets`
+    documents it as a contract and no check kept it — a docstring making a
+    promise nothing enforces is the same shape as a field nothing reads.
     """
     if not _guard("traefik + direct probes"):
         return False
@@ -1003,11 +1071,27 @@ def test_probes_traefik_and_direct_backend() -> bool:
         and recorded_urls == expected_urls
     )
 
-    ok = traefik_ok and direct_ok and default_port_ok and record_urls_ok
+    # ...and the two legs stay PAIRED, which `build_targets` states as a contract
+    # ("Order is fixed so two runs' records line up positionally as well as by
+    # name") and nothing kept: swapping the comprehension's two `for` clauses
+    # turns the paired order into a leg-major one and every check here sorts or
+    # dicts the names first, which is precisely the pattern that erases order.
+    # Only observable with more than one PATH — with a single path the two
+    # orderings are the same list — so this asks for the authenticated target set
+    # and asserts the alternative is genuinely a different list before comparing.
+    paths = [MOD.UNAUTH_PATH, *MOD.AUTH_PATHS]
+    legs = [MOD.VIA_TRAEFIK, MOD.VIA_DIRECT]
+    paired = [f"{via}{path}" for path in paths for via in legs]
+    leg_major = [f"{via}{path}" for via in legs for path in paths]
+    authed_names = [t["name"] for t in MOD.build_targets(PROBE_HOST, PROBE_DIRECT, authenticated=True)]
+    order_ok = sorted(paired) != paired and paired != leg_major and authed_names == paired
+
+    ok = traefik_ok and direct_ok and default_port_ok and record_urls_ok and order_ok
     print(
         f"{'OK' if ok else 'FAIL'}: probes Traefik and the direct backend "
         f"(traefik={traefik_urls}, direct={direct_urls}, default_direct={MOD.DEFAULT_DIRECT!r}, "
-        f"recorded_urls={recorded_urls}, probed_urls={probed_urls}, error={run_error})"
+        f"recorded_urls={recorded_urls}, probed_urls={probed_urls}, error={run_error}, "
+        f"paired_order={authed_names} (expected {paired}, leg-major would be {leg_major}))"
     )
     return ok
 
@@ -2143,18 +2227,35 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
     against `v >= 0`, which the degenerate constant 0 satisfies. Both failure
     roads are driven — the non-2xx branch, which has already drained the body,
     and the OSError branch, where the socket gives up.
+
+    TWO clocks, because TTFB is an INTERVAL and one clock buys a one-sided bound.
+    The first version of this check slept only in `read()` — past the status line
+    — so every predicate it wrote was satisfied more easily as TTFB fell toward
+    zero, and four mutations that do exactly that survived, one of them the whole
+    gate (mem-1785127552-a55b). `CONNECT_DELAY_S` is slept in `getresponse()`,
+    inside the TTFB span, which is what makes `CONNECT_FLOOR_MS <= ttfb <
+    TTFB_CEILING_MS` a two-sided pin: the floor rejects a TTFB that measured less
+    than the wait for the status line, the ceiling rejects one that measured the
+    drain as well. The two constants must be distinct or the spans cannot be told
+    apart, and the fixture-power guard asserts that before anything else.
     """
     if not _guard("ttfb vs total"):
         return False
     direct_host = PROBE_DIRECT.split(":")[0]
     healthy, healthy_transport, healthy_error = _transport_run(
-        delay_s=READ_DELAY_S, repeats=3
+        delay_s=READ_DELAY_S, connect_delay_s=CONNECT_DELAY_S, repeats=3
     )
     rejected, rejected_transport, rejected_error = _transport_run(
-        delay_s=READ_DELAY_S, repeats=2, status_by_host={PROBE_HOST: 503}
+        delay_s=READ_DELAY_S,
+        connect_delay_s=CONNECT_DELAY_S,
+        repeats=2,
+        status_by_host={PROBE_HOST: 503},
     )
     dead, dead_transport, dead_error = _transport_run(
-        delay_s=READ_DELAY_S, repeats=2, failing_hosts={direct_host}
+        delay_s=READ_DELAY_S,
+        connect_delay_s=CONNECT_DELAY_S,
+        repeats=2,
+        failing_hosts={direct_host},
     )
     errors = [e for e in (healthy_error, rejected_error, dead_error) if e]
     if errors or healthy is None or rejected is None or dead is None:
@@ -2167,11 +2268,32 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
     # this delay; with it at 0 the floor is 0 and all of them read as passing
     # checks. A guard that only fires after the thing it guards is not a guard
     # (mem-1785125369-fb77), so this returns rather than joining the final `ok`.
-    clocks = {t.delay_s for t in (healthy_transport, rejected_transport, dead_transport)}
-    if clocks != {READ_DELAY_S} or DELAY_FLOOR_MS <= 0:
+    #
+    # BOTH clocks, and they must be DISTINCT: they mark two different spans, and
+    # if one number stands in both places then "TTFB stopped at the status line"
+    # and "TTFB ran on through the drain" are the same arithmetic. A single clock
+    # is what left TTFB with a ceiling and no floor (mem-1785127552-a55b), so the
+    # floor's own constant is asserted positive here too.
+    driven = (healthy_transport, rejected_transport, dead_transport)
+    clocks = {t.delay_s for t in driven}
+    connect_clocks = {t.connect_delay_s for t in driven}
+    if (
+        clocks != {READ_DELAY_S}
+        or connect_clocks != {CONNECT_DELAY_S}
+        or CONNECT_DELAY_S == READ_DELAY_S
+        or DELAY_FLOOR_MS <= 0
+        or CONNECT_FLOOR_MS <= 0
+        # The ceiling must admit the wait it is named for and still EXCLUDE a
+        # TTFB that ran on through the drain — bounded on both sides, or opening
+        # it (to the sum, or to infinity) silently retires the half of this check
+        # that catches a capture slid below `read()`.
+        or not CONNECT_FLOOR_MS <= CONNECT_DELAY_MS < TTFB_CEILING_MS < CONNECT_DELAY_MS + READ_DELAY_MS
+    ):
         print(
             "FAIL: ttfb is the status line and total is the drained body (the fixture has no "
-            f"clock: transport delays={sorted(clocks)}, floor={DELAY_FLOOR_MS} ms)"
+            f"clock on both spans: read delays={sorted(clocks)}, "
+            f"connect delays={sorted(connect_clocks)}, floors={DELAY_FLOOR_MS}/{CONNECT_FLOOR_MS} ms, "
+            f"ttfb ceiling={TTFB_CEILING_MS} ms)"
         )
         return False
 
@@ -2181,6 +2303,7 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
     # Every leg, not just one: the two legs run the same three lines, and a
     # per-leg fixture cannot be what made this pass.
     gaps = {}
+    ttfbs = {}
     wrong = []
     for target in healthy["targets"]:
         ttfb = _stat(target, "ttfb", "median_ms")
@@ -2189,14 +2312,22 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
             wrong.append((target["name"], ttfb, total))
             continue
         gaps[target["name"]] = round(total - ttfb, 1)
+        ttfbs[target["name"]] = round(ttfb, 1)
         good = (
             # The body took time to drain and the TOTAL paid for it...
             total - ttfb >= DELAY_FLOOR_MS
-            # ...and the TTFB did NOT, which is the half that catches a capture
-            # moved below `read()`. The fake reaches its status line in
-            # microseconds, so this has three orders of magnitude of headroom.
-            and ttfb < 0.5 * READ_DELAY_MS
-            and total >= DELAY_FLOOR_MS
+            # ...the TTFB did NOT, which is the half that catches a capture moved
+            # below `read()`...
+            and ttfb < TTFB_CEILING_MS
+            # ...and the TTFB DID pay for the wait it is named for, which is the
+            # half nothing here had. Every predicate above is satisfied more
+            # easily as TTFB shrinks, so without this floor `ttfb = 0.0`, the
+            # ms->s unit slip, a capture moved ABOVE `conn.request`, and a TTFB
+            # silently HALVED all stayed green — the last one through the full
+            # gate, printing a plausible live table off a 2x scale error on the
+            # very number Step 4 diffs against.
+            and ttfb >= CONNECT_FLOOR_MS
+            and total >= DELAY_FLOOR_MS + CONNECT_FLOOR_MS
         )
         if not good:
             wrong.append((target["name"], ttfb, total))
@@ -2221,15 +2352,19 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
         (t for t in rejected["targets"] if t["via"] == "traefik"), {}
     )
     dead_leg = next((t for t in dead["targets"] if t["via"] == "direct"), {})
+    # The non-2xx road reached a status line AND drained the body before it
+    # decided the answer was not a measurement, so it owes BOTH spans; the socket
+    # road never got a status line, so it owes only the wait its own sleep marks.
     elapsed_ok = (
-        _elapsed_diagnostics(rejected_leg, 2, floor_ms=DELAY_FLOOR_MS)
+        _elapsed_diagnostics(rejected_leg, 2, floor_ms=DELAY_FLOOR_MS + CONNECT_FLOOR_MS)
         and _elapsed_diagnostics(dead_leg, 2, floor_ms=DELAY_FLOOR_MS)
     )
 
     ok = bool(gaps) and not wrong and columns_differ and elapsed_ok
     print(
         f"{'OK' if ok else 'FAIL'}: ttfb is the status line and total is the drained body "
-        f"(gaps={gaps} ms, floor={DELAY_FLOOR_MS} ms, wrong={wrong}, "
+        f"(ttfbs={ttfbs} ms in [{CONNECT_FLOOR_MS}, {TTFB_CEILING_MS}), "
+        f"gaps={gaps} ms, floor={DELAY_FLOOR_MS} ms, wrong={wrong}, "
         f"report_columns_differ={columns_differ}, "
         f"failed_after_ms non2xx={rejected_leg.get('failed_after_ms')} "
         f"socket={dead_leg.get('failed_after_ms')}, both_above_floor={elapsed_ok})"
@@ -2451,10 +2586,30 @@ def test_cli_wires_the_token_and_the_timeout() -> bool:
     # --timeout reaches BOTH destinations: every connection opened, and the
     # record's own copy of the setting.
     timeouts = sorted({opened["timeout"] for opened in authed_transport.opened})
+    # The SHIPPED default needs a floor for the same reason `DEFAULT_REPEATS`
+    # does, and it had none while its sibling had one at both the constant and
+    # the parser: `DEFAULT_TIMEOUT = 10.0` -> `0.05` survived this whole file,
+    # because every check that touches a timeout passes `PROBE_TIMEOUT`. A
+    # collapsed timeout is loud (0/2 samples, `n/a` medians, rc=1) — but the
+    # baseline this harness exists to take is a ONE-SHOT capture on a mobile
+    # hotspot, where a real library load takes seconds and a run that times out
+    # is a run that cannot be retaken. Asserted as a floor (a bump is fine) at
+    # the constant AND at the parser, since the wire between them is its own
+    # failure mode.
+    parsed_defaults, defaults_rc = _parse_argv(["--label", PROBE_LABEL, "--vantage", "external"])
+    default_timeout_ok = (
+        isinstance(MOD.DEFAULT_TIMEOUT, (int, float))
+        and not isinstance(MOD.DEFAULT_TIMEOUT, bool)
+        and MOD.DEFAULT_TIMEOUT >= 5.0
+        and defaults_rc is None
+        and parsed_defaults is not None
+        and parsed_defaults.timeout == MOD.DEFAULT_TIMEOUT
+    )
     timeout_ok = (
         timeouts == [PROBE_TIMEOUT]
         and authed.get("timeout_s") == PROBE_TIMEOUT
         and PROBE_TIMEOUT != MOD.DEFAULT_TIMEOUT
+        and default_timeout_ok
     )
 
     ok = (
@@ -2471,7 +2626,10 @@ def test_cli_wires_the_token_and_the_timeout() -> bool:
         f"(authed_paths={authed_paths}, anon_paths={anon_paths}, "
         f"token_sent_on_auth_probes={token_sent}, token_withheld_on_anon_probes={token_withheld}, "
         f"token_in_file={not token_not_persisted}, connect_timeouts={timeouts}, "
-        f"record_timeout_s={authed.get('timeout_s')!r})"
+        f"record_timeout_s={authed.get('timeout_s')!r}, "
+        f"default_timeout={getattr(MOD, 'DEFAULT_TIMEOUT', None)!r} "
+        f"parser_default={None if parsed_defaults is None else parsed_defaults.timeout!r} "
+        f"(both must be >= 5.0))"
     )
     return ok
 
