@@ -9,10 +9,13 @@ capturing the baseline that Step 4 is compared against:
     request never crosses the WAN path or the router hairpin, so a LAN number is
     a *control*, not the baseline. This is the single most misread part of the
     plan, so it is pinned as prose, not as a flag,
-  * a **results table** carrying the plan's own metric names (TTFB and total
+  * a **results section** carrying the plan's own metric names (TTFB and total
     load time, per endpoint, min/median/max) plus the run's UTC timestamp and
     vantage — and left **UNFILLED**, because a fabricated baseline silently
-    invalidates Step 4's whole comparison,
+    invalidates Step 4's whole comparison. The prohibition is stated once, at
+    the `## 5.` heading, and §5 holds THREE tables plus the LAN-control
+    headline, so the guard is scoped to the SECTION and not to the one table a
+    header regex can recognise (mem-1785131238-5b83),
   * **cross-file agreement**: every `measure_plex_latency.py` command line the
     runbook prints actually parses against the harness's REAL argparse parser,
     with the external capture carrying `--vantage external --skip-direct` and
@@ -27,7 +30,9 @@ The cross-file check reads TWO artifacts — the runbook and
 `scripts/measure_plex_latency.py` — which is what makes it load-bearing in both
 directions (mem-1784757961-4fb7). It takes the harness path as a defaulted
 argument so its harness half can be proven non-vacuous against a doctored COPY,
-without touching the closed, committed harness itself.
+without touching the closed, committed harness itself. It compiles the harness
+FROM SOURCE rather than importing it by spec, because the obvious loader reads
+`__pycache__` and would grade bytecode that is not on disk (mem-1785131222-b87c).
 
 Follows the repo's dual-mode shape-test convention (see
 `test_plex_ramdisk_runbook_shape.py`, `test_acceptance_validation_runbook_shape.py`):
@@ -41,12 +46,12 @@ below is registered in `TESTS`.
 """
 
 import contextlib
-import importlib.util
 import io
 import pathlib
 import re
 import shlex
 import sys
+import types
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "plex-latency-baseline.md"
@@ -122,88 +127,171 @@ def test_external_vantage_requirement() -> bool:
     return ok
 
 
-def _table_rows(body: str) -> list[list[str]]:
-    """Every markdown table row in the doc, as lists of stripped cells.
+def _section(body: str, number: int) -> str:
+    """The doc between `## <number>.` and the next SAME-LEVEL `##` heading.
 
-    Separator rows (`|---|---|`) are dropped; everything else is returned so a
-    caller can pick out the header it cares about and the rows under it.
+    `###` subheadings stay inside — `^##\\s` needs whitespace after exactly two
+    hashes — which is the point: §5's three tables each live under their own
+    `###` head, and the prohibition is stated once, at the `##`.
     """
-    rows = []
+    out, inside = [], False
+    for line in body.splitlines():
+        if re.match(rf'^##\s+{number}\.', line):
+            inside = True
+            continue
+        if inside and re.match(r'^##\s', line):
+            break
+        if inside:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _tables(body: str) -> list[list[list[str]]]:
+    """Every markdown table in `body`, as `[header_cells, *data_rows]`.
+
+    A table is a MAXIMAL RUN of consecutive table lines — a blank line, prose or
+    a heading ends one and starts the next. Separator rows (`|---|---|`) are
+    dropped from the run without breaking it. Returning tables rather than a
+    flat list of rows is what lets a caller assert HOW MANY there are.
+    """
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] = []
     for line in body.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("|") or not stripped.endswith("|"):
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            if current:
+                tables.append(current)
+                current = []
             continue
         cells = [c.strip() for c in stripped.strip("|").split("|")]
         if all(re.fullmatch(r':?-{2,}:?', c) for c in cells if c):
             continue
-        rows.append(cells)
-    return rows
+        current.append(cells)
+    if current:
+        tables.append(current)
+    return tables
 
 
-def test_results_table_is_present_and_unfilled() -> bool:
-    """The plan's metric names, per endpoint, with every cell still a placeholder.
+#: The section that carries the prohibition — `## 5. RESULTS`.
+RESULTS_SECTION = 5
 
-    Two claims in one check because they are the same claim: the table has to
-    carry TTFB *and* total load time *and* min/median/max *and* the run's UTC
-    timestamp + vantage, AND none of those cells may already hold a number.
-    Step 1c (the operator) fills it; anything filled in here is invented data,
-    and an invented baseline is worse than no baseline because Step 4 cannot
-    tell the difference.
+#: How many tables §5 governs: Run metadata, Harness results, Browser DevTools.
+#: ASSERTED, not discovered. The predicate below runs over every table in the
+#: section, so a table added later is covered automatically — but a table added
+#: later is also a claim about what the baseline contains, and this number is
+#: what forces whoever adds it to come back here (mem-1785131238-5b83).
+EXPECTED_RESULT_TABLES = 3
+
+#: A cell that has NOT been filled in: `___`, `TBD`, `n/a`, or a `/`-separated
+#: run of them (`___ / ___ / ___`), optionally in backticks. Anything else in a
+#: measured column — a digit above all — is a number nobody measured.
+PLACEHOLDER = re.compile(
+    r'[`\s]*(?:_{2,}|TBD|n/a)(?:\s*/\s*(?:_{2,}|TBD|n/a))*[`\s]*', re.IGNORECASE
+)
+
+#: Rows §5 owes, matched against the FIRST COLUMN of every table in the section.
+#: A placeholder guard with no existence pin is satisfied by DELETING the row —
+#: "no filled cells" is trivially true of a table that is not there. Matching
+#: across all of §5's tables rather than per-table keeps this from also pinning
+#: which table a field lives in.
+REQUIRED_ROWS = {
+    "UTC timestamp row": r'\bUTC\b',
+    "vantage row": r'\bvantage\b',
+    "network row": r'\bnetwork\b',
+    "label row": r'\blabel\b',
+    "repeats row": r'\brepeats\b',
+    "a traefik endpoint row": r'\btraefik\s*/',
+    "a direct-:32400 endpoint row": r'\bdirect\s*/',
+    "initial-document TTFB row": r'\bdocument\b[^|]*\bTTFB\b',
+    "/library/sections XHR row": r'/library/sections\b[^|]*\bXHR\b',
+    "DOMContentLoaded row": r'\bDOMContentLoaded\b',
+    "Load row": r'\bLoad\b',
+    "requests / transferred row": r'\brequests\b',
+}
+
+
+def test_results_section_is_present_and_unfilled() -> bool:
+    """§5's cells are ALL still placeholders — every table, not one of three.
+
+    §5 opens with *"Leave every cell as `___` until a real capture has been
+    taken. Do not estimate, interpolate or copy a number from a LAN run"* and
+    then holds THREE tables: Run metadata, Harness results, and the Browser
+    DevTools numbers that are the plan's own Demo metric. The prohibition is
+    stated at the SECTION, so the predicate is scoped to the SECTION — sliced
+    between `## 5.` and the next `##` — and applied to every table inside.
+    Scoping it instead to the one table a header regex can recognise left a
+    complete invented DevTools baseline, and an invented run stamp, both GREEN
+    (mem-1785131238-5b83).
+
+    Three claims, all of them the same claim — that Step 4 diffs against a
+    MEASUREMENT and can never tell an invented one from a real one:
+
+      * the harness table carries the plan's metric names (endpoint, TTFB,
+        total, min/median/max),
+      * §5 still holds the rows it owes — the run stamp (UTC timestamp,
+        vantage, network, label, repeats), both legs of the A/B, and the five
+        DevTools numbers — because a placeholder guard alone is satisfied by
+        deleting the row,
+      * and every measured cell in every table, plus the LAN-control headline
+        that is the one number Step 4 actually reads, is still a placeholder.
+
+    Step 1c (the operator) fills these in. Anything filled in here is invented.
     """
     body = _read(RUNBOOK)
-    flat = _flat(body)
-    rows = _table_rows(body)
+    section = _section(body, RESULTS_SECTION)
+    tables = _tables(section)
+    flat = _flat(section)
 
-    header = None
-    for index, cells in enumerate(rows):
-        joined = " ".join(cells).lower()
-        if "ttfb" in joined and "total" in joined:
-            header = index
+    # The harness table, by the metric names the plan itself uses. Its header is
+    # a REQUIREMENT of the section, not the boundary of the guard below.
+    metrics = {"harness results table (TTFB + total)": False}
+    for cells in (t[0] for t in tables):
+        head = " ".join(cells).lower()
+        if "ttfb" in head and "total" in head:
+            metrics = {
+                "endpoint column": "endpoint" in head,
+                "TTFB column": "ttfb" in head,
+                "total load time column": "total" in head,
+                "min/median/max": re.search(r'min\s*/?\s*med', head) is not None
+                and re.search(r'max', head) is not None,
+            }
             break
 
-    metrics = {}
-    data_rows: list[list[str]] = []
-    if header is not None:
-        head = " ".join(rows[header]).lower()
-        metrics = {
-            "endpoint column": "endpoint" in head,
-            "TTFB column": "ttfb" in head,
-            "total load time column": "total" in head,
-            "min/median/max": re.search(r'min\s*/?\s*med', head) is not None
-            and re.search(r'max', head) is not None,
-        }
-        width = len(rows[header])
-        for cells in rows[header + 1:]:
-            if len(cells) != width:
-                break
-            data_rows.append(cells)
+    # Every table's first row is its header; every row after it is data, and
+    # every column after the first is a MEASURED column.
+    data_rows = [cells for table in tables for cells in table[1:]]
+    measured = [cell for cells in data_rows for cell in cells[1:]]
+    filled = [cell for cell in measured if re.search(r'\d', cell)]
+    unheld = [cell for cell in measured if not PLACEHOLDER.fullmatch(cell)]
 
-    # Every measured cell (all but the endpoint name) must still be a
-    # placeholder: no digits, because a digit here is a fabricated measurement.
-    filled = [
-        cells
-        for cells in data_rows
-        for cell in cells[1:]
-        if re.search(r'\d', cell)
-    ]
-    placeheld = bool(data_rows) and all(
-        re.search(r'_{2,}|\bTBD\b|\bn/a\b', cell)
-        for cells in data_rows
-        for cell in cells[1:]
-    )
-    # The run's own stamp: without a UTC timestamp and a vantage, two filled
-    # tables cannot be told apart, and Step 4 pairs runs by label + vantage.
-    stamped = {
-        "UTC timestamp line": re.search(r'\bUTC\b', flat) is not None,
-        "vantage line": re.search(r'\bvantage\b', flat, re.IGNORECASE) is not None,
+    first_column = " | ".join(cells[0] for cells in data_rows)
+    present = {
+        name: re.search(pattern, first_column, re.IGNORECASE) is not None
+        for name, pattern in REQUIRED_ROWS.items()
     }
 
-    missing = [k for k, v in {**metrics, **stamped}.items() if not v]
-    ok = header is not None and not missing and not filled and placeheld
+    # The headline the A/B exists for lives in §5 as prose, not in a table, and
+    # is the single number Step 4 reads. Same prohibition, so same predicate.
+    headline = re.search(r'Traefik\s+overhead\b.{0,160}?\bms\b', flat, re.IGNORECASE)
+    structure = {
+        "§5 section found": bool(section.strip()),
+        f"§5 holds {EXPECTED_RESULT_TABLES} tables": len(tables)
+        == EXPECTED_RESULT_TABLES,
+        "every table has data rows": bool(tables)
+        and all(len(t) > 1 for t in tables),
+        "LAN-control headline present": headline is not None,
+        "LAN-control headline unfilled": headline is not None
+        and not re.search(r'\d', headline.group())
+        and re.search(r'_{2,}', headline.group()) is not None,
+    }
+
+    missing = [k for k, v in {**structure, **metrics, **present}.items() if not v]
+    ok = not missing and not filled and not unheld
     print(
-        f"{'OK' if ok else 'FAIL'}: results table carries the plan's metrics and is "
-        f"left UNFILLED (header={header is not None}, rows={len(data_rows)}, "
-        f"missing={missing}, filled_cells={len(filled)}, placeheld={placeheld})"
+        f"{'OK' if ok else 'FAIL'}: §{RESULTS_SECTION} carries the plan's metrics and "
+        f"is left UNFILLED (tables={len(tables)}, rows={len(data_rows)}, "
+        f"cells={len(measured)}, missing={missing}, filled_cells={filled}, "
+        f"not_placeheld={unheld})"
     )
     return ok
 
@@ -254,12 +342,36 @@ def _until_shell_operator(words: list[str]) -> list[str]:
 
 
 def _load_parser(harness: pathlib.Path):
-    """The harness's REAL argparse parser, loaded from the file under test."""
-    spec = importlib.util.spec_from_file_location("_plex_latency_harness", harness)
-    if spec is None or spec.loader is None:
+    """The harness's REAL argparse parser, compiled FROM ITS SOURCE TEXT.
+
+    Deliberately NOT `importlib.util.spec_from_file_location` + `exec_module`,
+    for the same reason its sibling `test_plex_latency_harness_shape.py::_load_harness`
+    refuses it: that loader consults `__pycache__`, whose cache key is
+    `(source mtime truncated to whole SECONDS, source size)`. A mutation matrix
+    — the one instrument whose entire job is detecting false greens — poisons it
+    in both directions, and this check is the load-bearing one, so both land
+    here (mem-1785131222-b87c, mem-1785122728-5116):
+
+      * FALSE GREEN — write a SAME-SIZE drift (`VANTAGES` `lan` -> `wan`, so the
+        harness stops accepting the `--vantage lan` §3b documents) and restore
+        the mtime; the stale `.pyc` still validates and this check prints `OK`
+        against a real cross-file drift,
+      * FALSE RED — compile the drift under the pristine mtime, then restore the
+        bytes (exactly what `shutil.copy2` does on a matrix restore); the source
+        is byte-identical to git, `git status` is clean, and `just test` goes
+        `GATE PASS` -> `GATE FAIL` forever.
+
+    `scripts/run_gate.py` execs shape tests as `[sys.executable, path]` with no
+    `-B`, and `-B` would not help anyway — it stops the cache being WRITTEN, not
+    being READ. `compile()` over the text read from disk has no cache to
+    consult, so the artifact graded is the artifact in git, always.
+    """
+    module = types.ModuleType("_plex_latency_harness")
+    module.__file__ = str(harness)
+    source = harness.read_text(encoding="utf-8") if harness.is_file() else ""
+    if not source:
         return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    exec(compile(source, str(harness), "exec"), module.__dict__)  # noqa: S102
     return module._parser()
 
 
@@ -386,7 +498,7 @@ def test_no_literal_token_in_the_runbook() -> bool:
 TESTS = (
     test_runbook_exists_and_nonempty,
     test_external_vantage_requirement,
-    test_results_table_is_present_and_unfilled,
+    test_results_section_is_present_and_unfilled,
     test_documented_invocations_match_the_real_harness,
     test_no_literal_token_in_the_runbook,
 )

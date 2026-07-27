@@ -236,7 +236,7 @@ OK: every request on the wire is a read-only GET with no body (methods={'healthy
 OK: the connector matches the URL scheme and port (opened={'plex.probe-vantage-7431.invalid': [('https', None)], '10.253.7.43': [('http', 59137)]}, expected={'plex.probe-vantage-7431.invalid': [('https', None)], '10.253.7.43': [('http', 59137)]})
 OK: a status that drifts mid-capture is reported in full (drift=(200, 401, 503) -> statuses=[200, 401, 503] errors=['HTTP 401 Unauthorized', 'HTTP 503 Service Unavailable'] n=1/3, status_cell='200,401,503', counts_ok=True)
 OK: ttfb, total and bytes summarise the same samples (counts_agree=True, dead_leg ttfb=0/total=0/bytes=0 median_total=None, live_leg=5/5 median_bytes=15 (body=15), overhead_claimed_without_both_legs=False)
-OK: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 30.2, 'direct/identity': 30.3} ms in [24.0, 55.0), gaps={'traefik/identity': 50.1, 'direct/identity': 50.1} ms, floor=40.0 ms, wrong=[], report_columns_differ=True, failed_after_ms non2xx=[80.271, 80.293] socket=[60.171, 60.241], both_above_floor=True)
+OK: ttfb is the status line and total is the drained body (ttfbs={'traefik/identity': 30.2, 'direct/identity': 30.2} ms in [24.0, 55.0), gaps={'traefik/identity': 50.1, 'direct/identity': 50.1} ms, floor=40.0 ms, wrong=[], report_columns_differ=True, failed_after_ms non2xx=[80.241, 80.306] socket=[60.223, 60.222], both_above_floor=True)
 OK: a partial failure does not inflate the sample count (requested=5, succeeded=3, failed=2, series_counts=(3, 3, 3), expected=3, failed_after_ms=[0.002, 0.001])
 OK: --label and --vantage are mandatory and validated (refused={'no args': 2, 'label only': 2, 'vantage only': 2, 'unknown vantage': 2}, complete_parses=True)
 OK: the direct leg is skippable and recorded (skipped_vias=['traefik'], default_vias=['direct', 'traefik'], direct_probed=False/True, flags=['--skip-direct'], cli_rc=0, cli_record_direct_probed=False, cli_vias=['traefik'], cli_opened=['plex.probe-vantage-7431.invalid'], cli_error=None)
@@ -251,7 +251,7 @@ OK: token is used but never recorded or printed (sent_to_probe=True, in_record=F
 PASS: 25/25
 OK: docs/runbooks/plex-latency-baseline.md exists and is non-empty (chars=13323)
 OK: runbook requires an EXTERNAL vantage and says why a LAN run is only a control (missing=[])
-OK: results table carries the plan's metrics and is left UNFILLED (header=True, rows=4, missing=[], filled_cells=0, placeheld=True)
+OK: §5 carries the plan's metrics and is left UNFILLED (tables=3, rows=16, cells=28, missing=[], filled_cells=[], not_placeheld=[])
 OK: documented invocations parse against measure_plex_latency.py and carry the external/LAN split (found=3, rejected=[], unknown_flags=[], missing=[])
 OK: runbook keeps the token in $PLEX_TOKEN and carries no literal value (missing=[], assignments=[], tokenish=[])
 PASS: 5/5
