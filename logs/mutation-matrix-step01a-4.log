@@ -1,0 +1,108 @@
+BASELINE: rc=0 PASS: 20/20
+  harness sha=9fd2d16bfdd9db5e test sha=1453afebddb57356
+
+M1 [rejected-probe] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 5/5 statuses=[401] ttfb_median=0.001 errors=[], healthy leg measured=True, cli
+     FAIL: the report states what the record states (mismatches=none, fixture_discriminates={'rejected status is visible': False})
+     FAIL: 2/20
+
+M2 [rejected-probe] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 5/5 statuses=[401] ttfb_median=0.001 errors=[], healthy leg measured=True, cli
+     FAIL: the report states what the record states (mismatches=none, fixture_discriminates={'rejected status is visible': False})
+     FAIL: 2/20
+
+M3 [rejected-probe + report rows] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 0/5 statuses=[] ttfb_median=None errors=['HTTP 401 Unauthorized'], healthy leg
+     FAIL: the report states what the record states (mismatches=none, fixture_discriminates={'rejected status is visible': False})
+     FAIL: 2/20
+
+M4 [rejected-probe] -> GREEN <-- SURVIVED (restored=True)
+
+M5 [rejected-probe (CLI blame)] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 0/5 statuses=[401] ttfb_median=None errors=['HTTP 401 Unauthorized'], healthy 
+     FAIL: 1/20
+
+M6 [report rows (cell swap)] -> RED (restored=True)
+     FAIL: the report states what the record states (mismatches={'healthy': [('traefik/identity', 'TTFB min/med/max (ms)', '11.0/37.0/91.0', '22.0/74.0/182
+     FAIL: 1/20
+
+M7 [report rows (n column)] -> RED (restored=True)
+     FAIL: the report states what the record states (mismatches={'partial-outage': [('traefik/identity', 'n', '3/5', '5/5')], 'rejected-401': [('traefik/id
+     FAIL: 1/20
+
+M8 [headline (path filter)] -> RED (restored=True)
+     FAIL: the report headline is the unauthenticated Traefik overhead (expected='+25.0 ms' (library A/B would be +400.0 ms) line='Traefik overhead on /ide
+     FAIL: 1/20
+
+M9 [report rows (status column)] -> RED (restored=True)
+     FAIL: the report states what the record states (mismatches={'healthy': [('traefik/identity', 'status', '200', '-'), ('direct/identity', 'status', '200
+     FAIL: 1/20
+
+M10 [streams] -> RED (restored=True)
+     FAIL: the report headline is the unauthenticated Traefik overhead (expected='+25.0 ms' (library A/B would be +400.0 ms) line='Traefik overhead on /ide
+     FAIL: the report goes to stdout and the diagnostics to stderr (rc=1, report_on_stdout=False, report_kept_off_stderr=False, warning_on_stderr_only=True
+     FAIL: a failed write is not reported as a failed measurement (write rc=3 (expected 3, NOT 1) escaped=None named_the_path=True report_survived_on_stdou
+
+M11 [headline (wrong statistic)] -> RED (restored=True)
+     FAIL: the report headline is the unauthenticated Traefik overhead (expected='+25.0 ms' (library A/B would be +400.0 ms) line='Traefik overhead on /ide
+     FAIL: 1/20
+
+M12 [report rows (vanished leg)] -> RED (restored=True)
+     FAIL: the report states what the record states (mismatches={'healthy': [('direct/identity', '<row>', 'present', 'missing')], 'partial-outage': [('dire
+     FAIL: 1/20
+
+M13 [headline (sign)] -> RED (restored=True)
+     FAIL: the report headline is the unauthenticated Traefik overhead (expected='+25.0 ms' (library A/B would be +400.0 ms) line='Traefik overhead on /ide
+     FAIL: 1/20
+
+M14 [report rows (header swap)] -> RED (restored=True)
+     FAIL: the report states what the record states (mismatches={'healthy': [('traefik/identity', 'TTFB min/med/max (ms)', '11.0/37.0/91.0', '22.0/74.0/182
+     FAIL: 1/20
+
+M15 [record schema] -> RED (restored=True)
+     FAIL: run record carries schema + label + vantage + UTC timestamp (schema=None constant=4, label='probe-label-51ac', vantage='probe-vantage-9d2f', tim
+     FAIL: 1/20
+
+M16 [record schema] -> RED (restored=True)
+     FAIL: run record carries schema + label + vantage + UTC timestamp (schema=3 constant=3, label='probe-label-51ac', vantage='probe-vantage-9d2f', timest
+     FAIL: 1/20
+
+M17 [same-samples (bytes)] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 0/5 statuses=[401] ttfb_median=None errors=['HTTP 401 Unauthorized'], healthy 
+     FAIL: ttfb, total and bytes summarise the same samples (counts_agree=False, dead_leg ttfb=0/total=0/bytes=None median_total=None, live_leg=5/5 median_
+     FAIL: a partial failure does not inflate the sample count (requested=5, succeeded=3, failed=2, series_counts=(3, 3, None), expected=3, failed_after_ms
+
+M18 [same-samples (bytes counts)] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 0/5 statuses=[401] ttfb_median=None errors=['HTTP 401 Unauthorized'], healthy 
+     FAIL: ttfb, total and bytes summarise the same samples (counts_agree=False, dead_leg ttfb=0/total=0/bytes=5 median_total=None, live_leg=5/5 median_byt
+     FAIL: a partial failure does not inflate the sample count (requested=5, succeeded=3, failed=2, series_counts=(3, 3, 5), expected=3, failed_after_ms=[0
+
+M19 [headline self-guard] -> GREEN <-- SURVIVED (restored=True)
+
+M20 [report-rows self-guard] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 5/5 statuses=[200] ttfb_median=0.001 errors=[], healthy leg measured=True, cli
+     FAIL: the report states what the record states (mismatches=none, fixture_discriminates={'rejected status is visible': False})
+     FAIL: 2/20
+
+AFTER: rc=0 PASS: 20/20
+  harness sha=9fd2d16bfdd9db5e (was 9fd2d16bfdd9db5e)
+  test sha=1453afebddb57356 (was 1453afebddb57356)
+M4 [rejected-probe: elapsed diagnostic emptied] -> RED (restored=True)
+     FAIL: an answered-but-rejected probe is not a measurement (rejected leg 0/5 statuses=[401] ttfb_median=None errors=['HTTP 401 Unauthorized'], hea
+     FAIL: 1/20
+
+M4b [same-samples/partial: OSError branch's diagnostic emptied] -> RED (restored=True)
+     FAIL: ttfb, total and bytes summarise the same samples (counts_agree=True, dead_leg ttfb=0/total=0/bytes=0 median_total=None, live_leg=5/5 median
+     FAIL: a partial failure does not inflate the sample count (requested=5, succeeded=3, failed=2, series_counts=(3, 3, 3), expected=3, failed_after_
+
+M19b [headline SELF-GUARD: fixture made non-discriminating] -> RED (restored=True)
+     FAIL: the report headline is the unauthenticated Traefik overhead (expected='+25.0 ms' (library A/B would be +25.0 ms) line='Traefik overhead on 
+     FAIL: 1/20
+
+M21 [report-rows PREMISE: a parse that shreds multi-word headers] -> RED (restored=True)
+     FAIL: the report states what the record states (mismatches={'healthy': [('traefik/identity', '<row>', 'present', 'missing'), ('direct/identity', 
+     FAIL: 1/20
+
+AFTER: rc=0 PASS: 20/20
+  measure_plex_latency.py sha=9fd2d16bfdd9db5e (was 9fd2d16bfdd9db5e)
+  test_plex_latency_harness_shape.py sha=06a56bcfec5a3575 (was 06a56bcfec5a3575)

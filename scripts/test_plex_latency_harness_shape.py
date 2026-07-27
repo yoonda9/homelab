@@ -639,6 +639,23 @@ def _row_mismatches(record, report):
     return problems
 
 
+def _elapsed_diagnostics(target, expected):
+    """`failed_after_ms` really is one MEASURED elapsed time per failed sample.
+
+    Length alone is not enough and the difference is not academic: the list is
+    built by comprehension over the failed samples, so a harness that stops
+    recording the elapsed time still produces a list of the right length, full
+    of `None`. That passed a length-only assertion while the diagnostic this
+    field exists to be had ceased to exist (matrix row M4).
+    """
+    values = target.get("failed_after_ms")
+    return (
+        isinstance(values, list)
+        and len(values) == expected
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in values)
+    )
+
+
 def _guard(name: str) -> bool:
     """Report an unusable harness once, as a FAIL, instead of raising."""
     if MOD is None:
@@ -939,8 +956,9 @@ def test_ttfb_and_total_summarise_the_same_samples() -> bool:
         # The elapsed time of each failure is kept, but only as a diagnostic:
         # one entry per attempt on a leg that never answered, and NONE on a leg
         # that did. A harness that filed these as latencies instead would show
-        # up as a live leg with a non-empty list.
-        and len(dead.get("failed_after_ms") or []) == dead.get("requested")
+        # up as a live leg with a non-empty list. Values, not just a length — a
+        # list of the right length full of `None` is not a diagnostic.
+        and _elapsed_diagnostics(dead, dead.get("requested"))
     )
     live_is_measured = (
         live.get("succeeded") == len(FAKE_TTFB)
@@ -1003,11 +1021,7 @@ def test_partial_failure_does_not_inflate_the_sample_count() -> bool:
     # Its length tracks the FAILURES, so it cannot be confused with either
     # latency series — and the partial row is what separates those numbers.
     diagnostics = flaky.get("failed_after_ms")
-    diagnostics_ok = (
-        isinstance(diagnostics, list)
-        and len(diagnostics) == len(failed_attempts)
-        and all(isinstance(v, (int, float)) and v >= 0 for v in diagnostics)
-    )
+    diagnostics_ok = _elapsed_diagnostics(flaky, len(failed_attempts))
     ok = (
         bool(transport.opened)
         and flaky.get("requested") == len(FAKE_TTFB)
@@ -1532,7 +1546,7 @@ def test_an_answered_but_rejected_probe_is_not_a_measurement() -> bool:
         and (rejected.get("ttfb") or {}).get("median_ms") is None
         and (rejected.get("total") or {}).get("median_ms") is None
         # The round trip DID take time; it is a diagnostic, never a latency.
-        and len(rejected.get("failed_after_ms") or []) == len(FAKE_TTFB)
+        and _elapsed_diagnostics(rejected, len(FAKE_TTFB))
     )
     contrast_ok = (
         healthy.get("succeeded") == len(FAKE_TTFB)
