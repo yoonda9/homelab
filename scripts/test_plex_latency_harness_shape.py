@@ -260,13 +260,44 @@ DELAY_FLOOR_MS = 0.8 * READ_DELAY_MS
 # arithmetically indistinguishable and the check silently stops discriminating.
 CONNECT_DELAY_S = 0.02
 CONNECT_DELAY_MS = CONNECT_DELAY_S * 1000.0
-#: The floor the one-clock fixture could not supply. Same 0.8 slack, same reason.
-CONNECT_FLOOR_MS = 0.8 * CONNECT_DELAY_MS
-#: The ceiling, relaxed from `0.5 * READ_DELAY_MS` now that a correct TTFB is no
-#: longer microseconds: it must admit `CONNECT_DELAY_MS` and still exclude a TTFB
-#: that has swallowed the drain (`CONNECT + READ`), so it sits half a read below
-#: that. The two bounds together are what pin TTFB to its own span.
-TTFB_CEILING_MS = CONNECT_DELAY_MS + 0.5 * READ_DELAY_MS
+
+# The THIRD clock, and it is the SUB-SPAN the second one left costing zero.
+#
+# Two clocks bounded TTFB from both sides of its ENDPOINT — the status line — and
+# said nothing about where the interval BEGINS. `CONNECT_DELAY_S` sleeps in
+# `getresponse()`; `_Conn.request()`, which in real `http.client` is where DNS,
+# the TCP connect and the TLS handshake happen (the connection is lazy, so the
+# constructor costs nothing), still cost exactly ZERO on the success road. So
+# moving the clock's start BELOW `conn.request` — a one-line tidy — was
+# undetectable: `PASS 25/25` and the FULL gate at 34/34 exit 0, and live it took
+# the headline from `+8.9 ms` to `+1.3 ms`. Worse than a uniform scale error,
+# because the Traefik leg is `https` and the direct leg is `http`: deleting the
+# handshake hits ONE leg, and the handshake is the thing `time_request`'s
+# docstring names as the point of measuring TTFB this way (mem-1785128562-28be).
+#
+# The rule, one refinement past "an interval needs a cost on both sides of its
+# endpoint": a two-sided bound is not a COVERED interval. Enumerate the SUB-SPANS
+# the quantity is documented to contain — here connect+send, then the wait for
+# the status line — give each a DISTINCT delay, and floor the quantity at the sum
+# of the ones it owes. Ask which sub-span costs zero; that is precisely the one a
+# refactor can silently drop out of the measurement.
+#
+# Distinct from the other two for the same reason they are distinct from each
+# other, and asserted as a three-element set: with any two equal, "TTFB started
+# before the handshake" and "TTFB started after it" are the same arithmetic.
+SEND_DELAY_S = 0.01
+SEND_DELAY_MS = SEND_DELAY_S * 1000.0
+#: The floor under TTFB's ORIGIN alone — the span the socket road also pays,
+#: since a connection that dies died after trying to connect.
+SEND_FLOOR_MS = 0.8 * SEND_DELAY_MS
+#: The floor under the WHOLE of TTFB: both sub-spans it contains, summed. This
+#: replaces `CONNECT_FLOOR_MS` in the TTFB predicates — a floor at one sub-span
+#: admits a TTFB that dropped the other.
+ORIGIN_FLOOR_MS = 0.8 * (SEND_DELAY_MS + CONNECT_DELAY_MS)
+#: The ceiling: it must admit both sub-spans TTFB owes and still exclude a TTFB
+#: that has swallowed the drain as well, so it sits half a read below the sum of
+#: all three. The two bounds together are what pin TTFB to its own span.
+TTFB_CEILING_MS = SEND_DELAY_MS + CONNECT_DELAY_MS + 0.5 * READ_DELAY_MS
 
 # A status sequence for ONE host, consumed per attempt: answers, then starts
 # refusing, then breaks. The shape of a token that expires MID-CAPTURE, and the
@@ -506,6 +537,7 @@ class FakeTransport:
         status_by_host=None,
         delay_s=0.0,
         connect_delay_s=0.0,
+        send_delay_s=0.0,
     ):
         self.failing_hosts = set(failing_hosts)
         self.flaky_hosts = {host: set(idx) for host, idx in (flaky_hosts or {}).items()}
@@ -526,8 +558,22 @@ class FakeTransport:
         # status line" and "TTFB measured the drain too" produce the same
         # arithmetic (mem-1785127552-a55b).
         self.connect_delay_s = connect_delay_s
+        # The FIRST sub-span of TTFB, and the one both other clocks left free.
+        # Slept in `request()`, where the lazy connection really does its DNS,
+        # TCP connect and TLS handshake — so a TTFB whose clock starts below
+        # `conn.request` measures less than it owes and the floor catches it
+        # (mem-1785128562-28be). Its own attribute, and DISTINCT from the other
+        # two, for the same reason they are distinct from each other.
+        self.send_delay_s = send_delay_s
         self.attempts: dict = {}
         self.opened: list = []
+        # Every `close()` the harness made, in order — hosts, not a count, so
+        # "closed the wrong one twice" is not "closed both". A fake whose
+        # `close()` records nothing makes "every connection is closed"
+        # unassertable, and deleting the harness's `finally: conn.close()`
+        # survived this whole file; CPython refcounting hides it live, which is
+        # exactly why nothing here noticed.
+        self.closed: list = []
         # One dict per attempted request: host, METHOD, path, BODY, headers. The
         # only place what actually went on the wire is observable — everything
         # else sees either the environment the token came from or the record it is
@@ -588,6 +634,15 @@ class FakeTransport:
             # headers)` positionally, so a harness that starts sending a body
             # lands it where this stub can see it.
             def request(self, method, path, body=None, headers=None, **kwargs):
+                # The connection is LAZY in real `http.client`: DNS, the TCP
+                # connect and the TLS handshake all happen here, on the first
+                # `request()`, not in the constructor. Paid by BOTH roads and
+                # before the failure branch, because a socket that timed out
+                # still tried to connect first. This is the sub-span that used to
+                # cost zero, which is what made a TTFB clock started below
+                # `conn.request` invisible.
+                if transport.send_delay_s:
+                    time.sleep(transport.send_delay_s)
                 # Recorded BEFORE the failure branch: what a doomed attempt sent
                 # is as interesting as what a successful one did.
                 transport.requests.append(
@@ -622,7 +677,10 @@ class FakeTransport:
                 )
 
             def close(self):
-                return None
+                # Records rather than returning None: an accepted-and-discarded
+                # call is a property no assertion can reach, the same defect
+                # `method` and the connector's class identity were.
+                transport.closed.append({"scheme": type(self).scheme, "host": self.host})
 
         class _HTTPConn(_Conn):
             scheme = "http"
@@ -647,6 +705,7 @@ def _transport_run(
     repeats=len(FAKE_TTFB),
     delay_s=0.0,
     connect_delay_s=0.0,
+    send_delay_s=0.0,
     **kwargs,
 ):
     """Drive the harness's REAL prober (`probe=None`) over `FakeTransport`.
@@ -655,12 +714,14 @@ def _transport_run(
     the point is to execute `time_request` itself, including its except-branch
     AND its non-2xx branch.
 
-    `delay_s` and `connect_delay_s` give the fixture a clock, in the drain and in
-    the wait for the status line respectively — two SPANS, not one duration, so
-    an interval quantity can be bounded from both sides. Both default to 0
-    because every sample pays them and most checks do not need them; the checks
-    that measure a DURATION must pass them, and must assert against the transport
-    they actually drove rather than against the constants they meant to pass.
+    `send_delay_s`, `connect_delay_s` and `delay_s` give the fixture a clock in
+    each of the three sub-spans a sample crosses — the connect/handshake, the
+    wait for the status line, and the drain. THREE SPANS, not one duration, so an
+    interval quantity can be bounded at both ends AND floored at the sum of the
+    parts it is documented to contain. All default to 0 because every sample pays
+    them and most checks do not need them; the checks that measure a DURATION
+    must pass them, and must assert against the transport they actually drove
+    rather than against the constants they meant to pass.
     """
     transport = FakeTransport(
         failing_hosts,
@@ -668,6 +729,7 @@ def _transport_run(
         status_by_host,
         delay_s=delay_s,
         connect_delay_s=connect_delay_s,
+        send_delay_s=send_delay_s,
     )
     try:
         with _no_network(), transport.installed():
@@ -2005,6 +2067,22 @@ def test_every_request_on_the_wire_is_a_read_only_get() -> bool:
     before the response, and the AUTHENTICATED probe set through `main()` — the
     library endpoints are the ones whose real-world counterparts have destructive
     siblings (`/library/sections/N/refresh`).
+
+    Two more properties of what goes on the wire, both previously unassertable
+    for the same reason `method` was — the fake accepted them and recorded
+    nothing:
+
+    * every connection the harness OPENS, it CLOSES. Deleting `finally:
+      conn.close()` survived this whole file, because the stub's `close()` was
+      `return None`. It is the resource half of "non-destructive by
+      construction": a one-shot hotspot capture makes ~24 connections and
+      CPython's refcounting happens to close them, which is what makes the leak
+      invisible until the interpreter that runs this is not CPython.
+    * the harness IDENTIFIES itself. Dropping `User-Agent` survived too. It is
+      what lets the operator — and Plex's own logs — tell these probes apart
+      from a real client's traffic against the household server they are
+      pointed at; asserted through the module constant, not a literal, so a
+      rename stays free and a deletion does not.
     """
     if not _guard("read-only GETs"):
         return False
@@ -2028,6 +2106,27 @@ def test_every_request_on_the_wire_is_a_read_only_get() -> bool:
     methods = {name: sorted({r["method"] for r in t.requests}) for name, t in transports.items()}
     bodies = {name: sorted({repr(r["body"]) for r in t.requests}) for name, t in transports.items()}
     counts = {name: len(t.requests) for name, t in transports.items()}
+    # Opened and closed compared as MULTISETS of (scheme, host): a count alone
+    # would let "closed one connection twice" stand in for "closed both", and the
+    # dead-socket class is the one where the close happens on the exception road.
+    def _pairs(entries):
+        return sorted((e["scheme"], e["host"]) for e in entries)
+
+    closes = {
+        name: (_pairs(t.opened), _pairs(t.closed)) for name, t in transports.items()
+    }
+    all_closed = all(opened and opened == closed for opened, closed in closes.values())
+    # Sent on every request of every class, and equal to the module's own
+    # constant, which must itself be a non-empty string that names the script.
+    agent_ok = (
+        isinstance(MOD.USER_AGENT, str)
+        and MOD.USER_AGENT.strip() != ""
+        and all(
+            r["headers"].get("User-Agent") == MOD.USER_AGENT
+            for t in transports.values()
+            for r in t.requests
+        )
+    )
     ok = (
         not errors
         # Every class really put something on the wire, and there really are four
@@ -2038,10 +2137,14 @@ def test_every_request_on_the_wire_is_a_read_only_get() -> bool:
         and all(counts.values())
         and all(verbs == ["GET"] for verbs in methods.values())
         and all(sent == [repr(None)] for sent in bodies.values())
+        and all_closed
+        and agent_ok
     )
     print(
         f"{'OK' if ok else 'FAIL'}: every request on the wire is a read-only GET with no body "
-        f"(methods={methods}, bodies={bodies}, requests={counts}, errors={errors})"
+        f"(methods={methods}, bodies={bodies}, requests={counts}, "
+        f"opened_vs_closed={ {name: (len(o), len(c)) for name, (o, c) in closes.items()} }, "
+        f"every_connection_closed={all_closed}, user_agent_sent={agent_ok}, errors={errors})"
     )
     return ok
 
@@ -2228,32 +2331,46 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
     roads are driven — the non-2xx branch, which has already drained the body,
     and the OSError branch, where the socket gives up.
 
-    TWO clocks, because TTFB is an INTERVAL and one clock buys a one-sided bound.
-    The first version of this check slept only in `read()` — past the status line
-    — so every predicate it wrote was satisfied more easily as TTFB fell toward
-    zero, and four mutations that do exactly that survived, one of them the whole
-    gate (mem-1785127552-a55b). `CONNECT_DELAY_S` is slept in `getresponse()`,
-    inside the TTFB span, which is what makes `CONNECT_FLOOR_MS <= ttfb <
-    TTFB_CEILING_MS` a two-sided pin: the floor rejects a TTFB that measured less
-    than the wait for the status line, the ceiling rejects one that measured the
-    drain as well. The two constants must be distinct or the spans cannot be told
-    apart, and the fixture-power guard asserts that before anything else.
+    THREE clocks, one per SUB-SPAN, because TTFB is an interval and a two-sided
+    bound is not a covered interval. The first version of this check slept only
+    in `read()` — past the status line — so every predicate got easier as TTFB
+    fell toward zero and four mutations that do exactly that survived, one of
+    them the whole gate (mem-1785127552-a55b). The second added `CONNECT_DELAY_S`
+    in `getresponse()` and pinned TTFB's ENDPOINT from both sides — but its
+    ORIGIN still cost zero, so starting the clock BELOW `conn.request` (where the
+    real handshake happens) survived 25/25 AND the full gate, and understated the
+    live headline 7x on the one leg that is https (mem-1785128562-28be).
+
+    So: `SEND_DELAY_S` in `request()` (connect + handshake), `CONNECT_DELAY_S` in
+    `getresponse()` (the wait for the status line), `READ_DELAY_S` in `read()`
+    (the drain, which TTFB does NOT own). `ORIGIN_FLOOR_MS <= ttfb <
+    TTFB_CEILING_MS` is then a pin on the WHOLE interval: the floor is the sum of
+    both sub-spans TTFB owes, so dropping either one reddens; the ceiling still
+    rejects a TTFB that swallowed the drain. All three constants must be
+    DISTINCT — with any two equal the spans cannot be attributed — and the
+    fixture-power guard asserts that, and the chain the two bounds form, before
+    anything else.
     """
     if not _guard("ttfb vs total"):
         return False
     direct_host = PROBE_DIRECT.split(":")[0]
     healthy, healthy_transport, healthy_error = _transport_run(
-        delay_s=READ_DELAY_S, connect_delay_s=CONNECT_DELAY_S, repeats=3
+        delay_s=READ_DELAY_S,
+        connect_delay_s=CONNECT_DELAY_S,
+        send_delay_s=SEND_DELAY_S,
+        repeats=3,
     )
     rejected, rejected_transport, rejected_error = _transport_run(
         delay_s=READ_DELAY_S,
         connect_delay_s=CONNECT_DELAY_S,
+        send_delay_s=SEND_DELAY_S,
         repeats=2,
         status_by_host={PROBE_HOST: 503},
     )
     dead, dead_transport, dead_error = _transport_run(
         delay_s=READ_DELAY_S,
         connect_delay_s=CONNECT_DELAY_S,
+        send_delay_s=SEND_DELAY_S,
         repeats=2,
         failing_hosts={direct_host},
     )
@@ -2269,30 +2386,40 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
     # checks. A guard that only fires after the thing it guards is not a guard
     # (mem-1785125369-fb77), so this returns rather than joining the final `ok`.
     #
-    # BOTH clocks, and they must be DISTINCT: they mark two different spans, and
-    # if one number stands in both places then "TTFB stopped at the status line"
-    # and "TTFB ran on through the drain" are the same arithmetic. A single clock
-    # is what left TTFB with a ceiling and no floor (mem-1785127552-a55b), so the
-    # floor's own constant is asserted positive here too.
+    # ALL THREE clocks, and they must be pairwise DISTINCT: they mark three
+    # different sub-spans, and if one number stands in two places then "TTFB
+    # started before the handshake", "TTFB stopped at the status line" and "TTFB
+    # ran on through the drain" stop being told apart by the arithmetic. One
+    # clock left TTFB with a ceiling and no floor (mem-1785127552-a55b); two left
+    # its origin free (mem-1785128562-28be), so the set is asserted by SIZE, not
+    # by listing the pairs — a fourth span added later inherits the assertion.
     driven = (healthy_transport, rejected_transport, dead_transport)
     clocks = {t.delay_s for t in driven}
     connect_clocks = {t.connect_delay_s for t in driven}
+    send_clocks = {t.send_delay_s for t in driven}
     if (
         clocks != {READ_DELAY_S}
         or connect_clocks != {CONNECT_DELAY_S}
-        or CONNECT_DELAY_S == READ_DELAY_S
+        or send_clocks != {SEND_DELAY_S}
+        or len({SEND_DELAY_S, CONNECT_DELAY_S, READ_DELAY_S}) != 3
         or DELAY_FLOOR_MS <= 0
-        or CONNECT_FLOOR_MS <= 0
-        # The ceiling must admit the wait it is named for and still EXCLUDE a
-        # TTFB that ran on through the drain — bounded on both sides, or opening
-        # it (to the sum, or to infinity) silently retires the half of this check
-        # that catches a capture slid below `read()`.
-        or not CONNECT_FLOOR_MS <= CONNECT_DELAY_MS < TTFB_CEILING_MS < CONNECT_DELAY_MS + READ_DELAY_MS
+        or SEND_FLOOR_MS <= 0
+        # The floor must exceed EITHER sub-span alone, or a TTFB that dropped one
+        # of them still clears it; the ceiling must admit both and still EXCLUDE
+        # a TTFB that ran on through the drain. A one-sided constraint on a bound
+        # is this check's own defect one level up, so the chain is closed at both
+        # ends: opening the ceiling (to the sum, or to infinity) silently retires
+        # the half that catches a capture slid below `read()`, and lowering the
+        # floor to one sub-span retires the half that catches a clock started
+        # below `conn.request`.
+        or not CONNECT_DELAY_MS < ORIGIN_FLOOR_MS < TTFB_CEILING_MS
+        or not TTFB_CEILING_MS < SEND_DELAY_MS + CONNECT_DELAY_MS + READ_DELAY_MS
     ):
         print(
             "FAIL: ttfb is the status line and total is the drained body (the fixture has no "
-            f"clock on both spans: read delays={sorted(clocks)}, "
-            f"connect delays={sorted(connect_clocks)}, floors={DELAY_FLOOR_MS}/{CONNECT_FLOOR_MS} ms, "
+            f"clock on all three spans: send delays={sorted(send_clocks)}, "
+            f"connect delays={sorted(connect_clocks)}, read delays={sorted(clocks)}, "
+            f"floors={DELAY_FLOOR_MS}/{ORIGIN_FLOOR_MS} ms, "
             f"ttfb ceiling={TTFB_CEILING_MS} ms)"
         )
         return False
@@ -2319,15 +2446,16 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
             # ...the TTFB did NOT, which is the half that catches a capture moved
             # below `read()`...
             and ttfb < TTFB_CEILING_MS
-            # ...and the TTFB DID pay for the wait it is named for, which is the
-            # half nothing here had. Every predicate above is satisfied more
-            # easily as TTFB shrinks, so without this floor `ttfb = 0.0`, the
-            # ms->s unit slip, a capture moved ABOVE `conn.request`, and a TTFB
-            # silently HALVED all stayed green — the last one through the full
-            # gate, printing a plausible live table off a 2x scale error on the
-            # very number Step 4 diffs against.
-            and ttfb >= CONNECT_FLOOR_MS
-            and total >= DELAY_FLOOR_MS + CONNECT_FLOOR_MS
+            # ...and the TTFB DID pay for BOTH sub-spans it is documented to
+            # contain — the connect/handshake AND the wait for the status line.
+            # Every predicate above is satisfied more easily as TTFB shrinks, so
+            # without a floor `ttfb = 0.0`, the ms->s unit slip and a TTFB
+            # silently HALVED all stayed green; with a floor at the second
+            # sub-span only, a clock started BELOW `conn.request` still cleared
+            # it and deleted the TLS handshake from the https leg alone. The sum
+            # is the floor because the sum is what the interval owes.
+            and ttfb >= ORIGIN_FLOOR_MS
+            and total >= DELAY_FLOOR_MS + ORIGIN_FLOOR_MS
         )
         if not good:
             wrong.append((target["name"], ttfb, total))
@@ -2352,18 +2480,20 @@ def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
         (t for t in rejected["targets"] if t["via"] == "traefik"), {}
     )
     dead_leg = next((t for t in dead["targets"] if t["via"] == "direct"), {})
-    # The non-2xx road reached a status line AND drained the body before it
-    # decided the answer was not a measurement, so it owes BOTH spans; the socket
-    # road never got a status line, so it owes only the wait its own sleep marks.
+    # The non-2xx road crossed all THREE sub-spans before it decided the answer
+    # was not a measurement — it connected, waited for the status line, and
+    # drained the body. The socket road never got a status line, but it did try
+    # to connect, so it owes the connect span plus the sleep its own failure
+    # takes to surface.
     elapsed_ok = (
-        _elapsed_diagnostics(rejected_leg, 2, floor_ms=DELAY_FLOOR_MS + CONNECT_FLOOR_MS)
-        and _elapsed_diagnostics(dead_leg, 2, floor_ms=DELAY_FLOOR_MS)
+        _elapsed_diagnostics(rejected_leg, 2, floor_ms=DELAY_FLOOR_MS + ORIGIN_FLOOR_MS)
+        and _elapsed_diagnostics(dead_leg, 2, floor_ms=DELAY_FLOOR_MS + SEND_FLOOR_MS)
     )
 
     ok = bool(gaps) and not wrong and columns_differ and elapsed_ok
     print(
         f"{'OK' if ok else 'FAIL'}: ttfb is the status line and total is the drained body "
-        f"(ttfbs={ttfbs} ms in [{CONNECT_FLOOR_MS}, {TTFB_CEILING_MS}), "
+        f"(ttfbs={ttfbs} ms in [{ORIGIN_FLOOR_MS}, {TTFB_CEILING_MS}), "
         f"gaps={gaps} ms, floor={DELAY_FLOOR_MS} ms, wrong={wrong}, "
         f"report_columns_differ={columns_differ}, "
         f"failed_after_ms non2xx={rejected_leg.get('failed_after_ms')} "
