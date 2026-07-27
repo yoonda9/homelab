@@ -26,7 +26,10 @@ two runs *incomparable* or unsafe, not the script's prose:
      self-file as the plan's external-network baseline,
   8. the harness is import-safe and offline-safe — `scripts/run_gate.py` runs
      this file with NO network, so the test must never perform a real request,
-  9. neither the JSONL record nor the stdout report echoes the token.
+  9. neither the JSONL record nor the stdout report echoes the token,
+ 10. the ENTRY POINT is wired: the argv the runbook publishes really reaches the
+     measurement, the record really lands on disk, and the exit code really
+     follows the documented 0/1/2 contract.
 
 Behaviour is exercised, not grepped: the record-building and statistics paths
 run end to end against an INJECTED fake prober with scripted timings, under a
@@ -42,6 +45,14 @@ except-branch completely unexercised (mem-1785119466-0e93). `FakeTransport` sits
 one level lower — it replaces `http.client.HTTP(S)Connection`, so the harness's
 REAL `time_request` runs against it — and it has a failure mode, which is what
 makes properties 6 testable at all.
+
+Both of those fakes are injected BELOW `main()`, so on their own they prove the
+library and say nothing about the wiring (mem-1785120628-7b8d): a CLI flag that
+never reaches the keyword it names, or a write that never happens, stays green
+through every one of them while `main()` prints its success message regardless.
+So the checks for properties 10 and 2 drive `MOD.main(argv)` itself, over
+`FakeTransport`, with `--out` at a temporary path, and assert against the record
+that reached DISK and the code `main()` returned — never against what it printed.
 
 Follows the repo's dual-mode shape-test convention (see
 `test_plex_ramdisk_bind_mount_shape.py`): module-level `test_<name>() -> bool`
@@ -59,6 +70,7 @@ import os
 import pathlib
 import socket
 import sys
+import tempfile
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARNESS = REPO_ROOT / "scripts" / "measure_plex_latency.py"
@@ -170,6 +182,7 @@ class FakeProbe:
             "ttfb_ms": self.ttfbs[index % len(self.ttfbs)],
             "total_ms": self.totals[index % len(self.totals)],
             "bytes": 11,
+            "failed_after_ms": None,
             "error": None,
         }
 
@@ -306,6 +319,87 @@ def _fake_run(token=None, repeats=len(FAKE_TTFB), probe=None):
     except NetworkAttempted as exc:
         return None, probe, f"NetworkAttempted: {exc}"
     return record, probe, None
+
+
+@contextlib.contextmanager
+def _env(name, value):
+    """Bind one environment variable for the duration of a check, then restore it.
+
+    `main()` resolves the token from the real environment, so a developer who
+    happens to export `PLEX_TOKEN` would otherwise get a different set of probes
+    than the gate does.
+    """
+    previous = os.environ.get(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
+def _cli_argv(out, extra=(), repeats=2):
+    """The argv an operator would actually type, pointed at sentinel targets."""
+    return [
+        "--label", PROBE_LABEL,
+        "--vantage", "external",
+        "--host", PROBE_HOST,
+        "--direct", PROBE_DIRECT,
+        "--repeats", str(repeats),
+        "--timeout", "0.25",
+        "--out", str(out),
+        *extra,
+    ]
+
+
+def _cli_run(argv, failing_hosts=(), token=None):
+    """Drive the harness's ENTRY POINT for real: argv -> record -> disk -> exit code.
+
+    Returns `(rc, output, transport, error)`. The fakes elsewhere in this file
+    are injected below `main()`, so nothing else here executes the wiring
+    between an argument and the measurement it is supposed to select, or the
+    write that produces this task's named output. This runs the real thing:
+    `main()` parses the argv, the harness's real `time_request` runs over
+    `FakeTransport`, and the caller inspects the file on disk and the returned
+    code. stdout/stderr are captured because the gate log should not carry a
+    report for a run against `.invalid` hosts.
+    """
+    transport = FakeTransport(failing_hosts)
+    buffer = io.StringIO()
+    try:
+        with _env(MOD.TOKEN_ENV, token), _no_network(), transport.installed():
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                rc = MOD.main(argv)
+    except SystemExit as exc:  # argparse refuses malformed argv by exiting
+        rc = exc.code
+    except NetworkAttempted as exc:
+        return None, buffer.getvalue(), transport, f"NetworkAttempted: {exc}"
+    return rc, buffer.getvalue(), transport, None
+
+
+def _read_records(path):
+    """Parse the JSONL the CLI claims to have written. Returns `(records, error)`.
+
+    A missing file is `([], None)` — an absence the caller asserts on — while
+    unparseable content is an error, because "the file exists" is not the
+    property Step 4 depends on.
+    """
+    path = pathlib.Path(path)
+    if not path.exists():
+        return [], None
+    try:
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ], None
+    except ValueError as exc:
+        return None, f"unparseable JSONL: {exc}"
 
 
 def _guard(name: str) -> bool:
@@ -575,11 +669,17 @@ def test_ttfb_and_total_summarise_the_same_samples() -> bool:
             for stat in ("min_ms", "median_ms", "max_ms")
         )
         and bool(dead.get("errors"))
+        # The elapsed time of each failure is kept, but only as a diagnostic:
+        # one entry per attempt on a leg that never answered, and NONE on a leg
+        # that did. A harness that filed these as latencies instead would show
+        # up as a live leg with a non-empty list.
+        and len(dead.get("failed_after_ms") or []) == dead.get("requested")
     )
     live_is_measured = (
         live.get("succeeded") == len(FAKE_TTFB)
         and not live.get("errors")
         and _series(live, "total", "median_ms") is not None
+        and live.get("failed_after_ms") == []
     )
     report = MOD.render_report(record)
     overhead_claimed = "overhead" in report and "n/a" not in report.split("overhead")[-1]
@@ -624,6 +724,16 @@ def test_partial_failure_does_not_inflate_the_sample_count() -> bool:
         print("FAIL: a partial failure does not inflate the sample count (no traefik target)")
         return False
     counts = ((flaky.get("ttfb") or {}).get("count"), (flaky.get("total") or {}).get("count"))
+    # The failure diagnostic the module docstring promises is KEPT: one entry per
+    # failed sample, carried into the record rather than computed and dropped.
+    # Its length tracks the FAILURES, so it cannot be confused with either
+    # latency series — and the partial row is what separates those numbers.
+    diagnostics = flaky.get("failed_after_ms")
+    diagnostics_ok = (
+        isinstance(diagnostics, list)
+        and len(diagnostics) == len(failed_attempts)
+        and all(isinstance(v, (int, float)) and v >= 0 for v in diagnostics)
+    )
     ok = (
         bool(transport.opened)
         and flaky.get("requested") == len(FAKE_TTFB)
@@ -632,11 +742,13 @@ def test_partial_failure_does_not_inflate_the_sample_count() -> bool:
         and counts == (expected_ok, expected_ok)
         and bool(flaky.get("errors"))
         and (flaky.get("ttfb") or {}).get("median_ms") is not None
+        and diagnostics_ok
     )
     print(
         f"{'OK' if ok else 'FAIL'}: a partial failure does not inflate the sample count "
         f"(requested={flaky.get('requested')}, succeeded={flaky.get('succeeded')}, "
-        f"failed={flaky.get('failed')}, series_counts={counts}, expected={expected_ok})"
+        f"failed={flaky.get('failed')}, series_counts={counts}, expected={expected_ok}, "
+        f"failed_after_ms={diagnostics!r})"
     )
     return ok
 
@@ -683,6 +795,15 @@ def test_direct_leg_is_skippable_and_the_record_says_so() -> bool:
     repeats x timeout hanging and then exits non-zero. `--skip-direct` is the
     affordance for that; the danger is a run that quietly lost half the A/B, so
     `direct_probed` must record which shape the run had. Default stays BOTH legs.
+
+    Checked at BOTH levels, because they fail independently. That the library
+    honours a `probe_direct` keyword and that the parser owns a `--skip-direct`
+    flag are two facts with one untested wire between them: cut it, and the CLI
+    still prints "note: --skip-direct", then probes the dead leg anyway, stamps
+    `direct_probed=true` and exits 1 — the exact failure the flag exists to
+    prevent, now announcing that it is not happening (mem-1785120628-7b8d). So
+    the flag is also driven through `main()` against a direct host that CANNOT
+    answer, and judged by the record on disk rather than by the message.
     """
     if not _guard("direct leg skippable"):
         return False
@@ -704,6 +825,29 @@ def test_direct_leg_is_skippable_and_the_record_says_so() -> bool:
         for opt in action.option_strings
         if "skip-direct" in opt
     ]
+    # The wire, driven end to end. The direct host is made unreachable, which is
+    # the live external case: with the flag honoured the run never touches it and
+    # exits 0; with the flag a no-op the run probes it, fails, and exits 1.
+    direct_host = PROBE_DIRECT.split(":")[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "skip-direct.jsonl"
+        cli_rc, _, cli_transport, cli_error = _cli_run(
+            _cli_argv(out, ["--skip-direct"]), failing_hosts={direct_host}
+        )
+        written, parse_error = _read_records(out)
+    on_disk = (written or [{}])[-1] if written else {}
+    cli_vias = sorted({t.get("via") for t in on_disk.get("targets", [])})
+    cli_ok = (
+        cli_error is None
+        and parse_error is None
+        and cli_rc == 0
+        and len(written or []) == 1
+        and on_disk.get("direct_probed") is False
+        and cli_vias == ["traefik"]
+        # Nothing was even opened to the address the flag says to leave alone.
+        and direct_host not in cli_transport.attempts
+    )
+
     ok = (
         error is None
         and both_error is None
@@ -714,12 +858,119 @@ def test_direct_leg_is_skippable_and_the_record_says_so() -> bool:
         and record.get("direct_probed") is False
         and both.get("direct_probed") is True
         and bool(flags)
+        and cli_ok
     )
     print(
         f"{'OK' if ok else 'FAIL'}: the direct leg is skippable and recorded "
         f"(skipped_vias={skipped_vias}, default_vias={default_vias}, "
         f"direct_probed={None if record is None else record.get('direct_probed')!r}/"
-        f"{None if both is None else both.get('direct_probed')!r}, flags={flags})"
+        f"{None if both is None else both.get('direct_probed')!r}, flags={flags}, "
+        f"cli_rc={cli_rc}, cli_record_direct_probed={on_disk.get('direct_probed')!r}, "
+        f"cli_vias={cli_vias}, cli_opened={sorted(cli_transport.attempts)}, "
+        f"cli_error={cli_error or parse_error})"
+    )
+    return ok
+
+
+def test_cli_appends_the_record_and_honours_its_exit_contract() -> bool:
+    """AC: the ENTRY POINT persists one record per run and returns 0 / 1 / 2.
+
+    The JSONL is this task's named output and Step 4's only input, and `main()`
+    is the only thing that writes it. Neuter the write and every library check
+    here stays green while `main()` still prints "appended 1 record to <path>"
+    unconditionally — a false success on a capture that is taken once, from a
+    mobile hotspot, and cannot be retaken (mem-1785120628-7b8d). So the artifact
+    is read back from disk instead of the message being believed.
+
+    Four properties, all only observable from here:
+
+    * a healthy run exits 0 and leaves exactly ONE parseable record carrying the
+      argv it was given (a record whose targets came from a default instead of
+      the flags would pair two different measurements in Step 4),
+    * runs ACCUMULATE — a second run appends rather than truncating, which is
+      the whole premise of an append-only log,
+    * an unreachable target exits 1 *after* the record is written, so the
+      diagnosis is never lost with the failure,
+    * `--no-log` writes nothing, and `--repeats 0` is refused with 2 before any
+      probing happens. Both codes are published in the module docstring and are
+      about to be transcribed into the Step 1b runbook.
+    """
+    if not _guard("cli appends and exits"):
+        return False
+    direct_host = PROBE_DIRECT.split(":")[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "nested" / "plex-latency.jsonl"
+        healthy_rc, _, _, healthy_err = _cli_run(_cli_argv(out))
+        after_first, first_err = _read_records(out)
+        second_rc, _, _, second_err = _cli_run(_cli_argv(out))
+        after_second, second_parse_err = _read_records(out)
+        dead_rc, _, _, dead_err = _cli_run(_cli_argv(out), failing_hosts={direct_host})
+        after_dead, dead_parse_err = _read_records(out)
+
+        quiet = pathlib.Path(tmp) / "no-log.jsonl"
+        quiet_rc, _, _, quiet_err = _cli_run(_cli_argv(quiet, ["--no-log"]))
+        quiet_records, quiet_parse_err = _read_records(quiet)
+        # Sampled INSIDE the temporary directory: asked after it is torn down,
+        # `exists()` is False for every harness and pins nothing.
+        quiet_exists = quiet.exists()
+
+        refused = pathlib.Path(tmp) / "bad-repeats.jsonl"
+        refused_rc, _, _, refused_err = _cli_run(_cli_argv(refused, repeats=0))
+        refused_records, refused_parse_err = _read_records(refused)
+        refused_exists = refused.exists()
+
+    errors = [
+        e
+        for e in (
+            healthy_err, first_err, second_err, second_parse_err, dead_err, dead_parse_err,
+            quiet_err, quiet_parse_err, refused_err, refused_parse_err,
+        )
+        if e
+    ]
+    if errors or after_first is None or after_second is None or after_dead is None:
+        print(f"FAIL: the CLI appends its record and honours the exit contract ({errors})")
+        return False
+
+    first = after_first[0] if after_first else {}
+    written_ok = (
+        healthy_rc == 0
+        and len(after_first) == 1
+        and first.get("label") == PROBE_LABEL
+        and first.get("vantage") == "external"
+        and first.get("host") == PROBE_HOST
+        and first.get("direct") == PROBE_DIRECT
+        and first.get("repeats") == 2
+        and first.get("direct_probed") is True
+        and sorted({t.get("via") for t in first.get("targets", [])}) == ["direct", "traefik"]
+        and all(t.get("succeeded") == 2 for t in first.get("targets", []))
+    )
+    # Append, not overwrite: the first record must survive the second run.
+    appends_ok = second_rc == 0 and len(after_second) == 2 and after_second[0] == first
+    # The record is written BEFORE the non-zero return, so a failed capture still
+    # leaves the evidence of what failed.
+    dead_leg = next(
+        (t for t in (after_dead[-1] if after_dead else {}).get("targets", []) if t.get("via") == "direct"),
+        {},
+    )
+    dead_ok = (
+        dead_rc == 1
+        and len(after_dead) == 3
+        and dead_leg.get("succeeded") == 0
+        and dead_leg.get("failed") == 2
+        and bool(dead_leg.get("errors"))
+    )
+    quiet_ok = quiet_rc == 0 and quiet_records == [] and not quiet_exists
+    refused_ok = refused_rc == 2 and refused_records == [] and not refused_exists
+
+    ok = written_ok and appends_ok and dead_ok and quiet_ok and refused_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: the CLI appends its record and honours the exit contract "
+        f"(healthy rc={healthy_rc} records={len(after_first)} argv_echoed={written_ok}, "
+        f"appends={appends_ok} lines={len(after_second)}, "
+        f"unreachable rc={dead_rc} records={len(after_dead)} dead_leg="
+        f"{dead_leg.get('succeeded')}/{dead_leg.get('requested')}, "
+        f"no_log rc={quiet_rc} wrote={quiet_exists}, "
+        f"bad_repeats rc={refused_rc} wrote={refused_exists})"
     )
     return ok
 
@@ -769,16 +1020,9 @@ def test_token_never_reaches_the_record_or_report() -> bool:
     # leak sources: a record field threaded from the argument, and a reporting
     # path that re-reads $PLEX_TOKEN out of the environment for itself. Setting
     # only the argument would leave the second invisible to this check.
-    previous = os.environ.get(MOD.TOKEN_ENV)
-    os.environ[MOD.TOKEN_ENV] = PROBE_TOKEN
-    try:
+    with _env(MOD.TOKEN_ENV, PROBE_TOKEN):
         record, probe, error = _fake_run(token=PROBE_TOKEN)
         report = "" if record is None else MOD.render_report(record)
-    finally:
-        if previous is None:
-            os.environ.pop(MOD.TOKEN_ENV, None)
-        else:
-            os.environ[MOD.TOKEN_ENV] = previous
     if record is None:
         print(f"FAIL: token is used but never recorded or printed ({error})")
         return False
@@ -805,6 +1049,7 @@ TESTS = (
     test_partial_failure_does_not_inflate_the_sample_count,
     test_label_and_vantage_are_mandatory,
     test_direct_leg_is_skippable_and_the_record_says_so,
+    test_cli_appends_the_record_and_honours_its_exit_contract,
     test_harness_is_offline_safe,
     test_token_never_reaches_the_record_or_report,
 )

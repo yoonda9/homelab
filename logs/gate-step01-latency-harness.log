@@ -231,12 +231,13 @@ OK: run record carries label + vantage + UTC timestamp (label='probe-label-51ac'
 OK: min/median/max computed from the samples (ttfb=[(11.0, 37.0, 91.0)], total=[(22.0, 74.0, 182.0)], counts=[5], probe_calls=10, targets=2)
 OK: a failed sample carries no latency in either field (ttfb_ms=None, total_ms=None, status=None, error='TimeoutError: the read operation timed out', transport_used=True)
 OK: ttfb and total summarise the same samples (counts_agree=True, dead_leg ttfb=0/total=0 median_total=None, live_leg=5/5, overhead_claimed_without_both_legs=False)
-OK: a partial failure does not inflate the sample count (requested=5, succeeded=3, failed=2, series_counts=(3, 3), expected=3)
+OK: a partial failure does not inflate the sample count (requested=5, succeeded=3, failed=2, series_counts=(3, 3), expected=3, failed_after_ms=[0.001, 0.0])
 OK: --label and --vantage are mandatory and validated (refused={'no args': 2, 'label only': 2, 'vantage only': 2, 'unknown vantage': 2}, complete_parses=True)
-OK: the direct leg is skippable and recorded (skipped_vias=['traefik'], default_vias=['direct', 'traefik'], direct_probed=False/True, flags=['--skip-direct'])
+OK: the direct leg is skippable and recorded (skipped_vias=['traefik'], default_vias=['direct', 'traefik'], direct_probed=False/True, flags=['--skip-direct'], cli_rc=0, cli_record_direct_probed=False, cli_vias=['traefik'], cli_opened=['plex.probe-vantage-7431.invalid'], cli_error=None)
+OK: the CLI appends its record and honours the exit contract (healthy rc=0 records=1 argv_echoed=True, appends=True lines=2, unreachable rc=1 records=3 dead_leg=0/2, no_log rc=0 wrote=False, bad_repeats rc=2 wrote=False)
 OK: harness is import- and offline-safe (import_attempts=[], run_attempts=[], error=None, injected_probe_used=True)
 OK: token is used but never recorded or printed (sent_to_probe=True, in_record=False, in_report=False)
-PASS: 13/13
+PASS: 14/14
 OK: module plex bind_mounts parse (entries=5, known_present=['"/tank/Media"', '"/tank/Server/AppData/plex"'])
 OK: module plex has exactly one bind_mounts entry pairing host_path "/mnt/plex-transcode" with ct_path "/transcode" (host_path matches=1, paired=1)
 OK: the /transcode bind entry sets read_only = false (read_only='false')

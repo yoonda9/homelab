@@ -74,7 +74,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 #: incompatible shapes rather than silently comparing different things.
 #: v2 — failed samples no longer contribute a `total_ms`; targets gained
 #: `succeeded`/`failed`; records gained `direct_probed`.
-SCHEMA_VERSION = 2
+#: v3 — targets gained `failed_after_ms`, the per-failure diagnostic the module
+#: docstring has always promised but which used to be dropped before the record.
+SCHEMA_VERSION = 3
 
 #: The token comes from here and from nowhere else. See the module docstring.
 TOKEN_ENV = "PLEX_TOKEN"
@@ -253,6 +255,12 @@ def measure_target(target, repeats=DEFAULT_REPEATS, timeout=DEFAULT_TIMEOUT, tok
         "failed": len(samples) - succeeded,
         "statuses": statuses,
         "errors": errors,
+        # One entry per FAILED sample: how long that failure took to surface.
+        # Deliberately a raw list and never a summary — it is a diagnostic, not
+        # a latency (on a timeout it is just `--timeout`), and giving it
+        # min/median/max would invite it into a comparison it cannot survive.
+        # Its length tracks `failed`, so it can never be mistaken for a series.
+        "failed_after_ms": [s["failed_after_ms"] for s in samples if s["error"] is not None],
         "ttfb": summarize([s["ttfb_ms"] for s in samples]),
         "total": summarize([s["total_ms"] for s in samples]),
     }
