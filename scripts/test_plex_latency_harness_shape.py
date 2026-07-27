@@ -29,7 +29,13 @@ two runs *incomparable* or unsafe, not the script's prose:
   9. neither the JSONL record nor the stdout report echoes the token,
  10. the ENTRY POINT is wired: the argv the runbook publishes really reaches the
      measurement, the record really lands on disk, and the exit code really
-     follows the documented 0/1/2 contract.
+     follows the documented 0/1/2/3 contract — including the case where the
+     measurement succeeds and the WRITE is what fails,
+ 11. the human-readable report STATES WHAT THE RECORD STATES. It is half of this
+     task's named output ("human-readable stdout AND an append-only structured
+     record") and it is the half the operator transcribes, so its headline
+     number and its per-endpoint rows are read and compared against the record
+     they claim to describe (mem-1785121975-bdc3).
 
 Behaviour is exercised, not grepped: the record-building and statistics paths
 run end to end against an INJECTED fake prober with scripted timings, under a
@@ -63,7 +69,6 @@ Stdlib only.
 import contextlib
 import datetime
 import http.client
-import importlib.util
 import io
 import json
 import os
@@ -71,6 +76,7 @@ import pathlib
 import socket
 import sys
 import tempfile
+import types
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARNESS = REPO_ROOT / "scripts" / "measure_plex_latency.py"
@@ -83,6 +89,9 @@ PROBE_TOKEN = "probe-token-a7f31c9e-never-a-real-plex-token"
 PROBE_LABEL = "probe-label-51ac"
 PROBE_VANTAGE = "probe-vantage-9d2f"
 PROBE_NOW = datetime.datetime(2001, 2, 3, 4, 5, 6, tzinfo=datetime.timezone.utc)
+# Distinct from the harness's own DEFAULT_TIMEOUT, so "the flag reached the
+# request" is distinguishable from "the default did".
+PROBE_TIMEOUT = 0.37
 
 # Scripted timings: five distinct values whose min/median/max are all different,
 # so a statistic computed off the wrong end (or off the raw list order) shows.
@@ -90,6 +99,13 @@ FAKE_TTFB = [37.0, 11.0, 91.0, 53.0, 23.0]  # -> min 11.0, median 37.0, max 91.0
 FAKE_TOTAL = [74.0, 22.0, 182.0, 106.0, 46.0]  # -> min 22.0, median 74.0, max 182.0
 FAKE_TTFB_STATS = (11.0, 37.0, 91.0)
 FAKE_TOTAL_STATS = (22.0, 74.0, 182.0)
+
+# A SECOND set of timings, for the direct leg only. The report's headline is a
+# subtraction between the two legs' medians; with both legs on one script that
+# difference is 0.0, which prints identically whichever way round the operands
+# go. These make the difference non-zero and its sign observable.
+FAKE_DIRECT_TTFB = [12.0, 4.0, 60.0, 20.0, 8.0]  # -> min 4.0, median 12.0, max 60.0
+FAKE_DIRECT_TOTAL = [30.0, 10.0, 120.0, 50.0, 18.0]  # -> min 10.0, median 30.0, max 120.0
 
 
 class NetworkAttempted(RuntimeError):
@@ -137,13 +153,34 @@ def _no_network():
 
 
 def _load_harness():
-    """Import `measure_plex_latency` by path, under the network guard."""
-    spec = importlib.util.spec_from_file_location("measure_plex_latency", HARNESS)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {HARNESS}")
-    module = importlib.util.module_from_spec(spec)
+    """Compile the harness FROM ITS SOURCE TEXT and run it, under the network guard.
+
+    Deliberately NOT `importlib.util.spec_from_file_location` + `exec_module`,
+    which is the obvious way and which consults `__pycache__`. The cache key is
+    `(source mtime truncated to whole SECONDS, source size)`, so a mutation
+    matrix — the one instrument whose entire job is detecting false greens — can
+    poison it: mutate the harness, run it, restore with `shutil.copy2` (which
+    PRESERVES the original mtime), and if the edit was the same size the stale
+    `.pyc` still validates against the restored source. Every later run then
+    executes the MUTATION while the file on disk, and its sha256, are pristine.
+
+    That is not hypothetical here. This very file caught it: `scripts/__pycache__`
+    held a `render_report` compiled with the overhead subtraction REVERSED,
+    left behind by the previous round's matrix, and the gate had been importing
+    it ever since (`scripts/run_gate.py` runs each shape test as
+    `[sys.executable, path]` with no `-B`). `python -B` does not help — it stops
+    the cache being WRITTEN, not being READ.
+
+    `compile()` over the text read from disk has no cache to consult, so the
+    artifact under test is the artifact in git, always. Same family as
+    mem-1785121487-cbe4, one level up: there a matrix row measured the wrong
+    mutation; here every run measures the wrong file.
+    """
+    module = types.ModuleType("measure_plex_latency")
+    module.__file__ = str(HARNESS)
+    code = compile(HARNESS.read_text(encoding="utf-8"), str(HARNESS), "exec")
     with _no_network():
-        spec.loader.exec_module(module)
+        exec(code, module.__dict__)  # noqa: S102 - the file under test, by design
     return module
 
 
@@ -169,18 +206,29 @@ class FakeProbe:
     will disagree about what a failed sample looks like.
     """
 
-    def __init__(self, ttfbs=FAKE_TTFB, totals=FAKE_TOTAL):
+    def __init__(self, ttfbs=FAKE_TTFB, totals=FAKE_TOTAL, per_origin=None):
         self.ttfbs = ttfbs
         self.totals = totals
+        # url-substring -> (ttfbs, totals). Lets one run give the two legs
+        # DIFFERENT timings, which is what makes the report's Traefik-vs-direct
+        # subtraction have an observable sign.
+        self.per_origin = dict(per_origin or {})
         self.calls: list = []
+
+    def _script(self, url):
+        for needle, script in self.per_origin.items():
+            if needle in url:
+                return script
+        return self.ttfbs, self.totals
 
     def __call__(self, url, timeout=None, token=None):
         index = sum(1 for call in self.calls if call[0] == url)
         self.calls.append((url, timeout, token))
+        ttfbs, totals = self._script(url)
         return {
             "status": 200,
-            "ttfb_ms": self.ttfbs[index % len(self.ttfbs)],
-            "total_ms": self.totals[index % len(self.totals)],
+            "ttfb_ms": ttfbs[index % len(ttfbs)],
+            "total_ms": totals[index % len(totals)],
             "bytes": 11,
             "failed_after_ms": None,
             "error": None,
@@ -223,6 +271,10 @@ class FakeTransport:
         self.flaky_hosts = {host: set(idx) for host, idx in (flaky_hosts or {}).items()}
         self.attempts: dict = {}
         self.opened: list = []
+        # (host, path, headers) per attempted request. The ONLY place the token
+        # actually sent on the wire is observable — everything else sees either
+        # the environment it came from or the record it is kept out of.
+        self.requests: list = []
 
     @contextlib.contextmanager
     def installed(self):
@@ -234,12 +286,16 @@ class FakeTransport:
                 attempt = transport.attempts.get(host, 0)
                 transport.attempts[host] = attempt + 1
                 transport.opened.append((host, port, timeout))
+                self.host = host
                 self.fails = (
                     host in transport.failing_hosts
                     or attempt in transport.flaky_hosts.get(host, ())
                 )
 
             def request(self, method, path, headers=None, **kwargs):
+                # Recorded BEFORE the failure branch: what a doomed attempt sent
+                # is as interesting as what a successful one did.
+                transport.requests.append((self.host, path, dict(headers or {})))
                 if self.fails:
                     raise TimeoutError("the read operation timed out")
 
@@ -343,7 +399,7 @@ def _env(name, value):
             os.environ[name] = previous
 
 
-def _cli_argv(out, extra=(), repeats=2):
+def _cli_argv(out, extra=(), repeats=2, timeout=PROBE_TIMEOUT):
     """The argv an operator would actually type, pointed at sentinel targets."""
     return [
         "--label", PROBE_LABEL,
@@ -351,7 +407,7 @@ def _cli_argv(out, extra=(), repeats=2):
         "--host", PROBE_HOST,
         "--direct", PROBE_DIRECT,
         "--repeats", str(repeats),
-        "--timeout", "0.25",
+        "--timeout", str(timeout),
         "--out", str(out),
         *extra,
     ]
@@ -379,6 +435,13 @@ def _cli_run(argv, failing_hosts=(), token=None):
         rc = exc.code
     except NetworkAttempted as exc:
         return None, buffer.getvalue(), transport, f"NetworkAttempted: {exc}"
+    except OSError as exc:
+        # An OSError escaping main() IS a defect, not a fixture problem: a write
+        # that cannot happen has to be reported through the exit contract the
+        # runbook publishes, not as a traceback on the operator's one-shot
+        # capture. Returned as an error string so the check prints FAIL rather
+        # than aborting every check after it.
+        return None, buffer.getvalue(), transport, f"{type(exc).__name__} escaped main(): {exc}"
     return rc, buffer.getvalue(), transport, None
 
 
@@ -975,6 +1038,279 @@ def test_cli_appends_the_record_and_honours_its_exit_contract() -> bool:
     return ok
 
 
+def test_report_states_what_the_record_states() -> bool:
+    """AC: the human-readable half of the output agrees with the machine half.
+
+    Both halves are named deliverables of this task, and every other check in
+    this file reads the record — so the report was pinned only by its ABSENCE
+    case (the `n/a` branch of the overhead line) and no check ever read a
+    printed VALUE (mem-1785121975-bdc3). The headline is the conclusion Step 4
+    exists to draw and the line 1b tells the operator to transcribe off the
+    screen: invert the subtraction and "Traefik costs 25.0 ms" becomes "Traefik
+    saves 25.0 ms" while the JSONL stays perfectly correct. The data survives;
+    the transcript does not.
+
+    Three properties, mapped to the three mutations that previously survived the
+    full gate: every recorded target has a ROW (else a whole leg silently
+    vanishes from the report), each row's cells carry the statistics the record
+    holds under the labels it prints (else `median_ms` -> `min_ms` renders a
+    minimum under the heading "median TTFB"), and the headline equals
+    `traefik_median - direct_median` with that sign.
+
+    Driven with per-leg scripted timings, which the CLI fixture cannot supply
+    and which the check would be VACUOUS without: over `FakeTransport` every
+    elapsed time is a few microseconds, so min, median, max and both legs alike
+    all render as `0.0` at one decimal place and none of the three mutations
+    would change a character. The `discriminating` assertion below holds the
+    fixture to that requirement.
+    """
+    if not _guard("report states the record"):
+        return False
+    probe = FakeProbe(per_origin={f"http://{PROBE_DIRECT}": (FAKE_DIRECT_TTFB, FAKE_DIRECT_TOTAL)})
+    record, _, error = _fake_run(probe=probe)
+    if record is None:
+        print(f"FAIL: the report states what the record states ({error})")
+        return False
+    report = MOD.render_report(record)
+
+    def _fmt(value):
+        return "n/a" if value is None else f"{value:.1f}"
+
+    def _expected_cells(target):
+        return [
+            "/".join(_fmt(target[series][stat]) for stat in ("min_ms", "median_ms", "max_ms"))
+            for series in ("ttfb", "total")
+        ]
+
+    lines = [line.strip() for line in report.splitlines()]
+    rows = {}
+    for target in record["targets"]:
+        rows[target["name"]] = next(
+            (line for line in lines if line.startswith(target["name"] + " ")), None
+        )
+    missing_rows = sorted(name for name, line in rows.items() if line is None)
+    wrong_cells = sorted(
+        target["name"]
+        for target in record["targets"]
+        if rows[target["name"]] is not None
+        and not all(cell in rows[target["name"]] for cell in _expected_cells(target))
+    )
+
+    by_via = {t["via"]: t for t in record["targets"] if t["path"] == MOD.UNAUTH_PATH}
+    traefik, direct = by_via.get("traefik"), by_via.get("direct")
+    if traefik is None or direct is None:
+        print(f"FAIL: the report states what the record states (missing leg: {sorted(by_via)})")
+        return False
+    # Self-guard: the mutations this check exists for are only visible while the
+    # three statistics differ from one another AND the two legs differ from one
+    # another. Asserted rather than assumed, so a future timing change cannot
+    # quietly turn every comparison below into a tautology.
+    discriminating = (
+        len({traefik["ttfb"][s] for s in ("min_ms", "median_ms", "max_ms")}) == 3
+        and traefik["ttfb"]["median_ms"] != direct["ttfb"]["median_ms"]
+    )
+    expected_overhead = f"{traefik['ttfb']['median_ms'] - direct['ttfb']['median_ms']:+.1f} ms"
+    overhead_line = next((line for line in lines if "overhead" in line), "")
+    overhead_ok = overhead_line.endswith(expected_overhead) and "n/a" not in overhead_line
+
+    # The WIRE, separately: main() must print the report for the record it wrote.
+    # This half cannot see a `render_report` mutation — both sides of the
+    # comparison would move together — so the value assertions above are what
+    # guard the content; this guards only that the text reaching the operator
+    # describes the record reaching disk.
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "report.jsonl"
+        cli_rc, output, _, cli_error = _cli_run(_cli_argv(out))
+        written, parse_error = _read_records(out)
+    printed_ok = (
+        cli_error is None
+        and parse_error is None
+        and cli_rc == 0
+        and len(written or []) == 1
+        and MOD.render_report(written[0]) in output
+    )
+
+    ok = (
+        discriminating
+        and not missing_rows
+        and not wrong_cells
+        and overhead_ok
+        and printed_ok
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: the report states what the record states "
+        f"(rows_missing={missing_rows}, rows_with_wrong_cells={wrong_cells}, "
+        f"overhead_expected={expected_overhead!r} line={overhead_line!r}, "
+        f"fixture_discriminates={discriminating}, main_printed_the_written_record={printed_ok})"
+    )
+    return ok
+
+
+def test_cli_wires_the_token_and_the_timeout() -> bool:
+    """AC: the last two inputs — $PLEX_TOKEN and `--timeout` — reach the request.
+
+    The argv/env wires for `--host`, `--repeats`, `--out`, `--no-log`,
+    `--skip-direct`, `--label` and `--vantage` are pinned elsewhere; an
+    enumerated list of wires with two members missing is how the last two
+    rejections started. These two are the ones left:
+
+    * the token is what makes the AUTHENTICATED library endpoints appear at all,
+      and the slow initial LIBRARY load is the plan's actual complaint — a
+      baseline captured with the variable silently unread measures `/identity`
+      and nothing else, and looks identical on disk to one where the operator
+      never exported it;
+    * `--timeout` goes two places (the connection, and the record's own
+      `timeout_s`), and the record's copy is how Step 4 knows a "slow" number is
+      not just a clipped one.
+
+    Judged from the transport and from the file on disk, never from the report:
+    the header actually sent is the only observation that distinguishes "the
+    token was read" from "a flag was echoed into a record".
+    """
+    if not _guard("cli token and timeout wires"):
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        authed_out = pathlib.Path(tmp) / "authed.jsonl"
+        authed_rc, _, authed_transport, authed_err = _cli_run(
+            _cli_argv(authed_out), token=PROBE_TOKEN
+        )
+        authed_records, authed_parse_err = _read_records(authed_out)
+        on_disk_text = authed_out.read_text(encoding="utf-8") if authed_out.exists() else ""
+
+        anon_out = pathlib.Path(tmp) / "anon.jsonl"
+        anon_rc, _, _, anon_err = _cli_run(_cli_argv(anon_out))
+        anon_records, anon_parse_err = _read_records(anon_out)
+
+    errors = [e for e in (authed_err, authed_parse_err, anon_err, anon_parse_err) if e]
+    if errors or not authed_records or not anon_records:
+        print(
+            f"FAIL: the CLI wires $PLEX_TOKEN and --timeout "
+            f"(errors={errors}, authed_records={len(authed_records or [])}, "
+            f"anon_records={len(anon_records or [])})"
+        )
+        return False
+
+    authed, anon = authed_records[-1], anon_records[-1]
+    authed_paths = sorted({t.get("path") for t in authed.get("targets", [])})
+    anon_paths = sorted({t.get("path") for t in anon.get("targets", [])})
+    # The env var must CHANGE the probe set, not merely a boolean in the record.
+    token_selected_targets = (
+        authed.get("authenticated") is True
+        and anon.get("authenticated") is False
+        and set(authed_paths) > set(anon_paths)
+        and anon_paths == [MOD.UNAUTH_PATH]
+    )
+    # ...and must reach the wire, on the authenticated requests only. The header
+    # name is asserted as a literal: it is Plex's, not ours to rename.
+    auth_headers = [
+        headers for _, path, headers in authed_transport.requests if path != MOD.UNAUTH_PATH
+    ]
+    unauth_headers = [
+        headers for _, path, headers in authed_transport.requests if path == MOD.UNAUTH_PATH
+    ]
+    token_sent = bool(auth_headers) and all(
+        headers.get("X-Plex-Token") == PROBE_TOKEN for headers in auth_headers
+    )
+    token_withheld = all("X-Plex-Token" not in headers for headers in unauth_headers)
+    token_not_persisted = PROBE_TOKEN not in on_disk_text
+
+    # --timeout reaches BOTH destinations: every connection opened, and the
+    # record's own copy of the setting.
+    timeouts = sorted({timeout for _, _, timeout in authed_transport.opened})
+    timeout_ok = (
+        timeouts == [PROBE_TIMEOUT]
+        and authed.get("timeout_s") == PROBE_TIMEOUT
+        and PROBE_TIMEOUT != MOD.DEFAULT_TIMEOUT
+    )
+
+    ok = (
+        authed_rc == 0
+        and anon_rc == 0
+        and token_selected_targets
+        and token_sent
+        and token_withheld
+        and token_not_persisted
+        and timeout_ok
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: the CLI wires $PLEX_TOKEN and --timeout "
+        f"(authed_paths={authed_paths}, anon_paths={anon_paths}, "
+        f"token_sent_on_auth_probes={token_sent}, token_withheld_on_anon_probes={token_withheld}, "
+        f"token_in_file={not token_not_persisted}, connect_timeouts={timeouts}, "
+        f"record_timeout_s={authed.get('timeout_s')!r})"
+    )
+    return ok
+
+
+def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
+    """AC: a failed WRITE gets its own exit code and a legible message, not a traceback.
+
+    `1` is the code the module docstring reserves for "a target returned no
+    successful sample — the record is still written first, so nothing is lost".
+    When the write itself fails, nothing is wrong with the measurement and the
+    record is exactly what was lost: the same fact stated by the same number
+    means the opposite thing. The runbook 1b is about to publish transcribes
+    that contract for a capture taken once, on a mobile hotspot, that cannot be
+    retaken — so this needs its own code (`3`) and a message naming the path,
+    and the report must remain on stdout as the only surviving copy.
+
+    Reproduced without privileges by pointing `--out` at a path whose parent is
+    a regular file, so `mkdir` raises `NotADirectoryError`; the live cases the
+    Critic executed (`/plex-latency.jsonl` -> `PermissionError`,
+    `/proc/nope/x.jsonl` -> `FileNotFoundError`) are the same `OSError` branch.
+
+    Also here, because it is the same class of "not a measurement failure":
+    `--timeout -1` used to die mid-measurement with an uncaught `ValueError`
+    from the socket layer (exit 1 plus a traceback) where `--repeats 0` is
+    politely refused with 2. Bad arguments are refused BEFORE anything is
+    probed — asserted against the transport, not against the exit code alone.
+    """
+    if not _guard("lost record exit code"):
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        blocker = pathlib.Path(tmp) / "not-a-directory"
+        blocker.write_text("a regular file, so it cannot be anything's parent\n", encoding="utf-8")
+        unwritable = blocker / "plex-latency.jsonl"
+        rc, output, transport, error = _cli_run(_cli_argv(unwritable))
+        wrote_nothing = not unwritable.exists()
+
+        bad_timeout = pathlib.Path(tmp) / "bad-timeout.jsonl"
+        timeout_rc, _, timeout_transport, timeout_error = _cli_run(
+            _cli_argv(bad_timeout, timeout=-1.0)
+        )
+        timeout_wrote = bad_timeout.exists()
+
+    # `error` is set when an exception escaped main() — the raw-traceback
+    # behaviour itself, reported as a FAIL rather than aborting the file.
+    write_ok = (
+        error is None
+        and rc == 3
+        and wrote_nothing
+        and str(unwritable) in output
+        # The measurement happened and its numbers are still on screen: that
+        # report is now the only copy, so losing it too would be the real cost.
+        and f"label={PROBE_LABEL}" in output
+        and bool(transport.opened)
+    )
+    timeout_ok = (
+        timeout_error is None
+        and timeout_rc == 2
+        and not timeout_wrote
+        # Refused before a single connection was opened, like `--repeats 0`.
+        and not timeout_transport.opened
+    )
+    ok = write_ok and timeout_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: a failed write is not reported as a failed measurement "
+        f"(write rc={rc!r} (expected 3, NOT 1) escaped={error!r} named_the_path="
+        f"{str(unwritable) in output} report_survived={f'label={PROBE_LABEL}' in output} "
+        f"wrote_nothing={wrote_nothing}, "
+        f"bad_timeout rc={timeout_rc!r} (expected 2) escaped={timeout_error!r} "
+        f"probed_anyway={bool(timeout_transport.opened)})"
+    )
+    return ok
+
+
 def test_harness_is_offline_safe() -> bool:
     """AC: importing and driving the harness performs NO real request.
 
@@ -1050,6 +1386,9 @@ TESTS = (
     test_label_and_vantage_are_mandatory,
     test_direct_leg_is_skippable_and_the_record_says_so,
     test_cli_appends_the_record_and_honours_its_exit_contract,
+    test_report_states_what_the_record_states,
+    test_cli_wires_the_token_and_the_timeout,
+    test_a_lost_record_is_not_reported_as_a_lost_measurement,
     test_harness_is_offline_safe,
     test_token_never_reaches_the_record_or_report,
 )

@@ -48,11 +48,21 @@ Usage::
     export PLEX_TOKEN=...            # optional; adds the library endpoints
     python scripts/measure_plex_latency.py --label baseline --vantage external
 
-Exit codes: ``0`` measured everything it set out to; ``1`` at least one target
-returned no successful sample (the record is still written first, so nothing is
-lost); ``2`` bad arguments. From an external vantage the direct leg is RFC1918
-and cannot answer, so pass ``--skip-direct`` there — otherwise a correct capture
-spends ``repeats x timeout`` hanging and then exits 1.
+Exit codes:
+
+* ``0`` measured everything it set out to;
+* ``1`` at least one target returned no successful sample. The record is written
+  BEFORE this is returned, so the measurement is on disk and nothing is lost;
+* ``2`` bad arguments — nothing was probed;
+* ``3`` the measurement succeeded and the RECORD COULD NOT BE WRITTEN. This is
+  deliberately not ``1``: there the data is safe and an endpoint is sick, here
+  the endpoints are fine and the data is what was lost, so the report printed on
+  stdout is the only remaining copy. ``3`` takes precedence over ``1`` — a lost
+  record is the more urgent fact.
+
+From an external vantage the direct leg is RFC1918 and cannot answer, so pass
+``--skip-direct`` there — otherwise a correct capture spends
+``repeats x timeout`` hanging and then exits 1.
 
 See `docs/runbooks/plex-latency-baseline.md` for the off-LAN procedure.
 """
@@ -440,6 +450,13 @@ def main(argv=None):
     if args.repeats < 1:
         print("FAIL: --repeats must be >= 1", file=sys.stderr)
         return 2
+    if args.timeout <= 0:
+        # Refused here rather than by the socket layer: a non-positive timeout
+        # otherwise surfaces as an uncaught `ValueError: Timeout value out of
+        # range` in the middle of the measurement — exit 1 with a traceback,
+        # which is the code reserved for "an endpoint did not answer".
+        print("FAIL: --timeout must be > 0 (seconds)", file=sys.stderr)
+        return 2
 
     token = resolve_token()
     if token is None:
@@ -473,7 +490,23 @@ def main(argv=None):
     print(render_report(record))
 
     if not args.no_log:
-        path = append_record(record, args.out)
+        try:
+            path = append_record(record, args.out)
+        except OSError as exc:
+            # The measurement is fine and the RECORD is what was lost, which is
+            # the opposite of what exit 1 means — hence its own code. Say where
+            # it tried to write and say plainly that the report above is now the
+            # only copy, because the run this harness exists for is taken once,
+            # from a mobile hotspot, and cannot be retaken.
+            sys.stdout.flush()
+            print(
+                f"\nFAIL: could not write the record to {args.out}: "
+                f"{type(exc).__name__}: {exc}\n"
+                "  The measurement itself SUCCEEDED — the report above is now the only copy of"
+                " these numbers. Save it, or re-run with --out somewhere writable.",
+                file=sys.stderr,
+            )
+            return 3
         print(f"\nappended 1 record to {path}")
 
     unreachable = [t["name"] for t in record["targets"] if t["ttfb"]["count"] == 0]
