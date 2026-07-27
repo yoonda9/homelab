@@ -28,7 +28,14 @@ two runs *incomparable* or unsafe, not the script's prose:
      never reached: both are fast, both are flawless round trips at the
      transport layer, and both file as an excellent baseline if they are
      counted. The protocol has THREE outcomes (2xx, non-2xx, no answer) where
-     the socket has two (mem-1785123219-03c9),
+     the socket has two (mem-1785123219-03c9). The success band is pinned just
+     outside AND just inside both of its edges, because a range predicate
+     sampled at one interior point is guarded on one side only
+     (mem-1785124653-a61d),
+  6c. and every request the harness puts on the wire is a read-only `GET` with
+     no body — the one irreversible thing this script could do to a live
+     household server, and the property the fixture used to make unassertable by
+     accepting `method` and discarding it (mem-1785124642-053b),
   7. `--label` and `--vantage` are mandatory, so a convenient LAN run cannot
      self-file as the plan's external-network baseline,
   8. the harness is import-safe and offline-safe — `scripts/run_gate.py` runs
@@ -104,6 +111,11 @@ PROBE_TOKEN = "probe-token-a7f31c9e-never-a-real-plex-token"
 PROBE_LABEL = "probe-label-51ac"
 PROBE_VANTAGE = "probe-vantage-9d2f"
 PROBE_NOW = datetime.datetime(2001, 2, 3, 4, 5, 6, tzinfo=datetime.timezone.utc)
+# The SAME INSTANT in a non-UTC zone, with a half-hour offset so a stamp that
+# merely looks plausible cannot coincide with the right one. The record promises
+# UTC and normalises to it; `main()` never passes `now`, so that normalisation
+# has no live symptom and is observable only through this seam.
+PROBE_NOW_SHIFTED = PROBE_NOW.astimezone(datetime.timezone(datetime.timedelta(hours=9, minutes=30)))
 # Distinct from the harness's own DEFAULT_TIMEOUT, so "the flag reached the
 # request" is distinguishable from "the default did".
 PROBE_TIMEOUT = 0.37
@@ -135,6 +147,27 @@ FAKE_LIB_DIRECT_TOTAL = [200.0, 160.0, 600.0, 400.0, 120.0]
 # The HTTP status a rejected probe answers with: a real round trip, a real
 # status line, and not a measurement of anything the endpoint is named for.
 PROBE_REJECT_STATUS = 401
+#
+# 401 alone is not enough, and that is a structural point rather than a taste.
+# The harness's success test is a RANGE — `200 <= status < 300` — and a range
+# sampled at one interior point is guarded on one side only: with 401 as the sole
+# non-2xx the fixture could construct, widening the band to `< 400`, or dropping
+# its floor to `100 <=`, left every check in this file green, because every such
+# widening still excludes 401 (mem-1785124653-a61d). The motivating example is
+# exactly the sample most likely to be the only one.
+#
+# The untested side was the REACHABLE one. `--direct plex.yoonnation.com:80`
+# answers **301** out of this repo's own Traefik, 3/3 samples; under the
+# surviving mutation that redirect filed as a 2.4 ms measurement of `/identity`,
+# printed a "Traefik overhead" computed from a real 200 minus a redirect, and
+# exited 0. A captive portal on the mobile hotspot Step 1c is captured from
+# answers 302, and that capture is taken once.
+#: Just outside each edge (1xx below, 3xx above) plus the error pages Traefik
+#: really serves. None of these is a measurement of the endpoint it names.
+NON_MEASUREMENT_STATUSES = (100, 199, 300, 301, 404, 502)
+#: Just INSIDE each edge. Without these a NARROWED band (`200 <= s < 250`, or
+#: `210 <= s`) would be exactly as invisible as a widened one.
+MEASUREMENT_STATUSES = (200, 201, 204, 299)
 
 # The body every fake response returns. Its LENGTH is asserted: the payload size
 # is the one control that separates "the total got slower" from "the payload got
@@ -281,15 +314,19 @@ class _FakeResponse:
     success and a dead socket) where the protocol has three, so a 401 recorded
     as a library-load measurement could not be seen by any check here
     (mem-1785123219-03c9).
-    """
 
-    #: Only the statuses this fixture actually uses; `reason` is part of what the
-    #: harness renders into the error string, so it cannot be left blank.
-    REASONS = {200: "OK", 401: "Unauthorized", 404: "Not Found", 502: "Bad Gateway"}
+    ANY status is constructible, not an enumerated few: the harness's success
+    test is a range, and pinning a range needs samples on both sides of both
+    edges — including a 1xx and a 299, which no hand-written reason table would
+    have thought to list.
+    """
 
     def __init__(self, status=200):
         self.status = status
-        self.reason = self.REASONS.get(status, "")
+        # `reason` is part of what the harness renders into its error string, so
+        # it cannot be left blank for the statuses a real server would name.
+        # Taken from the stdlib's own table, which is what a real server sends.
+        self.reason = http.client.responses.get(status, "")
 
     def read(self):
         return PROBE_BODY
@@ -321,6 +358,17 @@ class FakeTransport:
     with a status that means the endpoint did no work. Failing at the socket and
     refusing at the protocol are not the same event, and only one of them was
     modelled here.
+
+    A note on what this fake ACCEPTS AND DISCARDS, because that set — not the
+    assertions anyone has written — decides which properties this file is capable
+    of guarding at all. `request()` used to take `method` and throw it away, so
+    "the harness only ever GETs" could not be asserted here even in principle:
+    mutating the harness to `POST` or `DELETE` left the shape test fully green
+    and DELETE survived the entire `just test` gate, against the live household
+    Plex this script is pointed at (mem-1785124642-053b). Method and body are now
+    recorded and read. `_FakeResponse` was the same defect on the status axis one
+    round earlier. Before adding a check here, read this stub's signature beside
+    the tuple it records and set-diff the two.
     """
 
     def __init__(self, failing_hosts=(), flaky_hosts=None, status_by_host=None):
@@ -329,9 +377,11 @@ class FakeTransport:
         self.status_by_host = dict(status_by_host or {})
         self.attempts: dict = {}
         self.opened: list = []
-        # (host, path, headers) per attempted request. The ONLY place the token
-        # actually sent on the wire is observable — everything else sees either
-        # the environment it came from or the record it is kept out of.
+        # One dict per attempted request: host, METHOD, path, BODY, headers. The
+        # only place what actually went on the wire is observable — everything
+        # else sees either the environment the token came from or the record it is
+        # kept out of. A dict rather than a tuple so a later axis can be added
+        # without every reader silently unpacking the wrong field.
         self.requests: list = []
 
     @contextlib.contextmanager
@@ -350,10 +400,21 @@ class FakeTransport:
                     or attempt in transport.flaky_hosts.get(host, ())
                 )
 
-            def request(self, method, path, headers=None, **kwargs):
+            # Mirrors `http.client.HTTPConnection.request(method, url, body,
+            # headers)` positionally, so a harness that starts sending a body
+            # lands it where this stub can see it.
+            def request(self, method, path, body=None, headers=None, **kwargs):
                 # Recorded BEFORE the failure branch: what a doomed attempt sent
                 # is as interesting as what a successful one did.
-                transport.requests.append((self.host, path, dict(headers or {})))
+                transport.requests.append(
+                    {
+                        "host": self.host,
+                        "method": method,
+                        "path": path,
+                        "body": body,
+                        "headers": dict(headers or {}),
+                    }
+                )
                 if self.fails:
                     raise TimeoutError("the read operation timed out")
 
@@ -412,13 +473,16 @@ def _parse_argv(argv):
         return None, exc.code
 
 
-def _fake_run(token=None, repeats=len(FAKE_TTFB), probe=None):
+def _fake_run(token=None, repeats=len(FAKE_TTFB), probe=None, now=PROBE_NOW):
     """Drive the harness's real pipeline with the fake prober, offline.
 
     Returns `(record, probe, error)`. A harness that ignores the injected prober
     and reaches for the wire trips the socket guard; that is reported as an
     `error` string so the caller prints a FAIL, rather than escaping as a
     traceback that aborts the remaining checks.
+
+    `now` is a parameter and not a constant because the record's UTC promise is
+    only observable when the injected clock is NOT already UTC.
     """
     probe = probe if probe is not None else FakeProbe()
     try:
@@ -431,7 +495,7 @@ def _fake_run(token=None, repeats=len(FAKE_TTFB), probe=None):
                 repeats=repeats,
                 token=token,
                 probe=probe,
-                now=PROBE_NOW,
+                now=now,
             )
     except NetworkAttempted as exc:
         return None, probe, f"NetworkAttempted: {exc}"
@@ -742,10 +806,29 @@ def test_probes_traefik_and_direct_backend() -> bool:
     direct_ok = direct_urls == [f"http://{PROBE_DIRECT}/identity"]
     # The default backend is the Traefik service's own upstream: port 32400.
     default_port_ok = MOD.DEFAULT_DIRECT.endswith(":32400")
-    ok = traefik_ok and direct_ok and default_port_ok
+
+    # ...and the URL the RECORD carries is the URL that was actually probed. It
+    # was the one per-target field no check read, so `"url": ""` survived the
+    # whole file: `build_targets`' copy above is read, `measure_target`'s copy —
+    # the one that reaches disk, and the only thing that says WHICH address a
+    # row's numbers came from when a host or a port changed between two runs —
+    # was not. Compared against the prober's own call log rather than against a
+    # literal, so the record and the wire have to agree with each other.
+    record, probe, run_error = _fake_run()
+    recorded_urls = sorted(t.get("url") for t in (record or {}).get("targets", []))
+    probed_urls = sorted({call[0] for call in probe.calls})
+    expected_urls = sorted([f"https://{PROBE_HOST}/identity", f"http://{PROBE_DIRECT}/identity"])
+    record_urls_ok = (
+        run_error is None
+        and recorded_urls == probed_urls
+        and recorded_urls == expected_urls
+    )
+
+    ok = traefik_ok and direct_ok and default_port_ok and record_urls_ok
     print(
         f"{'OK' if ok else 'FAIL'}: probes Traefik and the direct backend "
-        f"(traefik={traefik_urls}, direct={direct_urls}, default_direct={MOD.DEFAULT_DIRECT!r})"
+        f"(traefik={traefik_urls}, direct={direct_urls}, default_direct={MOD.DEFAULT_DIRECT!r}, "
+        f"recorded_urls={recorded_urls}, probed_urls={probed_urls}, error={run_error})"
     )
     return ok
 
@@ -802,6 +885,24 @@ def test_record_carries_label_vantage_and_utc_timestamp() -> bool:
         parsed = None
     utc_ok = parsed is not None and parsed.utcoffset() == datetime.timedelta(0)
     same_instant = parsed is not None and parsed == PROBE_NOW
+    # UTC is a promise about NORMALISATION, not just about the default clock. The
+    # record converts whatever it is handed; `main()` never passes `now`, so
+    # dropping that conversion has no live symptom and the injectable clock is
+    # the only seam where it shows. Same instant, expressed at +09:30: the stamp
+    # must come out byte-identical to the UTC run's, Z and all — an unconverted
+    # one renders `...T13:35:06+09:30`, which is the same moment and is not what
+    # this field says it is.
+    shifted, _, shifted_error = _fake_run(now=PROBE_NOW_SHIFTED)
+    shifted_stamp = (shifted or {}).get("timestamp")
+    normalised_ok = (
+        shifted_error is None
+        # The fixture's own discriminating power: a UTC "shifted" clock would
+        # make this row pass for free.
+        and PROBE_NOW_SHIFTED.utcoffset() != datetime.timedelta(0)
+        and isinstance(shifted_stamp, str)
+        and shifted_stamp.endswith("Z")
+        and shifted_stamp == stamp
+    )
     # A FLOOR, not a literal: a bump must not redden the gate, but a revert to a
     # version whose records mean something else must.
     schema_ok = (
@@ -814,13 +915,15 @@ def test_record_carries_label_vantage_and_utc_timestamp() -> bool:
         and record.get("vantage") == PROBE_VANTAGE
         and utc_ok
         and same_instant
+        and normalised_ok
         and schema_ok
     )
     print(
         f"{'OK' if ok else 'FAIL'}: run record carries schema + label + vantage + UTC timestamp "
         f"(schema={record.get('schema')!r} constant={getattr(MOD, 'SCHEMA_VERSION', None)!r}, "
         f"label={record.get('label')!r}, vantage={record.get('vantage')!r}, "
-        f"timestamp={stamp!r}, utc={utc_ok}, matches_injected_clock={same_instant})"
+        f"timestamp={stamp!r}, utc={utc_ok}, matches_injected_clock={same_instant}, "
+        f"from_{PROBE_NOW_SHIFTED.utcoffset()}_clock={shifted_stamp!r} normalised={normalised_ok})"
     )
     return ok
 
@@ -848,17 +951,37 @@ def test_summary_statistics_are_computed_from_samples() -> bool:
         (t["total"]["min_ms"], t["total"]["median_ms"], t["total"]["max_ms"]) for t in targets
     }
     counts = {t["ttfb"]["count"] for t in targets}
+    # The SHIPPED default has to support the statistic this check is about. The
+    # task says "N repeats per endpoint (default >= 5)", the harness's entire
+    # output is min/median/max, and over one sample all three are the same number
+    # rendered three times — vacuous and typographically identical to a clean run.
+    # Nothing else here reads the constant: every other check passes an explicit
+    # `repeats`, so `DEFAULT_REPEATS = 1` survived the whole file. Asserted as a
+    # FLOOR (a bump is fine) at BOTH the constant and the parser, because the wire
+    # between them is its own failure: `default=1` on the flag makes the constant
+    # decorative.
+    parsed, parse_rc = _parse_argv(["--label", PROBE_LABEL, "--vantage", "external"])
+    default_repeats_ok = (
+        isinstance(MOD.DEFAULT_REPEATS, int)
+        and MOD.DEFAULT_REPEATS >= 5
+        and parse_rc is None
+        and parsed is not None
+        and parsed.repeats == MOD.DEFAULT_REPEATS
+    )
     ok = (
         bool(targets)
         and got_ttfb == {FAKE_TTFB_STATS}
         and got_total == {FAKE_TOTAL_STATS}
         and counts == {len(FAKE_TTFB)}
         and len(probe.calls) == len(targets) * len(FAKE_TTFB)
+        and default_repeats_ok
     )
     print(
         f"{'OK' if ok else 'FAIL'}: min/median/max computed from the samples "
         f"(ttfb={sorted(got_ttfb)}, total={sorted(got_total)}, counts={sorted(counts)}, "
-        f"probe_calls={len(probe.calls)}, targets={len(targets)})"
+        f"probe_calls={len(probe.calls)}, targets={len(targets)}, "
+        f"default_repeats={getattr(MOD, 'DEFAULT_REPEATS', None)!r} "
+        f"parser_default={None if parsed is None else parsed.repeats!r} (both must be >= 5))"
     )
     return ok
 
@@ -1594,6 +1717,216 @@ def test_an_answered_but_rejected_probe_is_not_a_measurement() -> bool:
     return ok
 
 
+def test_every_request_on_the_wire_is_a_read_only_get() -> bool:
+    """AC: "Non-destructive by construction: read-only GETs ... never mutate Plex state".
+
+    The task description names this as a construction requirement, and it was the
+    one property in this whole file that NOTHING observed: `conn.request("GET",
+    ...)` -> `"POST"` and -> `"DELETE"` both left the shape test green, and
+    DELETE survived the full `just test` gate at 34/34 exit 0. It is the only
+    irreversible thing this script could ever do, to a live household Plex the
+    operator is about to point it at from a hotspot with one shot at the capture.
+
+    It was not merely unasserted, it was UNASSERTABLE: the transport fake's
+    `request()` accepted `method` and discarded it, so the value could not be
+    named by any check here. A fake's discarded parameters are properties no
+    assertion can reach, and the hole is invisible from the assertion side
+    because the assertion cannot be written at all (mem-1785124642-053b). Body is
+    read for the same reason — a mutation to a writing verb usually brings one,
+    and the stub now mirrors `http.client`'s positional signature so it lands
+    where this check can see it.
+
+    Driven under every outcome class the fixture can build, because the verb is
+    chosen once per call site and a fixture that only ever succeeds exercises one
+    of them: a healthy pair, a leg that answers non-2xx, a leg whose socket dies
+    before the response, and the AUTHENTICATED probe set through `main()` — the
+    library endpoints are the ones whose real-world counterparts have destructive
+    siblings (`/library/sections/N/refresh`).
+    """
+    if not _guard("read-only GETs"):
+        return False
+    direct_host = PROBE_DIRECT.split(":")[0]
+    _, healthy, healthy_error = _transport_run()
+    _, rejected, rejected_error = _transport_run(
+        status_by_host={PROBE_HOST: PROBE_REJECT_STATUS}
+    )
+    _, dead, dead_error = _transport_run(failing_hosts={direct_host})
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "read-only.jsonl"
+        _, _, cli, cli_error = _cli_run(_cli_argv(out), token=PROBE_TOKEN)
+
+    transports = {
+        "healthy": healthy,
+        f"answered {PROBE_REJECT_STATUS}": rejected,
+        "dead socket": dead,
+        "cli + token": cli,
+    }
+    errors = [e for e in (healthy_error, rejected_error, dead_error, cli_error) if e]
+    methods = {name: sorted({r["method"] for r in t.requests}) for name, t in transports.items()}
+    bodies = {name: sorted({repr(r["body"]) for r in t.requests}) for name, t in transports.items()}
+    counts = {name: len(t.requests) for name, t in transports.items()}
+    ok = (
+        not errors
+        # Every class really put something on the wire, and there really are four
+        # of them. Without both, this passes on a fixture that observed nothing —
+        # which is the shape of the very defect it exists to close, and `all()`
+        # over an empty sequence is True.
+        and len(transports) == 4
+        and all(counts.values())
+        and all(verbs == ["GET"] for verbs in methods.values())
+        and all(sent == [repr(None)] for sent in bodies.values())
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: every request on the wire is a read-only GET with no body "
+        f"(methods={methods}, bodies={bodies}, requests={counts}, errors={errors})"
+    )
+    return ok
+
+
+def test_the_success_band_is_exactly_2xx() -> bool:
+    """AC: a measurement is a 2xx — pinned just outside AND just inside both edges.
+
+    Last round closed "a non-2xx is not a measurement", and guarded it with one
+    status: 401. A range predicate sampled at one interior point is guarded on
+    ONE SIDE ONLY. `200 <= s < 300` -> `< 400` stayed green, and so did
+    `100 <= s < 300`, because every widening that still excludes 401 is
+    invisible; only `< 500` reddened, and only because it happened to swallow the
+    one status the fixture could build (mem-1785124653-a61d).
+
+    The untested side is the REACHABLE one, verified live against this
+    deployment: `--direct plex.yoonnation.com:80` answers **301** from the repo's
+    own Traefik, 3/3 samples. Correct code files that as 0/3, `n/a` medians,
+    `! HTTP 301 Moved Permanently` and rc=1. Under the surviving mutation the
+    same command filed the redirect as a 2.4 ms measurement of `/identity`,
+    printed `Traefik overhead on /identity (median TTFB): +6.3 ms` — a real 200
+    differenced against a redirect — and exited 0. It is also the shape a
+    mobile-hotspot capture meets: a captive portal answers 302, and Step 1c is
+    taken from a hotspot, once.
+
+    So both directions are driven. Statuses just outside each edge (1xx below,
+    3xx above) plus the 4xx/5xx error pages Traefik actually serves must record
+    NO latency; statuses just inside each edge (200, 201, 204, 299) must record
+    one, without which a NARROWED band would be exactly as invisible as a widened
+    one. Each row runs against a second leg that answered 200, so no row can pass
+    on a harness that reports nothing for everything, and the 301 case is taken
+    all the way through `main()` to the exit code and the report the operator
+    reads.
+    """
+    if not _guard("2xx success band"):
+        return False
+    # The fixture's own discriminating power, asserted BEFORE anything is driven
+    # so a later edit cannot quietly turn either half of this check vacuous:
+    # `not outside` and `not inside` are both True over an EMPTY status tuple,
+    # and an emptied tuple reads exactly like a passing check. Each side must
+    # still straddle the edge it was written for.
+    redirect = 301  # what Traefik really answers on :80; the live case
+    straddles = (
+        any(s < 200 for s in NON_MEASUREMENT_STATUSES)
+        and redirect in NON_MEASUREMENT_STATUSES
+        and 200 in MEASUREMENT_STATUSES
+        and any(200 < s < 300 for s in MEASUREMENT_STATUSES)
+    )
+    if not straddles:
+        print(
+            "FAIL: the success band is exactly 2xx (the fixture no longer straddles both edges: "
+            f"outside={NON_MEASUREMENT_STATUSES}, inside={MEASUREMENT_STATUSES})"
+        )
+        return False
+
+    def _legs(status):
+        record, _, error = _transport_run(status_by_host={PROBE_HOST: status})
+        targets = (record or {}).get("targets", [])
+        return (
+            next((t for t in targets if t["via"] == "traefik"), {}),
+            next((t for t in targets if t["via"] == "direct"), {}),
+            error,
+        )
+
+    outside = []
+    for status in NON_MEASUREMENT_STATUSES + (PROBE_REJECT_STATUS,):
+        leg, contrast, error = _legs(status)
+        good = (
+            error is None
+            and leg.get("succeeded") == 0
+            and leg.get("failed") == len(FAKE_TTFB)
+            # Kept, never swallowed: the status column is the operator's only
+            # signal that what they measured was an error page.
+            and leg.get("statuses") == [status]
+            # `or ["-"]` so an EMPTY error list fails this rather than passing it
+            # vacuously through `all()` over nothing.
+            and all(str(status) in e for e in leg.get("errors") or ["-"])
+            and all((leg.get(s) or {}).get("count") == 0 for s in ("ttfb", "total", "bytes"))
+            and (leg.get("ttfb") or {}).get("median_ms") is None
+            and (leg.get("total") or {}).get("median_ms") is None
+            # The round trip did take time; it is a diagnostic, never a latency.
+            and _elapsed_diagnostics(leg, len(FAKE_TTFB))
+            and contrast.get("succeeded") == len(FAKE_TTFB)
+        )
+        if not good:
+            outside.append(
+                (status, leg.get("succeeded"), leg.get("statuses"),
+                 (leg.get("ttfb") or {}).get("median_ms"), error)
+            )
+
+    inside = []
+    for status in MEASUREMENT_STATUSES:
+        leg, contrast, error = _legs(status)
+        good = (
+            error is None
+            and leg.get("succeeded") == len(FAKE_TTFB)
+            and leg.get("failed") == 0
+            and leg.get("statuses") == [status]
+            and not leg.get("errors")
+            and leg.get("failed_after_ms") == []
+            and (leg.get("ttfb") or {}).get("median_ms") is not None
+            and (leg.get("total") or {}).get("median_ms") is not None
+            and (leg.get("bytes") or {}).get("count") == len(FAKE_TTFB)
+            and contrast.get("succeeded") == len(FAKE_TTFB)
+        )
+        if not good:
+            inside.append(
+                (status, leg.get("succeeded"), leg.get("statuses"),
+                 (leg.get("ttfb") or {}).get("median_ms"), error)
+            )
+
+    # The live 3xx, end to end: the exit code the operator sees and the headline
+    # they transcribe. A redirect differenced against a real 200 is the specific
+    # falsehood this guards, so the headline must refuse to print a number.
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "redirect.jsonl"
+        rc, streams, _, cli_error = _cli_run(
+            _cli_argv(out), status_by_host={PROBE_HOST: redirect}
+        )
+        written, parse_error = _read_records(out)
+    headline = next((l for l in streams.out.splitlines() if "overhead" in l), "")
+    _, rows = _report_table(streams.out)
+    redirect_row = next((row for name, row in rows.items() if name.startswith("traefik")), {})
+    status_header = _header_for(list(redirect_row), "status")
+    cli_ok = (
+        cli_error is None
+        and parse_error is None
+        and rc == 1
+        and len(written or []) == 1
+        and "n/a" in headline
+        and "+" not in headline
+        and status_header is not None
+        and redirect_row.get(status_header) == str(redirect)
+    )
+
+    ok = not outside and not inside and cli_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: the success band is exactly 2xx "
+        f"(rejected {len(NON_MEASUREMENT_STATUSES) + 1 - len(outside)}/"
+        f"{len(NON_MEASUREMENT_STATUSES) + 1} of {NON_MEASUREMENT_STATUSES + (PROBE_REJECT_STATUS,)}, "
+        f"measured {len(MEASUREMENT_STATUSES) - len(inside)}/{len(MEASUREMENT_STATUSES)} of "
+        f"{MEASUREMENT_STATUSES}, straddles_both_edges={straddles}, "
+        f"wrong_outside={outside}, wrong_inside={inside}, "
+        f"live-{redirect} cli rc={rc!r} (expected 1) headline={headline.strip()!r} "
+        f"status_cell={redirect_row.get(status_header)!r}, cli_error={cli_error or parse_error})"
+    )
+    return ok
+
+
 def test_cli_wires_the_token_and_the_timeout() -> bool:
     """AC: the last two inputs — $PLEX_TOKEN and `--timeout` — reach the request.
 
@@ -1651,10 +1984,10 @@ def test_cli_wires_the_token_and_the_timeout() -> bool:
     # ...and must reach the wire, on the authenticated requests only. The header
     # name is asserted as a literal: it is Plex's, not ours to rename.
     auth_headers = [
-        headers for _, path, headers in authed_transport.requests if path != MOD.UNAUTH_PATH
+        r["headers"] for r in authed_transport.requests if r["path"] != MOD.UNAUTH_PATH
     ]
     unauth_headers = [
-        headers for _, path, headers in authed_transport.requests if path == MOD.UNAUTH_PATH
+        r["headers"] for r in authed_transport.requests if r["path"] == MOD.UNAUTH_PATH
     ]
     token_sent = bool(auth_headers) and all(
         headers.get("X-Plex-Token") == PROBE_TOKEN for headers in auth_headers
@@ -1835,6 +2168,8 @@ TESTS = (
     test_summary_statistics_are_computed_from_samples,
     test_failed_sample_is_a_measurement_of_nothing,
     test_an_answered_but_rejected_probe_is_not_a_measurement,
+    test_the_success_band_is_exactly_2xx,
+    test_every_request_on_the_wire_is_a_read_only_get,
     test_ttfb_and_total_summarise_the_same_samples,
     test_partial_failure_does_not_inflate_the_sample_count,
     test_label_and_vantage_are_mandatory,
