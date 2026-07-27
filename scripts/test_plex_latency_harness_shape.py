@@ -36,6 +36,23 @@ two runs *incomparable* or unsafe, not the script's prose:
      no body — the one irreversible thing this script could do to a live
      household server, and the property the fixture used to make unassertable by
      accepting `method` and discarding it (mem-1785124642-053b),
+  6d. and the connection really is the one the URL names: the `https` leg opens
+     an HTTPS connector and the `http` leg an HTTP one, on the port the URL
+     carries. Unassertable until this file stopped binding ONE stub class to
+     both `http.client` names (mem-1785126104-3606),
+  6e. and `statuses`/`errors` carry EVERY distinct answer a target gave, not the
+     first. Only a status that DRIFTS mid-capture — a token that expires partway
+     through, a Traefik that starts 502ing — makes either list longer than one,
+     and a truncation of a singleton is the identity function,
+  6f. TTFB and TOTAL are two DIFFERENT measurements and the gap between them is
+     the body drain. This is half the harness's published output and it was
+     resolvable by NEITHER fake: `FakeProbe` is handed the two values already
+     separate and never runs `time_request`, while `FakeTransport` runs it
+     against a `read()` that returns instantly. A property can sit in the gap
+     between two individually-reasonable fixtures, invisible from either
+     (mem-1785126083-eba7). The same clock puts a real floor under
+     `failed_after_ms`, whose only supportable predicate was otherwise `v >= 0` —
+     which the degenerate constant 0 satisfies (mem-1785126104-2a01),
   7. `--label` and `--vantage` are mandatory, so a convenient LAN run cannot
      self-file as the plan's external-network baseline,
   8. the harness is import-safe and offline-safe — `scripts/run_gate.py` runs
@@ -73,6 +90,15 @@ one level lower — it replaces `http.client.HTTP(S)Connection`, so the harness'
 REAL `time_request` runs against it — and it has a failure mode, which is what
 makes properties 6 testable at all.
 
+Layering them like that has its own failure mode, and it produced the last
+rejection: a property can fall in the GAP between two fixtures and be invisible
+from either. So the question to ask of each quantity this harness publishes is
+not "which check reads it" but WHICH FIXTURE CAN RESOLVE IT — a high-level fake
+that supplies finished values, sitting above a low-level fake with no measurable
+time, size or order, is the tell. `FakeTransport` therefore has an opt-in clock
+(`delay_s`), and every quantity that is a DURATION rather than a value is
+asserted against a floor that clock guarantees.
+
 Both of those fakes are injected BELOW `main()`, so on their own they prove the
 library and say nothing about the wiring (mem-1785120628-7b8d): a CLI flag that
 never reaches the keyword it names, or a write that never happens, stays green
@@ -98,7 +124,9 @@ import re
 import socket
 import sys
 import tempfile
+import time
 import types
+import urllib.parse
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARNESS = REPO_ROOT / "scripts" / "measure_plex_latency.py"
@@ -174,6 +202,45 @@ MEASUREMENT_STATUSES = (200, 201, 204, 299)
 # bigger", so a harness that computes it and drops it has thrown away Step 4's
 # only defence against that confounder.
 PROBE_BODY = b"probe-body-9c4f"
+
+# How long a fake response takes to DRAIN, when a check asks for a fake with a
+# clock. This is the fixture's only source of measurable time, and it exists
+# because without it two of this harness's published quantities are unresolvable
+# by anything in this file:
+#
+#   * TTFB vs TOTAL. `FakeProbe` hands back `ttfb_ms` and `total_ms` already
+#     separate — it never executes `time_request`, so it cannot say whether the
+#     harness computed them or was handed them. `FakeTransport` DOES execute
+#     `time_request`, but a `read()` that returns instantly makes both a handful
+#     of microseconds, so they are indistinguishable under it. The distinction
+#     lived in the gap between two individually-reasonable fakes, and it was
+#     invisible from either one: `"total_ms": round(total, 3)` -> `round(ttfb, 3)`
+#     survived this file AND the full gate, and so did moving the TTFB capture
+#     below `response.read()` (mem-1785126083-eba7).
+#   * `failed_after_ms`. Its check could only ever assert `v >= 0`, because with
+#     no measurable time in the fixture that is the strongest TRUE predicate
+#     available — and `0` satisfies it, so hardcoding the field survived. A
+#     predicate that is the weakest one the fixture can support is a fixture
+#     defect wearing an assertion's clothes (mem-1785126104-2a01).
+#
+# Opt-in per run (`delay_s`), not global: every transport-driven check would
+# otherwise pay it on every sample, and the checks that need a clock are few.
+# 50 ms is far above scheduler noise and far below any timeout here.
+READ_DELAY_S = 0.05
+READ_DELAY_MS = READ_DELAY_S * 1000.0
+#: Compared against with slack, since `time.sleep` may overshoot but a mutation
+#: that stops measuring collapses the quantity to ~0 — three orders of magnitude
+#: away, so the tolerance never has to be tight to be decisive.
+DELAY_FLOOR_MS = 0.8 * READ_DELAY_MS
+
+# A status sequence for ONE host, consumed per attempt: answers, then starts
+# refusing, then breaks. The shape of a token that expires MID-CAPTURE, and the
+# only shape in which `statuses` and `errors` hold more than one element — with
+# a constant-per-host status both lists are singletons, so `statuses[:1]` and
+# `errors[:1]` are identities and truncating them is invisible. The status column
+# is the operator's only signal that some samples were rejected, and a truncation
+# deletes it while the `n=1/3` column still reads plausible.
+PROBE_STATUS_DRIFT = (200, 401, 503)
 
 _COLUMN_GAP = re.compile(r"\s{2,}")
 
@@ -319,16 +386,28 @@ class _FakeResponse:
     test is a range, and pinning a range needs samples on both sides of both
     edges — including a 1xx and a 299, which no hand-written reason table would
     have thought to list.
+
+    A body that takes TIME to drain is the other axis, added for the same reason
+    the status was: without it the fixture cannot construct the distinction. TTFB
+    is captured before `read()` and total after it, so a `read()` that returns
+    instantly makes the two quantities equal to within microseconds and every
+    confusion between them — including `total_ms = round(ttfb, 3)`, and moving
+    the TTFB capture below the read — is unobservable here (mem-1785126083-eba7).
     """
 
-    def __init__(self, status=200):
+    def __init__(self, status=200, read_delay_s=0.0):
         self.status = status
         # `reason` is part of what the harness renders into its error string, so
         # it cannot be left blank for the statuses a real server would name.
         # Taken from the stdlib's own table, which is what a real server sends.
         self.reason = http.client.responses.get(status, "")
+        self.read_delay_s = read_delay_s
 
     def read(self):
+        # The ONLY measurable time in this fixture, and it sits exactly where the
+        # real one does: between the status line and the drained body.
+        if self.read_delay_s:
+            time.sleep(self.read_delay_s)
         return PROBE_BODY
 
 
@@ -369,12 +448,37 @@ class FakeTransport:
     recorded and read. `_FakeResponse` was the same defect on the status axis one
     round earlier. Before adding a check here, read this stub's signature beside
     the tuple it records and set-diff the two.
+
+    And one level up from a discarded PARAMETER sits a discarded CLASS IDENTITY.
+    This fake is installed by monkeypatching NAMES, and it used to bind the same
+    `_Conn` to both `http.client.HTTPConnection` and `HTTPSConnection` — so
+    `time_request`'s first three lines, which pick the connector from the URL
+    scheme, had no observation surface at all and always-HTTP and always-HTTPS
+    both survived. Two names bound to one object is a discarded distinction
+    exactly like a discarded parameter (mem-1785126104-3606). Two subclasses that
+    record their own scheme are bound now, and `opened` records the PORT it was
+    handed rather than accepting it and reading only the timeout.
+
+    `opened` and `requests` are both lists of DICTS. Changing the arity of a
+    recorded tuple broke every reader the last time an axis was added here, and
+    the next axis would break them again.
     """
 
-    def __init__(self, failing_hosts=(), flaky_hosts=None, status_by_host=None):
+    def __init__(
+        self, failing_hosts=(), flaky_hosts=None, status_by_host=None, delay_s=0.0
+    ):
         self.failing_hosts = set(failing_hosts)
         self.flaky_hosts = {host: set(idx) for host, idx in (flaky_hosts or {}).items()}
+        # host -> a status, or a SEQUENCE of statuses consumed one per attempt.
+        # The sequence form is the mid-capture drift: `statuses` and `errors` are
+        # singletons under every constant-status fixture, and a list of one is a
+        # list no truncation can change.
         self.status_by_host = dict(status_by_host or {})
+        # Shared by the response body's drain and by the socket failure road, so
+        # a check can put a real floor under BOTH the TTFB/total gap and
+        # `failed_after_ms` — the two quantities the clockless fixture could only
+        # assert trivia about.
+        self.delay_s = delay_s
         self.attempts: dict = {}
         self.opened: list = []
         # One dict per attempted request: host, METHOD, path, BODY, headers. The
@@ -384,17 +488,50 @@ class FakeTransport:
         # without every reader silently unpacking the wrong field.
         self.requests: list = []
 
+    def _status_for(self, host, attempt):
+        """The status this host answers on this 0-based attempt.
+
+        A bare int is the same status every time; a sequence is consumed one per
+        attempt and holds its last value once exhausted, so a run longer than the
+        script stays well-defined.
+        """
+        spec = self.status_by_host.get(host, 200)
+        if isinstance(spec, (list, tuple)):
+            if not spec:
+                return 200
+            return spec[attempt] if attempt < len(spec) else spec[-1]
+        return spec
+
     @contextlib.contextmanager
     def installed(self):
         saved = (http.client.HTTPConnection, http.client.HTTPSConnection)
         transport = self
 
         class _Conn:
+            #: Overridden by the two bound subclasses below. Bare `_Conn` is never
+            #: installed, so a scheme that reaches `opened` unset would itself be
+            #: a fixture defect rather than a silently plausible value.
+            scheme = None
+
             def __init__(self, host, port=None, timeout=None, **kwargs):
                 attempt = transport.attempts.get(host, 0)
                 transport.attempts[host] = attempt + 1
-                transport.opened.append((host, port, timeout))
+                transport.opened.append(
+                    {
+                        # WHICH connector class the harness reached for. Recorded
+                        # because the scheme -> connector mapping is otherwise
+                        # unassertable, and because Plex really does serve TLS on
+                        # :32400 — so an always-HTTPS mutation would be silent
+                        # live and would inflate the direct leg's TTFB ~4.6x, on
+                        # the very number the headline subtracts.
+                        "scheme": type(self).scheme,
+                        "host": host,
+                        "port": port,
+                        "timeout": timeout,
+                    }
+                )
                 self.host = host
+                self.attempt = attempt
                 self.fails = (
                     host in transport.failing_hosts
                     or attempt in transport.flaky_hosts.get(host, ())
@@ -416,16 +553,32 @@ class FakeTransport:
                     }
                 )
                 if self.fails:
+                    # Time passes before the socket gives up, exactly as it does
+                    # live — a timeout that surfaces instantly is what let
+                    # `failed_after_ms` be hardcoded to 0 and still satisfy the
+                    # only predicate the fixture could support.
+                    if transport.delay_s:
+                        time.sleep(transport.delay_s)
                     raise TimeoutError("the read operation timed out")
 
             def getresponse(self):
-                return _FakeResponse(transport.status_by_host.get(self.host, 200))
+                return _FakeResponse(
+                    transport._status_for(self.host, self.attempt), transport.delay_s
+                )
 
             def close(self):
                 return None
 
-        http.client.HTTPConnection = _Conn
-        http.client.HTTPSConnection = _Conn
+        class _HTTPConn(_Conn):
+            scheme = "http"
+
+        class _HTTPSConn(_Conn):
+            scheme = "https"
+
+        # Two names, two DISTINCT classes. Binding one class to both is what made
+        # the connector choice unassertable (mem-1785126104-3606).
+        http.client.HTTPConnection = _HTTPConn
+        http.client.HTTPSConnection = _HTTPSConn
         try:
             yield self
         finally:
@@ -433,15 +586,25 @@ class FakeTransport:
 
 
 def _transport_run(
-    failing_hosts=(), flaky_hosts=None, status_by_host=None, repeats=len(FAKE_TTFB), **kwargs
+    failing_hosts=(),
+    flaky_hosts=None,
+    status_by_host=None,
+    repeats=len(FAKE_TTFB),
+    delay_s=0.0,
+    **kwargs,
 ):
     """Drive the harness's REAL prober (`probe=None`) over `FakeTransport`.
 
     Returns `(record, transport, error)`. Deliberately does not inject a probe:
     the point is to execute `time_request` itself, including its except-branch
     AND its non-2xx branch.
+
+    `delay_s` gives the fixture a clock. It defaults to 0 because every sample
+    pays it and most checks do not need it; the checks that measure a DURATION
+    rather than a value must pass it, and must assert against the transport they
+    actually drove rather than against the constant they meant to pass.
     """
-    transport = FakeTransport(failing_hosts, flaky_hosts, status_by_host)
+    transport = FakeTransport(failing_hosts, flaky_hosts, status_by_host, delay_s=delay_s)
     try:
         with _no_network(), transport.installed():
             record = MOD.run_measurement(
@@ -703,7 +866,7 @@ def _row_mismatches(record, report):
     return problems
 
 
-def _elapsed_diagnostics(target, expected):
+def _elapsed_diagnostics(target, expected, floor_ms=0.0):
     """`failed_after_ms` really is one MEASURED elapsed time per failed sample.
 
     Length alone is not enough and the difference is not academic: the list is
@@ -711,12 +874,28 @@ def _elapsed_diagnostics(target, expected):
     recording the elapsed time still produces a list of the right length, full
     of `None`. That passed a length-only assertion while the diagnostic this
     field exists to be had ceased to exist (matrix row M4).
+
+    Nor is `v >= 0` enough, which is the next rung of the same ladder — presence,
+    length, type, VALUE — and the one this check sat on for two rounds. A value
+    predicate can still admit the DEGENERATE CONSTANT: hardcoding the field to 0
+    on both failure roads satisfies "is a non-negative number" perfectly, and the
+    diagnostic (how long the failure took to surface) has ceased to exist again.
+
+    `v >= 0` was also the STRONGEST TRUE predicate available, which is the tell
+    that the defect was never in the assertion: with no measurable time in the
+    fixture, 0 is the honest floor and `> 0` would be flaky. So the fix is at the
+    fixture, and `floor_ms` is where it lands — callers that drove a transport
+    with a clock pass the floor that clock guarantees (mem-1785126104-2a01).
+    Callers without one keep the sign test, which is all their fixture supports.
     """
     values = target.get("failed_after_ms")
     return (
         isinstance(values, list)
         and len(values) == expected
-        and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in values)
+        and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and v >= floor_ms
+            for v in values
+        )
     )
 
 
@@ -1927,6 +2106,280 @@ def test_the_success_band_is_exactly_2xx() -> bool:
     return ok
 
 
+def test_ttfb_is_the_status_line_and_total_is_the_drained_body() -> bool:
+    """AC: TTFB and TOTAL are two DIFFERENT measurements, and the gap is the body.
+
+    The task asks for "TTFB and total load time". They are half the harness's
+    published output and two of its four report columns, and nothing in this file
+    could tell them apart: `"total_ms": round(total, 3)` -> `round(ttfb, 3)`
+    survived the shape test AND the full gate at 34/34 exit 0, and so did moving
+    the TTFB capture below `response.read()` — a one-line tidy of exactly the kind
+    a refactor makes. Under either, the harness runs clean against the live server
+    at rc=0 and prints both columns byte-identical.
+
+    The cause was not a missing assertion but a gap BETWEEN TWO FIXTURES, and it
+    was invisible from either one (mem-1785126083-eba7). `FakeProbe` hands back
+    `ttfb_ms` and `total_ms` already separate — every check that compares the two
+    series uses it, and it never executes `time_request` at all, so it cannot
+    disagree with the harness about which is which. `FakeTransport` does execute
+    `time_request`, but with an instant `read()` both quantities are a few
+    microseconds and are equal to within noise. The distinction lived in three
+    lines one fixture could not reach and the other could not resolve. So the
+    question this check comes from is not "which check reads this value" but "WHICH
+    FIXTURE CAN RESOLVE IT" — and the answer was neither.
+
+    Nor is it visible live: `/identity` is 163 bytes, so the real gap is +0.01 ms
+    and no operator would ever catch it by eye. It matters on
+    `/library/sections` — the slow initial library load the whole plan is about —
+    which needs a token and which no run in this repo had exercised. A 30 KB body
+    already shows ~+1 ms of drain inside a ~9 ms Traefik overhead ON THE LAN; the
+    baseline is a one-shot mobile-hotspot capture where the drain term dominates,
+    and there "Traefik overhead (median TTFB)" silently becomes a bandwidth
+    measurement.
+
+    Driven under all three outcome classes, because `failed_after_ms` is the same
+    defect one rung down (mem-1785126104-2a01): with a clock in the fixture, a
+    failure that took time can be asserted against a real floor instead of
+    against `v >= 0`, which the degenerate constant 0 satisfies. Both failure
+    roads are driven — the non-2xx branch, which has already drained the body,
+    and the OSError branch, where the socket gives up.
+    """
+    if not _guard("ttfb vs total"):
+        return False
+    direct_host = PROBE_DIRECT.split(":")[0]
+    healthy, healthy_transport, healthy_error = _transport_run(
+        delay_s=READ_DELAY_S, repeats=3
+    )
+    rejected, rejected_transport, rejected_error = _transport_run(
+        delay_s=READ_DELAY_S, repeats=2, status_by_host={PROBE_HOST: 503}
+    )
+    dead, dead_transport, dead_error = _transport_run(
+        delay_s=READ_DELAY_S, repeats=2, failing_hosts={direct_host}
+    )
+    errors = [e for e in (healthy_error, rejected_error, dead_error) if e]
+    if errors or healthy is None or rejected is None or dead is None:
+        print(f"FAIL: ttfb is the status line and total is the drained body ({errors})")
+        return False
+
+    # The fixture's own discriminating power, asserted EARLY and against the
+    # transports actually driven — not against the constant this check meant to
+    # pass. Every assertion below is a comparison against a floor derived from
+    # this delay; with it at 0 the floor is 0 and all of them read as passing
+    # checks. A guard that only fires after the thing it guards is not a guard
+    # (mem-1785125369-fb77), so this returns rather than joining the final `ok`.
+    clocks = {t.delay_s for t in (healthy_transport, rejected_transport, dead_transport)}
+    if clocks != {READ_DELAY_S} or DELAY_FLOOR_MS <= 0:
+        print(
+            "FAIL: ttfb is the status line and total is the drained body (the fixture has no "
+            f"clock: transport delays={sorted(clocks)}, floor={DELAY_FLOOR_MS} ms)"
+        )
+        return False
+
+    def _stat(target, series, stat):
+        return (target.get(series) or {}).get(stat)
+
+    # Every leg, not just one: the two legs run the same three lines, and a
+    # per-leg fixture cannot be what made this pass.
+    gaps = {}
+    wrong = []
+    for target in healthy["targets"]:
+        ttfb = _stat(target, "ttfb", "median_ms")
+        total = _stat(target, "total", "median_ms")
+        if ttfb is None or total is None:
+            wrong.append((target["name"], ttfb, total))
+            continue
+        gaps[target["name"]] = round(total - ttfb, 1)
+        good = (
+            # The body took time to drain and the TOTAL paid for it...
+            total - ttfb >= DELAY_FLOOR_MS
+            # ...and the TTFB did NOT, which is the half that catches a capture
+            # moved below `read()`. The fake reaches its status line in
+            # microseconds, so this has three orders of magnitude of headroom.
+            and ttfb < 0.5 * READ_DELAY_MS
+            and total >= DELAY_FLOOR_MS
+        )
+        if not good:
+            wrong.append((target["name"], ttfb, total))
+
+    # The two columns an operator reads must differ too — the record being right
+    # while the report prints one number twice is the report-level version of
+    # this same defect, and the row parser compares cells to the record, so both
+    # sides move together unless the fixture makes them distinct.
+    _, rows = _report_table(MOD.render_report(healthy))
+    ttfb_header = _header_for(list(next(iter(rows.values()), {})), "TTFB")
+    total_header = _header_for(list(next(iter(rows.values()), {})), "total")
+    columns_differ = bool(rows) and all(
+        ttfb_header and total_header and row[ttfb_header] != row[total_header]
+        for row in rows.values()
+    )
+
+    # Both failure roads, against the same floor. The non-2xx branch has already
+    # drained the body when it decides the answer was not a measurement; the
+    # OSError branch never got one. Both took real time, and both used to be
+    # satisfiable by a hardcoded 0.
+    rejected_leg = next(
+        (t for t in rejected["targets"] if t["via"] == "traefik"), {}
+    )
+    dead_leg = next((t for t in dead["targets"] if t["via"] == "direct"), {})
+    elapsed_ok = (
+        _elapsed_diagnostics(rejected_leg, 2, floor_ms=DELAY_FLOOR_MS)
+        and _elapsed_diagnostics(dead_leg, 2, floor_ms=DELAY_FLOOR_MS)
+    )
+
+    ok = bool(gaps) and not wrong and columns_differ and elapsed_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: ttfb is the status line and total is the drained body "
+        f"(gaps={gaps} ms, floor={DELAY_FLOOR_MS} ms, wrong={wrong}, "
+        f"report_columns_differ={columns_differ}, "
+        f"failed_after_ms non2xx={rejected_leg.get('failed_after_ms')} "
+        f"socket={dead_leg.get('failed_after_ms')}, both_above_floor={elapsed_ok})"
+    )
+    return ok
+
+
+def test_the_connector_matches_the_url_scheme_and_port() -> bool:
+    """AC: the https leg opens an HTTPS connection to :443 and the http leg to its port.
+
+    `time_request`'s first three lines choose `HTTPSConnection` or
+    `HTTPConnection` from the URL scheme and hand the connector the URL's port.
+    Neither had an observation surface: this fake is installed by monkeypatching
+    NAMES, and it bound the SAME `_Conn` to both, so always-HTTP and always-HTTPS
+    were indistinguishable — and `opened` recorded the port and then read only the
+    timeout, so dropping `parts.port` survived too.
+
+    That is a discarded parameter one level up: not an argument thrown away by a
+    stub, but the IDENTITY OF THE CLASS the stub stands in for. When a fake is
+    installed by binding names, enumerate the names and ask whether two of them
+    point at one object; two names bound to one class is a discarded distinction
+    exactly like a discarded parameter, and the assertion cannot be written at all
+    (mem-1785126104-3606).
+
+    Not a live bug in this deployment, and worth saying why it is guarded anyway:
+    always-HTTP hits Traefik on :80 and takes the 301 road (loud, rc=1, and only
+    because the band was pinned a round earlier), while always-HTTPS fails cert
+    verification against the RFC1918 backend IP. But Plex DOES answer TLS on
+    :32400, so against a context that skipped verification the always-HTTPS
+    mutation would be SILENT and would inflate the direct leg's TTFB from ~0.30 ms
+    to ~1.39 ms — a 4.6x inflation of the exact number the headline subtracts.
+    """
+    if not _guard("connector scheme and port"):
+        return False
+    record, transport, error = _transport_run()
+    if record is None:
+        print(f"FAIL: the connector matches the URL scheme and port ({error})")
+        return False
+
+    direct_host = PROBE_DIRECT.split(":")[0]
+    direct_port = int(PROBE_DIRECT.split(":")[1])
+    # Fixture power first: the two legs must actually DIFFER on both axes, or
+    # neither mapping has anything to be wrong about. The traefik leg carries no
+    # explicit port (so the harness must pass None and let http.client default to
+    # 443), the direct leg carries a sentinel one.
+    schemes_in_play = {urllib.parse.urlsplit(t["url"]).scheme for t in record["targets"]}
+    if schemes_in_play != {"http", "https"} or direct_port == 443:
+        print(
+            "FAIL: the connector matches the URL scheme and port (the fixture no longer "
+            f"exercises both schemes: schemes={sorted(schemes_in_play)}, direct_port={direct_port})"
+        )
+        return False
+
+    opened_by_host = {}
+    for opened in transport.opened:
+        opened_by_host.setdefault(opened["host"], set()).add(
+            (opened["scheme"], opened["port"])
+        )
+    expected = {
+        # https:// with no explicit port -> the connector's own default (443).
+        PROBE_HOST: {("https", None)},
+        direct_host: {("http", direct_port)},
+    }
+    ok = bool(transport.opened) and opened_by_host == expected
+    print(
+        f"{'OK' if ok else 'FAIL'}: the connector matches the URL scheme and port "
+        f"(opened={ {h: sorted(v) for h, v in opened_by_host.items()} }, "
+        f"expected={ {h: sorted(v) for h, v in expected.items()} })"
+    )
+    return ok
+
+
+def test_a_status_that_drifts_mid_capture_is_reported_in_full() -> bool:
+    """AC: `statuses` and `errors` carry EVERY distinct answer, not the first one.
+
+    `statuses[:1]` and `errors[:1]` both survived every check in this file, and
+    the reason is structural rather than an oversight: until now the fixture
+    modelled exactly ONE outcome per host for a whole run, so both lists were
+    always singletons and a truncation to one element was the identity function.
+    A fixture that cannot make a collection longer than one cannot see a
+    truncation of it.
+
+    The shape it models is real and it is this capture's: a Plex token that
+    EXPIRES MID-RUN (Plex tokens rotate), or a Traefik that starts 502ing partway
+    through. The status column is the operator's only signal that some of their
+    samples were rejected, and a truncation deletes exactly that while the `n`
+    column still reads plausibly — 1/3 looks like a flaky network, not like a
+    credential that died halfway through the one capture they get to take.
+    """
+    if not _guard("mid-capture status drift"):
+        return False
+    # Fixture power, before anything is driven. Both truncations are identities
+    # unless the drift produces at least two distinct statuses AND at least two
+    # distinct ERRORS — which needs two distinct non-2xx, since a 2xx contributes
+    # a status but no error. Asserted as an early return: a later edit that
+    # shortens this tuple must fail loudly, not read as a passing check.
+    rejecting = {s for s in PROBE_STATUS_DRIFT if not 200 <= s < 300}
+    measuring = {s for s in PROBE_STATUS_DRIFT if 200 <= s < 300}
+    if len(rejecting) < 2 or not measuring:
+        print(
+            "FAIL: a status that drifts mid-capture is reported in full (the fixture cannot "
+            f"produce two distinct statuses and two distinct errors: drift={PROBE_STATUS_DRIFT})"
+        )
+        return False
+
+    repeats = len(PROBE_STATUS_DRIFT)
+    record, _, error = _transport_run(
+        status_by_host={PROBE_HOST: PROBE_STATUS_DRIFT}, repeats=repeats
+    )
+    if record is None:
+        print(f"FAIL: a status that drifts mid-capture is reported in full ({error})")
+        return False
+    drifted = next((t for t in record["targets"] if t["via"] == "traefik"), {})
+    contrast = next((t for t in record["targets"] if t["via"] == "direct"), {})
+
+    statuses_ok = drifted.get("statuses") == sorted(set(PROBE_STATUS_DRIFT))
+    # One error per DISTINCT rejecting status, each naming its own status.
+    errors = drifted.get("errors") or []
+    errors_ok = len(errors) == len(rejecting) and all(
+        any(str(status) in e for e in errors) for status in rejecting
+    )
+    counts_ok = (
+        drifted.get("succeeded") == len(measuring)
+        and drifted.get("failed") == len(rejecting)
+        and (drifted.get("ttfb") or {}).get("count") == len(measuring)
+        and (drifted.get("bytes") or {}).get("count") == len(measuring)
+        and _elapsed_diagnostics(drifted, len(rejecting))
+        # The other leg answered cleanly throughout, so no row here can pass on a
+        # harness that simply reports everything for everyone.
+        and contrast.get("succeeded") == repeats
+        and contrast.get("statuses") == [200]
+    )
+    # And the operator SEES all of them: the record being right while the report
+    # prints only the first is the same deletion one layer out.
+    _, rows = _report_table(MOD.render_report(record))
+    row = rows.get(drifted.get("name"), {})
+    status_header = _header_for(list(row), "status")
+    reported = row.get(status_header) if status_header else None
+    report_ok = reported == ",".join(str(s) for s in sorted(set(PROBE_STATUS_DRIFT)))
+
+    ok = statuses_ok and errors_ok and counts_ok and report_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: a status that drifts mid-capture is reported in full "
+        f"(drift={PROBE_STATUS_DRIFT} -> statuses={drifted.get('statuses')} "
+        f"errors={errors} n={drifted.get('succeeded')}/{drifted.get('requested')}, "
+        f"status_cell={reported!r}, counts_ok={counts_ok})"
+    )
+    return ok
+
+
 def test_cli_wires_the_token_and_the_timeout() -> bool:
     """AC: the last two inputs — $PLEX_TOKEN and `--timeout` — reach the request.
 
@@ -1997,7 +2450,7 @@ def test_cli_wires_the_token_and_the_timeout() -> bool:
 
     # --timeout reaches BOTH destinations: every connection opened, and the
     # record's own copy of the setting.
-    timeouts = sorted({timeout for _, _, timeout in authed_transport.opened})
+    timeouts = sorted({opened["timeout"] for opened in authed_transport.opened})
     timeout_ok = (
         timeouts == [PROBE_TIMEOUT]
         and authed.get("timeout_s") == PROBE_TIMEOUT
@@ -2045,6 +2498,16 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
     from the socket layer (exit 1 plus a traceback) where `--repeats 0` is
     politely refused with 2. Bad arguments are refused BEFORE anything is
     probed — asserted against the transport, not against the exit code alone.
+
+    Both bad values are driven, and the ZERO is the one that matters. The code
+    refuses `timeout <= 0`; with `-1.0` as the only row, `<= 0` -> `< 0` survived,
+    and 0 is precisely the value the socket layer rejects and the code's own
+    comment is about. That is the four-representatives rule
+    (mem-1785125369-fb77) unapplied to the validator two lines below the one it
+    was written for — and the sibling `--repeats` guard does drive its boundary at
+    0, so the pair was asymmetric. The in-band representative is `PROBE_TIMEOUT`
+    (0.37), accepted at rc=0 and asserted onto the wire by
+    `test_cli_wires_the_token_and_the_timeout`, so a NARROWED bound is caught too.
     """
     if not _guard("lost record exit code"):
         return False
@@ -2055,11 +2518,19 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
         rc, streams, transport, error = _cli_run(_cli_argv(unwritable))
         wrote_nothing = not unwritable.exists()
 
-        bad_timeout = pathlib.Path(tmp) / "bad-timeout.jsonl"
-        timeout_rc, _, timeout_transport, timeout_error = _cli_run(
-            _cli_argv(bad_timeout, timeout=-1.0)
-        )
-        timeout_wrote = bad_timeout.exists()
+        # Below the edge, and AT it.
+        bad_timeouts = {}
+        for bad in (-1.0, 0.0):
+            bad_timeout = pathlib.Path(tmp) / f"bad-timeout-{bad}.jsonl"
+            bad_rc, _, bad_transport, bad_error = _cli_run(
+                _cli_argv(bad_timeout, timeout=bad)
+            )
+            bad_timeouts[bad] = (
+                bad_rc,
+                bad_error,
+                bad_timeout.exists(),
+                bool(bad_transport.opened),
+            )
 
     # `error` is set when an exception escaped main() — the raw-traceback
     # behaviour itself, reported as a FAIL rather than aborting the file.
@@ -2077,12 +2548,13 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
         and f"label={PROBE_LABEL}" in streams.out
         and bool(transport.opened)
     )
-    timeout_ok = (
-        timeout_error is None
-        and timeout_rc == 2
-        and not timeout_wrote
+    timeout_ok = len(bad_timeouts) == 2 and all(
+        bad_error is None
+        and bad_rc == 2
+        and not wrote
         # Refused before a single connection was opened, like `--repeats 0`.
-        and not timeout_transport.opened
+        and not probed
+        for bad_rc, bad_error, wrote, probed in bad_timeouts.values()
     )
     ok = write_ok and timeout_ok
     print(
@@ -2091,8 +2563,8 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
         f"{str(unwritable) in streams.err} "
         f"report_survived_on_stdout={f'label={PROBE_LABEL}' in streams.out} "
         f"wrote_nothing={wrote_nothing}, "
-        f"bad_timeout rc={timeout_rc!r} (expected 2) escaped={timeout_error!r} "
-        f"probed_anyway={bool(timeout_transport.opened)})"
+        f"bad_timeouts (rc, escaped, wrote, probed; all expect (2, None, False, False))="
+        f"{bad_timeouts})"
     )
     return ok
 
@@ -2170,7 +2642,10 @@ TESTS = (
     test_an_answered_but_rejected_probe_is_not_a_measurement,
     test_the_success_band_is_exactly_2xx,
     test_every_request_on_the_wire_is_a_read_only_get,
+    test_the_connector_matches_the_url_scheme_and_port,
+    test_a_status_that_drifts_mid_capture_is_reported_in_full,
     test_ttfb_and_total_summarise_the_same_samples,
+    test_ttfb_is_the_status_line_and_total_is_the_drained_body,
     test_partial_failure_does_not_inflate_the_sample_count,
     test_label_and_vantage_are_mandatory,
     test_direct_leg_is_skippable_and_the_record_says_so,

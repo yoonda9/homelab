@@ -1,0 +1,29 @@
+BASELINE  PASS: 25/25  harness=9fd2d16bfdd9db5e shape=4c01ac1385ff7aad
+ok M1   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok M2   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok M3   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok M4   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok M5   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok M6   RED   FAIL: 1/25     ['FAIL: a failed write is not reported as a failed measurement', 'FAIL: 1/25']
+ok M7   RED   FAIL: 9/25     ['FAIL: an answered-but-rejected probe is not a measurement', 'FAIL: the success band is exactly 2xx', 'FAIL: every request on the wire is a read-only GET with no body']
+ok M8   RED   FAIL: 1/25     ['FAIL: the connector matches the URL scheme and port', 'FAIL: 1/25']
+ok M9   RED   FAIL: 1/25     ['FAIL: the connector matches the URL scheme and port', 'FAIL: 1/25']
+ok M10  RED   FAIL: 1/25     ['FAIL: the connector matches the URL scheme and port', 'FAIL: 1/25']
+ok M11  RED   FAIL: 1/25     ['FAIL: a status that drifts mid-capture is reported in full', 'FAIL: 1/25']
+ok M12  RED   FAIL: 1/25     ['FAIL: a status that drifts mid-capture is reported in full', 'FAIL: 1/25']
+ok M13  RED   FAIL: 1/25     ['FAIL: every request on the wire is a read-only GET with no body', 'FAIL: 1/25']
+ok M14  RED   FAIL: 1/25     ['FAIL: the success band is exactly 2xx', 'FAIL: 1/25']
+ok M15  RED   FAIL: 1/25     ['FAIL: min/median/max computed from the samples', 'FAIL: 1/25']
+ok M16  RED   FAIL: 1/25     ['FAIL: the report headline is the unauthenticated Traefik overhea', 'FAIL: 1/25']
+ok T1   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok T2   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok T3   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok T4   RED   FAIL: 1/25     ['FAIL: a status that drifts mid-capture is reported in full', 'FAIL: 1/25']
+ok T5   RED   FAIL: 1/25     ['FAIL: a status that drifts mid-capture is reported in full', 'FAIL: 1/25']
+ok T6   RED   FAIL: 1/25     ['FAIL: the connector matches the URL scheme and port', 'FAIL: 1/25']
+ok T7   RED   FAIL: 1/25     ['FAIL: ttfb is the status line and total is the drained body', 'FAIL: 1/25']
+ok T8   RED   FAIL: 1/25     ['FAIL: a failed write is not reported as a failed measurement', 'FAIL: 1/25']
+
+24 rows, 0 GREEN, 24 RED, 0 SKIP
+unexpected: none
+harness sha256 9fd2d16bfdd9db5e (baseline 9fd2d16bfdd9db5e), shape sha256 4c01ac1385ff7aad (baseline 4c01ac1385ff7aad)
