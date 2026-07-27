@@ -39,9 +39,19 @@ it drives the pipeline below with an injected prober, which is why
 `run_measurement` takes a `probe` argument.
 
 A failed request is a measurement of NOTHING: it contributes to neither the TTFB
-series nor the total series, so the two always summarise the same samples. How
-long the failure took to surface is kept separately as `failed_after_ms` — it is
-a diagnostic, not a latency, because on a timeout it is just `--timeout`.
+series nor the total series nor the payload series, so all three always
+summarise the same samples. How long the failure took to surface is kept
+separately as `failed_after_ms` — it is a diagnostic, not a latency, because on
+a timeout it is just `--timeout`.
+
+**A non-2xx response is one of those failures.** It is a flawless round trip at
+the transport layer and a measurement of nothing at the layer that matters: a
+401 from `/library/sections` is Plex refusing before it touches the library, and
+a Traefik 404 or 502 error page is Traefik answering for a backend it never
+reached. Both are fast. Counted as latencies they file as excellent baselines,
+and a stale token — Plex tokens rotate — is the ordinary way that happens. So a
+non-2xx records no latency, keeps its STATUS (the operator's only signal that
+they measured an error page), and makes the run exit non-zero.
 
 Usage::
 
@@ -51,8 +61,10 @@ Usage::
 Exit codes:
 
 * ``0`` measured everything it set out to;
-* ``1`` at least one target returned no successful sample. The record is written
-  BEFORE this is returned, so the measurement is on disk and nothing is lost;
+* ``1`` at least one target returned no USABLE sample — it never answered, or it
+  only ever answered with a status that means it did no work. The record is
+  written BEFORE this is returned, so the measurement is on disk and nothing is
+  lost;
 * ``2`` bad arguments — nothing was probed;
 * ``3`` the measurement succeeded and the RECORD COULD NOT BE WRITTEN. This is
   deliberately not ``1``: there the data is safe and an endpoint is sick, here
@@ -86,7 +98,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 #: `succeeded`/`failed`; records gained `direct_probed`.
 #: v3 — targets gained `failed_after_ms`, the per-failure diagnostic the module
 #: docstring has always promised but which used to be dropped before the record.
-SCHEMA_VERSION = 3
+#: v4 — a non-2xx response is no longer a successful sample, so `succeeded`,
+#: both latency series and the exit code all mean something different from v3;
+#: targets also gained a `bytes` summary. Records at v3 and below recorded 401s
+#: as library-load measurements and MUST NOT be diffed against these.
+SCHEMA_VERSION = 4
 
 #: The token comes from here and from nowhere else. See the module docstring.
 TOKEN_ENV = "PLEX_TOKEN"
@@ -173,12 +189,18 @@ def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
     Exactly one attempt. A failure is recorded as an error sample rather than
     retried, so an unhealthy server is never hammered by a measurement.
 
-    A FAILED sample has `ttfb_ms` **and** `total_ms` set to None. The tempting
-    alternative — null the TTFB but keep the elapsed time as the total — would
-    file the *timeout duration* as a total load time: a number that changes when
-    `--timeout` changes and that reads downstream as a genuinely slow endpoint.
-    The elapsed time is still useful as a diagnostic, so it is kept under
-    `failed_after_ms`, a field no summary ever touches.
+    A FAILED sample has `ttfb_ms`, `total_ms` **and** `bytes` set to None. The
+    tempting alternative — null the TTFB but keep the elapsed time as the total
+    — would file the *timeout duration* as a total load time: a number that
+    changes when `--timeout` changes and that reads downstream as a genuinely
+    slow endpoint. The elapsed time is still useful as a diagnostic, so it is
+    kept under `failed_after_ms`, a field no summary ever touches.
+
+    There are THREE outcomes here, not two. Beyond "it answered" and "the socket
+    gave up" sits "it answered, and said no": a non-2xx status is a complete,
+    fast, successful round trip that measured nothing about the endpoint it
+    names. It takes the failure road for exactly that reason — see the module
+    docstring — while keeping its status, so the report can show WHICH.
     """
     parts = urllib.parse.urlsplit(url)
     connector = (
@@ -199,6 +221,19 @@ def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
         ttfb = (time.perf_counter() - start) * 1000.0
         body = response.read()
         total = (time.perf_counter() - start) * 1000.0
+        if not 200 <= response.status < 300:
+            # Answered, and said no. Same treatment as a dead socket — nothing
+            # enters either latency series — because a rejection is not a
+            # measurement of the endpoint it was addressed to. The status
+            # survives so the report's status column can say which one it was.
+            return {
+                "status": response.status,
+                "ttfb_ms": None,
+                "total_ms": None,
+                "bytes": None,
+                "failed_after_ms": round(total, 3),
+                "error": f"HTTP {response.status} {response.reason}".strip(),
+            }
         return {
             "status": response.status,
             "ttfb_ms": round(ttfb, 3),
@@ -212,7 +247,7 @@ def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
             "status": None,
             "ttfb_ms": None,
             "total_ms": None,
-            "bytes": 0,
+            "bytes": None,
             # NOT a latency: how long the failure took to surface, which on a
             # timeout is just `--timeout`. Segregated from both series so it can
             # never be summarised into one.
@@ -223,16 +258,20 @@ def time_request(url, timeout=DEFAULT_TIMEOUT, token=None):
         conn.close()
 
 
-def summarize(values):
-    """min / median / max over the non-None samples of one series."""
+def summarize(values, unit="ms"):
+    """min / median / max over the non-None samples of one series.
+
+    `unit` names the statistics rather than leaving them bare, so a payload-size
+    series cannot be read — by Step 4, or by eye — as another millisecond one.
+    """
     clean = sorted(v for v in values if v is not None)
     if not clean:
-        return {"count": 0, "min_ms": None, "median_ms": None, "max_ms": None}
+        return {"count": 0, f"min_{unit}": None, f"median_{unit}": None, f"max_{unit}": None}
     return {
         "count": len(clean),
-        "min_ms": round(clean[0], 3),
-        "median_ms": round(statistics.median(clean), 3),
-        "max_ms": round(clean[-1], 3),
+        f"min_{unit}": round(clean[0], 3),
+        f"median_{unit}": round(statistics.median(clean), 3),
+        f"max_{unit}": round(clean[-1], 3),
     }
 
 
@@ -273,6 +312,14 @@ def measure_target(target, repeats=DEFAULT_REPEATS, timeout=DEFAULT_TIMEOUT, tok
         "failed_after_ms": [s["failed_after_ms"] for s in samples if s["error"] is not None],
         "ttfb": summarize([s["ttfb_ms"] for s in samples]),
         "total": summarize([s["total_ms"] for s in samples]),
+        # Carried, not computed and dropped. It is the one control that
+        # separates "the total got slower" from "the payload got bigger", which
+        # is the first confounder Step 4 will meet when it diffs two runs taken
+        # weeks apart against a library that grew in between. Summarised over
+        # exactly the samples the latency series cover — a failed sample is None
+        # here too — and deliberately kept OUT of the report, which is already a
+        # full-width table and is read for latency, not for bytes.
+        "bytes": summarize([s["bytes"] for s in samples], unit="bytes"),
     }
 
 
@@ -509,12 +556,28 @@ def main(argv=None):
             return 3
         print(f"\nappended 1 record to {path}")
 
-    unreachable = [t["name"] for t in record["targets"] if t["ttfb"]["count"] == 0]
-    if unreachable:
+    unusable = [t for t in record["targets"] if t["ttfb"]["count"] == 0]
+    if unusable:
         # stdout is block-buffered when piped into a log, stderr is not, so
         # without this the warning surfaces ABOVE the report it refers to.
         sys.stdout.flush()
-        print(f"\nWARNING: no successful samples for: {unreachable}", file=sys.stderr)
+        # Named with the reason: "no answer" and "answered 401" are the same
+        # exit code and very different problems, and the operator reading this
+        # has one capture to decide what to do about it.
+        print(
+            "\nWARNING: no usable samples for: "
+            + ", ".join(
+                f"{t['name']} ({'; '.join(t['errors']) or 'no response'})" for t in unusable
+            ),
+            file=sys.stderr,
+        )
+        if any(t["authenticated"] and set(t["statuses"]) & {401, 403} for t in unusable):
+            print(
+                f"  The authenticated probes were REJECTED, not measured: ${TOKEN_ENV} is"
+                " expired, wrong, or from another server. The library numbers above are an"
+                " error page, not a library load — re-export a current token and re-run.",
+                file=sys.stderr,
+            )
         return 1
     return 0
 

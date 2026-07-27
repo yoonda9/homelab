@@ -22,6 +22,13 @@ two runs *incomparable* or unsafe, not the script's prose:
      that never returned a byte must not report a `total` median (which would be
      the timeout duration wearing a latency's clothes), and `ttfb` and `total`
      must always summarise the SAME set of samples,
+  6b. and a request that WAS answered, but not with a 2xx, is a failure too. A
+     401 from `/library/sections` is Plex refusing before it touches the library
+     and a Traefik 404/502 error page is Traefik answering for a backend it
+     never reached: both are fast, both are flawless round trips at the
+     transport layer, and both file as an excellent baseline if they are
+     counted. The protocol has THREE outcomes (2xx, non-2xx, no answer) where
+     the socket has two (mem-1785123219-03c9),
   7. `--label` and `--vantage` are mandatory, so a convenient LAN run cannot
      self-file as the plan's external-network baseline,
   8. the harness is import-safe and offline-safe — `scripts/run_gate.py` runs
@@ -35,7 +42,14 @@ two runs *incomparable* or unsafe, not the script's prose:
      task's named output ("human-readable stdout AND an append-only structured
      record") and it is the half the operator transcribes, so its headline
      number and its per-endpoint rows are read and compared against the record
-     they claim to describe (mem-1785121975-bdc3).
+     they claim to describe (mem-1785121975-bdc3). Every cell is read UNDER THE
+     HEADER THAT NAMES IT — "the value appears somewhere in the row" is the
+     column-level version of a vacuous check — and the table is rendered under
+     every outcome class the record can hold, because a column like `n` exists
+     precisely for the outcome an all-success fixture cannot produce
+     (mem-1785123232-2aff),
+ 12. the report lands on STDOUT and the diagnostics on STDERR, because the
+     runbook 1b publishes tells the operator to redirect one of them.
 
 Behaviour is exercised, not grepped: the record-building and statistics paths
 run end to end against an INJECTED fake prober with scripted timings, under a
@@ -73,6 +87,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import socket
 import sys
 import tempfile
@@ -106,6 +121,28 @@ FAKE_TOTAL_STATS = (22.0, 74.0, 182.0)
 # go. These make the difference non-zero and its sign observable.
 FAKE_DIRECT_TTFB = [12.0, 4.0, 60.0, 20.0, 8.0]  # -> min 4.0, median 12.0, max 60.0
 FAKE_DIRECT_TOTAL = [30.0, 10.0, 120.0, 50.0, 18.0]  # -> min 10.0, median 30.0, max 120.0
+
+# A THIRD and FOURTH set, for the AUTHENTICATED library legs. The headline is
+# specifically the overhead on the UNAUTHENTICATED path; with every path on one
+# script the filter that selects it is invisible, because the number it would
+# print without the filter is the same number. These make the library A/B
+# (500 - 100 = +400.0) differ from the /identity A/B (37 - 12 = +25.0).
+FAKE_LIB_TTFB = [500.0, 400.0, 900.0, 600.0, 300.0]  # -> median 500.0
+FAKE_LIB_TOTAL = [1000.0, 800.0, 1800.0, 1200.0, 600.0]
+FAKE_LIB_DIRECT_TTFB = [100.0, 80.0, 300.0, 200.0, 60.0]  # -> median 100.0
+FAKE_LIB_DIRECT_TOTAL = [200.0, 160.0, 600.0, 400.0, 120.0]
+
+# The HTTP status a rejected probe answers with: a real round trip, a real
+# status line, and not a measurement of anything the endpoint is named for.
+PROBE_REJECT_STATUS = 401
+
+# The body every fake response returns. Its LENGTH is asserted: the payload size
+# is the one control that separates "the total got slower" from "the payload got
+# bigger", so a harness that computes it and drops it has thrown away Step 4's
+# only defence against that confounder.
+PROBE_BODY = b"probe-body-9c4f"
+
+_COLUMN_GAP = re.compile(r"\s{2,}")
 
 
 class NetworkAttempted(RuntimeError):
@@ -236,12 +273,26 @@ class FakeProbe:
 
 
 class _FakeResponse:
-    """The bare surface `time_request` uses: a status line and a readable body."""
+    """The bare surface `time_request` uses: a status line and a readable body.
 
-    status = 200
+    The status is a CONSTRUCTOR ARGUMENT, not a class constant. Hardcoding it to
+    200 is what made the whole file structurally incapable of constructing an
+    answered-but-rejected probe: the fixture could produce two outcomes (a
+    success and a dead socket) where the protocol has three, so a 401 recorded
+    as a library-load measurement could not be seen by any check here
+    (mem-1785123219-03c9).
+    """
+
+    #: Only the statuses this fixture actually uses; `reason` is part of what the
+    #: harness renders into the error string, so it cannot be left blank.
+    REASONS = {200: "OK", 401: "Unauthorized", 404: "Not Found", 502: "Bad Gateway"}
+
+    def __init__(self, status=200):
+        self.status = status
+        self.reason = self.REASONS.get(status, "")
 
     def read(self):
-        return b"probe-body"
+        return PROBE_BODY
 
 
 class FakeTransport:
@@ -264,11 +315,18 @@ class FakeTransport:
     requested" and "how many were measured" disagree. Without such a row, a
     count taken off the wrong list is invisible: with every attempt succeeding
     or every attempt failing, the two numbers coincide (mem-1784139112-e13c).
+
+    `status_by_host` is the THIRD outcome class, and the one this fixture used
+    to be incapable of expressing: the host answers, promptly and completely,
+    with a status that means the endpoint did no work. Failing at the socket and
+    refusing at the protocol are not the same event, and only one of them was
+    modelled here.
     """
 
-    def __init__(self, failing_hosts=(), flaky_hosts=None):
+    def __init__(self, failing_hosts=(), flaky_hosts=None, status_by_host=None):
         self.failing_hosts = set(failing_hosts)
         self.flaky_hosts = {host: set(idx) for host, idx in (flaky_hosts or {}).items()}
+        self.status_by_host = dict(status_by_host or {})
         self.attempts: dict = {}
         self.opened: list = []
         # (host, path, headers) per attempted request. The ONLY place the token
@@ -300,7 +358,7 @@ class FakeTransport:
                     raise TimeoutError("the read operation timed out")
 
             def getresponse(self):
-                return _FakeResponse()
+                return _FakeResponse(transport.status_by_host.get(self.host, 200))
 
             def close(self):
                 return None
@@ -313,13 +371,16 @@ class FakeTransport:
             (http.client.HTTPConnection, http.client.HTTPSConnection) = saved
 
 
-def _transport_run(failing_hosts=(), flaky_hosts=None, repeats=len(FAKE_TTFB), **kwargs):
+def _transport_run(
+    failing_hosts=(), flaky_hosts=None, status_by_host=None, repeats=len(FAKE_TTFB), **kwargs
+):
     """Drive the harness's REAL prober (`probe=None`) over `FakeTransport`.
 
     Returns `(record, transport, error)`. Deliberately does not inject a probe:
-    the point is to execute `time_request` itself, including its except-branch.
+    the point is to execute `time_request` itself, including its except-branch
+    AND its non-2xx branch.
     """
-    transport = FakeTransport(failing_hosts, flaky_hosts)
+    transport = FakeTransport(failing_hosts, flaky_hosts, status_by_host)
     try:
         with _no_network(), transport.installed():
             record = MOD.run_measurement(
@@ -413,36 +474,61 @@ def _cli_argv(out, extra=(), repeats=2, timeout=PROBE_TIMEOUT):
     ]
 
 
-def _cli_run(argv, failing_hosts=(), token=None):
+class _Streams:
+    """What `main()` wrote, per stream.
+
+    Captured SEPARATELY and never re-merged by default. Merging them into one
+    buffer — which is what this helper used to do — makes "the report is printed
+    to stdout" unobservable: send `render_report`'s output to stderr instead and
+    every check still finds the text it was looking for, while an operator
+    following the runbook's `> baseline.txt` keeps an empty file
+    (mem-1785123232-2aff).
+    """
+
+    def __init__(self, out, err):
+        self.out = out
+        self.err = err
+
+    @property
+    def both(self):
+        return self.out + self.err
+
+    def __repr__(self):
+        return f"_Streams(out={len(self.out)} chars, err={len(self.err)} chars)"
+
+
+def _cli_run(argv, failing_hosts=(), token=None, status_by_host=None):
     """Drive the harness's ENTRY POINT for real: argv -> record -> disk -> exit code.
 
-    Returns `(rc, output, transport, error)`. The fakes elsewhere in this file
+    Returns `(rc, streams, transport, error)`. The fakes elsewhere in this file
     are injected below `main()`, so nothing else here executes the wiring
     between an argument and the measurement it is supposed to select, or the
     write that produces this task's named output. This runs the real thing:
     `main()` parses the argv, the harness's real `time_request` runs over
     `FakeTransport`, and the caller inspects the file on disk and the returned
     code. stdout/stderr are captured because the gate log should not carry a
-    report for a run against `.invalid` hosts.
+    report for a run against `.invalid` hosts — and captured apart, because
+    WHICH stream a line landed on is itself part of the published contract.
     """
-    transport = FakeTransport(failing_hosts)
-    buffer = io.StringIO()
+    transport = FakeTransport(failing_hosts, status_by_host=status_by_host)
+    out, err = io.StringIO(), io.StringIO()
+    streams = lambda: _Streams(out.getvalue(), err.getvalue())  # noqa: E731 - read twice below
     try:
         with _env(MOD.TOKEN_ENV, token), _no_network(), transport.installed():
-            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = MOD.main(argv)
     except SystemExit as exc:  # argparse refuses malformed argv by exiting
         rc = exc.code
     except NetworkAttempted as exc:
-        return None, buffer.getvalue(), transport, f"NetworkAttempted: {exc}"
+        return None, streams(), transport, f"NetworkAttempted: {exc}"
     except OSError as exc:
         # An OSError escaping main() IS a defect, not a fixture problem: a write
         # that cannot happen has to be reported through the exit contract the
         # runbook publishes, not as a traceback on the operator's one-shot
         # capture. Returned as an error string so the check prints FAIL rather
         # than aborting every check after it.
-        return None, buffer.getvalue(), transport, f"{type(exc).__name__} escaped main(): {exc}"
-    return rc, buffer.getvalue(), transport, None
+        return None, streams(), transport, f"{type(exc).__name__} escaped main(): {exc}"
+    return rc, streams(), transport, None
 
 
 def _read_records(path):
@@ -463,6 +549,94 @@ def _read_records(path):
         ], None
     except ValueError as exc:
         return None, f"unparseable JSONL: {exc}"
+
+
+def _report_table(report):
+    """Parse the rendered table POSITIONALLY: `(headers, {endpoint: {header: cell}})`.
+
+    The point of parsing rather than substring-searching is the column. A check
+    that asks "is this number somewhere in this row?" cannot tell a TTFB from a
+    total when the two cells are swapped in the row's f-string — the row still
+    contains both numbers, so the check passes while the report prints 806 ms of
+    total under a heading that says TTFB. Cells are therefore keyed by the
+    HEADER ABOVE THEM: both the header line and the rows are laid out with the
+    same field widths, so runs of two-or-more spaces separate the same columns
+    in both.
+
+    A row that does not split into exactly as many cells as the header is left
+    OUT of the returned mapping, so the caller reports it as a missing row
+    rather than silently checking nothing.
+    """
+    lines = report.splitlines()
+    index = next((i for i, line in enumerate(lines) if "endpoint" in line), None)
+    if index is None:
+        return None, {}
+    headers = _COLUMN_GAP.split(lines[index].strip())
+    rows = {}
+    for line in lines[index + 1:]:
+        cells = _COLUMN_GAP.split(line.strip())
+        if len(cells) == len(headers):
+            rows[cells[0]] = dict(zip(headers, cells))
+    return headers, rows
+
+
+def _header_for(headers, needle):
+    """The one header that IS `needle`, else the one containing it; None if ambiguous.
+
+    Exact first, because the `n` column's whole label is one letter and that
+    letter appears inside three of its neighbours.
+    """
+    headers = list(headers or ())
+    exact = [h for h in headers if h == needle]
+    if exact:
+        return exact[0]
+    matches = [h for h in headers if needle.lower() in h.lower()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _fmt_cell(value):
+    """Render one statistic the way the report must: one decimal, or `n/a`."""
+    return "n/a" if value is None else f"{value:.1f}"
+
+
+def _expected_row(target):
+    """What the record says this endpoint's row must contain, cell by cell.
+
+    Keyed by a *substring of the header* rather than by position, so the header
+    line and the row f-string have to agree with each other AND with the record.
+    """
+    def _triple(series):
+        return "/".join(_fmt_cell(target[series][stat]) for stat in ("min_ms", "median_ms", "max_ms"))
+
+    return {
+        "endpoint": target["name"],
+        # Not `requested/requested`: this column exists for exactly the case
+        # where those two numbers differ, and a median over one surviving sample
+        # of five is typographically identical to a clean run without it.
+        "n": f"{target['succeeded']}/{target['requested']}",
+        "TTFB": _triple("ttfb"),
+        "total": _triple("total"),
+        "status": ",".join(str(s) for s in target["statuses"]) or "-",
+    }
+
+
+def _row_mismatches(record, report):
+    """Every (endpoint, column, expected, got) the report gets wrong. Empty is correct."""
+    headers, rows = _report_table(report)
+    problems = []
+    for target in record["targets"]:
+        row = rows.get(target["name"])
+        if row is None:
+            problems.append((target["name"], "<row>", "present", "missing"))
+            continue
+        for needle, expected in _expected_row(target).items():
+            header = _header_for(headers, needle)
+            if header is None:
+                problems.append((target["name"], needle, "one header", f"headers={headers}"))
+                continue
+            if row[header] != expected:
+                problems.append((target["name"], header, expected, row[header]))
+    return problems
 
 
 def _guard(name: str) -> bool:
@@ -582,12 +756,21 @@ def test_authenticated_targets_require_a_token() -> bool:
 
 
 def test_record_carries_label_vantage_and_utc_timestamp() -> bool:
-    """AC: every record is self-describing — label + vantage + UTC timestamp.
+    """AC: every record is self-describing — schema + label + vantage + UTC timestamp.
 
     Step 4 diffs baseline against post-change out of this JSONL; a record that
     loses its label, or its LAN/external vantage, cannot be paired with the run
     it is supposed to be compared to. The timestamp is injected, so a value
     invented instead of derived (or a naive local-time stamp) reddens.
+
+    `schema` is here for the same reason and was the one part of the record's
+    self-description nothing read: `logs/plex-latency.jsonl` ALREADY holds
+    records at three different versions, and the field exists so Step 4 can
+    refuse to diff across incompatible shapes rather than silently comparing
+    different things. Pinned two ways — the record's value must come FROM the
+    module constant (delete the field and this reddens) and that constant must
+    be at or past the version that made a non-2xx a non-measurement (revert it
+    and older, differently-meant records start claiming the current shape).
     """
     if not _guard("record label/vantage/timestamp"):
         return False
@@ -602,15 +785,24 @@ def test_record_carries_label_vantage_and_utc_timestamp() -> bool:
         parsed = None
     utc_ok = parsed is not None and parsed.utcoffset() == datetime.timedelta(0)
     same_instant = parsed is not None and parsed == PROBE_NOW
+    # A FLOOR, not a literal: a bump must not redden the gate, but a revert to a
+    # version whose records mean something else must.
+    schema_ok = (
+        isinstance(MOD.SCHEMA_VERSION, int)
+        and MOD.SCHEMA_VERSION >= 4
+        and record.get("schema") == MOD.SCHEMA_VERSION
+    )
     ok = (
         record.get("label") == PROBE_LABEL
         and record.get("vantage") == PROBE_VANTAGE
         and utc_ok
         and same_instant
+        and schema_ok
     )
     print(
-        f"{'OK' if ok else 'FAIL'}: run record carries label + vantage + UTC timestamp "
-        f"(label={record.get('label')!r}, vantage={record.get('vantage')!r}, "
+        f"{'OK' if ok else 'FAIL'}: run record carries schema + label + vantage + UTC timestamp "
+        f"(schema={record.get('schema')!r} constant={getattr(MOD, 'SCHEMA_VERSION', None)!r}, "
+        f"label={record.get('label')!r}, vantage={record.get('vantage')!r}, "
         f"timestamp={stamp!r}, utc={utc_ok}, matches_injected_clock={same_instant})"
     )
     return ok
@@ -688,15 +880,21 @@ def test_failed_sample_is_a_measurement_of_nothing() -> bool:
 
 
 def test_ttfb_and_total_summarise_the_same_samples() -> bool:
-    """AC: per target, `ttfb` and `total` always cover an identical sample set.
+    """AC: per target, `ttfb`, `total` and `bytes` all cover an identical sample set.
 
     Models the live external-vantage case exactly: the Traefik leg answers and
     the direct RFC1918 leg is unreachable. The dead leg must summarise to
-    `count 0` on BOTH series with every statistic None — not `ttfb count 0`
+    `count 0` on EVERY series with every statistic None — not `ttfb count 0`
     beside `total count N`, and not a suspiciously fast pair either — and the
     report must decline to print a Traefik-overhead figure it cannot compute.
     The counts must also agree on the HEALTHY leg, so the check cannot be
     satisfied by a harness that simply reports zero everywhere.
+
+    `bytes` is in that list because it is the control for the confounder Step 4
+    will meet first — "the total got slower" versus "the payload got bigger" —
+    and it was computed into every sample and then dropped before the record,
+    the same shape `failed_after_ms` had a round earlier. Its median is compared
+    against the real body length, so carrying a constant would not satisfy it.
     """
     if not _guard("both series over the same samples"):
         return False
@@ -716,9 +914,14 @@ def test_ttfb_and_total_summarise_the_same_samples() -> bool:
     def _series(target, series, stat):
         return (target.get(series) or {}).get(stat)
 
-    # The invariant, asserted for EVERY target rather than only the dead one.
+    # The invariant, asserted for EVERY target rather than only the dead one, and
+    # over EVERY series the record carries — a fourth series added later that
+    # silently covers a different sample set is the same defect with a new name.
     agree = all(
-        _series(t, "ttfb", "count") == _series(t, "total", "count") == t.get("succeeded")
+        _series(t, "ttfb", "count")
+        == _series(t, "total", "count")
+        == _series(t, "bytes", "count")
+        == t.get("succeeded")
         and (t.get("succeeded"), t.get("failed")) != (None, None)
         and (t.get("succeeded") or 0) + (t.get("failed") or 0) == t.get("requested")
         for t in record["targets"]
@@ -726,10 +929,11 @@ def test_ttfb_and_total_summarise_the_same_samples() -> bool:
     dead_is_empty = (
         _series(dead, "ttfb", "count") == 0
         and _series(dead, "total", "count") == 0
+        and _series(dead, "bytes", "count") == 0
         and all(
-            _series(dead, series, stat) is None
-            for series in ("ttfb", "total")
-            for stat in ("min_ms", "median_ms", "max_ms")
+            _series(dead, series, f"{stat}_{unit}") is None
+            for series, unit in (("ttfb", "ms"), ("total", "ms"), ("bytes", "bytes"))
+            for stat in ("min", "median", "max")
         )
         and bool(dead.get("errors"))
         # The elapsed time of each failure is kept, but only as a diagnostic:
@@ -743,6 +947,8 @@ def test_ttfb_and_total_summarise_the_same_samples() -> bool:
         and not live.get("errors")
         and _series(live, "total", "median_ms") is not None
         and live.get("failed_after_ms") == []
+        # The payload the leg actually returned, not a placeholder.
+        and _series(live, "bytes", "median_bytes") == len(PROBE_BODY)
     )
     report = MOD.render_report(record)
     overhead_claimed = "overhead" in report and "n/a" not in report.split("overhead")[-1]
@@ -754,11 +960,12 @@ def test_ttfb_and_total_summarise_the_same_samples() -> bool:
         and not overhead_claimed
     )
     print(
-        f"{'OK' if ok else 'FAIL'}: ttfb and total summarise the same samples "
+        f"{'OK' if ok else 'FAIL'}: ttfb, total and bytes summarise the same samples "
         f"(counts_agree={agree}, dead_leg ttfb={_series(dead, 'ttfb', 'count')}"
-        f"/total={_series(dead, 'total', 'count')} "
+        f"/total={_series(dead, 'total', 'count')}/bytes={_series(dead, 'bytes', 'count')} "
         f"median_total={_series(dead, 'total', 'median_ms')!r}, "
-        f"live_leg={live.get('succeeded')}/{live.get('requested')}, "
+        f"live_leg={live.get('succeeded')}/{live.get('requested')} "
+        f"median_bytes={_series(live, 'bytes', 'median_bytes')!r} (body={len(PROBE_BODY)}), "
         f"overhead_claimed_without_both_legs={overhead_claimed})"
     )
     return ok
@@ -786,7 +993,11 @@ def test_partial_failure_does_not_inflate_the_sample_count() -> bool:
     if flaky is None:
         print("FAIL: a partial failure does not inflate the sample count (no traefik target)")
         return False
-    counts = ((flaky.get("ttfb") or {}).get("count"), (flaky.get("total") or {}).get("count"))
+    counts = (
+        (flaky.get("ttfb") or {}).get("count"),
+        (flaky.get("total") or {}).get("count"),
+        (flaky.get("bytes") or {}).get("count"),
+    )
     # The failure diagnostic the module docstring promises is KEPT: one entry per
     # failed sample, carried into the record rather than computed and dropped.
     # Its length tracks the FAILURES, so it cannot be confused with either
@@ -802,7 +1013,7 @@ def test_partial_failure_does_not_inflate_the_sample_count() -> bool:
         and flaky.get("requested") == len(FAKE_TTFB)
         and flaky.get("succeeded") == expected_ok
         and flaky.get("failed") == len(failed_attempts)
-        and counts == (expected_ok, expected_ok)
+        and counts == (expected_ok, expected_ok, expected_ok)
         and bool(flaky.get("errors"))
         and (flaky.get("ttfb") or {}).get("median_ms") is not None
         and diagnostics_ok
@@ -1039,109 +1250,332 @@ def test_cli_appends_the_record_and_honours_its_exit_contract() -> bool:
 
 
 def test_report_states_what_the_record_states() -> bool:
-    """AC: the human-readable half of the output agrees with the machine half.
+    """AC: every recorded target gets a row, and every cell sits under its own header.
 
-    Both halves are named deliverables of this task, and every other check in
-    this file reads the record — so the report was pinned only by its ABSENCE
-    case (the `n/a` branch of the overhead line) and no check ever read a
-    printed VALUE (mem-1785121975-bdc3). The headline is the conclusion Step 4
-    exists to draw and the line 1b tells the operator to transcribe off the
-    screen: invert the subtraction and "Traefik costs 25.0 ms" becomes "Traefik
-    saves 25.0 ms" while the JSONL stays perfectly correct. The data survives;
-    the transcript does not.
+    Both halves of the output are named deliverables of this task, and every
+    other check in this file reads the record — so the report was first pinned
+    only by its ABSENCE case, then by "the number appears somewhere in the row",
+    which is the same vacuity one column further in: swap `ttfb_cell` and
+    `total_cell` in the row f-string and the row still contains both numbers,
+    while the operator reads 806 ms of TOTAL under a heading that says
+    "TTFB min/med/max" (mem-1785123232-2aff). So the table is PARSED and each
+    cell compared under the header that names it.
 
-    Three properties, mapped to the three mutations that previously survived the
-    full gate: every recorded target has a ROW (else a whole leg silently
-    vanishes from the report), each row's cells carry the statistics the record
-    holds under the labels it prints (else `median_ms` -> `min_ms` renders a
-    minimum under the heading "median TTFB"), and the headline equals
-    `traefik_median - direct_median` with that sign.
+    Rendered under every outcome class the record can hold, because three of the
+    five columns are unfalsifiable under an all-success two-leg fixture:
 
-    Driven with per-leg scripted timings, which the CLI fixture cannot supply
-    and which the check would be VACUOUS without: over `FakeTransport` every
-    elapsed time is a few microseconds, so min, median, max and both legs alike
-    all render as `0.0` at one decimal place and none of the three mutations
-    would change a character. The `discriminating` assertion below holds the
-    fixture to that requirement.
+    * healthy, with PER-LEG scripted timings — without them the check is
+      vacuous, since over `FakeTransport` every elapsed time is a few
+      microseconds and min, median, max and both legs alike all render `0.0`;
+    * partial outage — the ONLY class where `succeeded` and `requested` differ,
+      which is the entire reason the `n` column exists ("a median over one
+      surviving sample of five is typographically identical to a clean run").
+      An all-success fixture prints 5/5 whether the harness sources that column
+      from the survivors or from the request count;
+    * answered-but-rejected (401) — the class that makes the `status` column
+      load-bearing: it is the operator's only signal that the fast number in
+      front of them measures an error page;
+    * direct leg skipped — the one-legged record an external capture produces.
     """
     if not _guard("report states the record"):
         return False
     probe = FakeProbe(per_origin={f"http://{PROBE_DIRECT}": (FAKE_DIRECT_TTFB, FAKE_DIRECT_TOTAL)})
-    record, _, error = _fake_run(probe=probe)
+    healthy, _, healthy_err = _fake_run(probe=probe)
+    partial, _, partial_err = _transport_run(flaky_hosts={PROBE_HOST: {1, 3}})
+    rejected, _, rejected_err = _transport_run(status_by_host={PROBE_HOST: PROBE_REJECT_STATUS})
+    skipped, _, skipped_err = _transport_run(probe_direct=False)
+    errors = [e for e in (healthy_err, partial_err, rejected_err, skipped_err) if e]
+    classes = {
+        "healthy": healthy,
+        "partial-outage": partial,
+        "rejected-401": rejected,
+        "direct-skipped": skipped,
+    }
+    if errors or any(record is None for record in classes.values()):
+        print(f"FAIL: the report states what the record states (fixtures: {errors})")
+        return False
+
+    problems = {
+        name: _row_mismatches(record, MOD.render_report(record))
+        for name, record in classes.items()
+    }
+    problems = {name: found for name, found in problems.items() if found}
+
+    # Self-guards: each class must actually be able to show the mutation it is
+    # here for, so a later fixture change cannot quietly make them all identical.
+    def _leg(record, via):
+        return next((t for t in record["targets"] if t["via"] == via), {})
+
+    healthy_traefik, healthy_direct = _leg(healthy, "traefik"), _leg(healthy, "direct")
+    partial_traefik = _leg(partial, "traefik")
+    rejected_traefik = _leg(rejected, "traefik")
+    discriminating = {
+        # min/median/max all differ, and the TTFB triple differs from the total
+        # triple, so a statistic read off the wrong end or a swapped pair of
+        # cells changes the rendered text.
+        "healthy stats differ": (
+            len({healthy_traefik["ttfb"][s] for s in ("min_ms", "median_ms", "max_ms")}) == 3
+            and _expected_row(healthy_traefik)["TTFB"] != _expected_row(healthy_traefik)["total"]
+            and healthy_traefik["ttfb"]["median_ms"] != healthy_direct["ttfb"]["median_ms"]
+        ),
+        # succeeded != requested, so `n` is not 5/5 either way.
+        "partial n is not full": (
+            0 < partial_traefik.get("succeeded", 0) < partial_traefik.get("requested", 0)
+        ),
+        # A status the harness cannot have invented, on a leg with no successes.
+        "rejected status is visible": (
+            rejected_traefik.get("statuses") == [PROBE_REJECT_STATUS]
+            and rejected_traefik.get("succeeded") == 0
+        ),
+        # One leg only, so a report that always prints two rows is caught.
+        "skipped has one leg": len(skipped["targets"]) == 1,
+    }
+
+    ok = not problems and all(discriminating.values())
+    print(
+        f"{'OK' if ok else 'FAIL'}: the report states what the record states "
+        f"(mismatches={problems or 'none'}, "
+        f"fixture_discriminates={ {k: v for k, v in discriminating.items() if not v} or 'all'})"
+    )
+    return ok
+
+
+def test_report_headline_is_the_unauthenticated_traefik_overhead() -> bool:
+    """AC: the headline is `traefik - direct` median TTFB, on the path it names.
+
+    This one line is the conclusion Step 4 exists to draw and the line 1b tells
+    the operator to transcribe off the screen: invert the subtraction and
+    "Traefik costs 25.0 ms" becomes "Traefik saves 25.0 ms" while the JSONL
+    stays perfectly correct. The data survives; the transcript does not.
+
+    Two things are pinned, and the second needs a token to be visible at all:
+
+    * the VALUE and its SIGN, against the record it claims to describe;
+    * the PATH SELECTOR. The line is labelled `/identity` and the filter that
+      keeps it to `/identity` is invisible in an unauthenticated fixture — drop
+      it and the same line prints, with the library legs' difference under the
+      unauthenticated path's name. So this runs with a token AND with the
+      library legs on their own timings, and asserts the two candidate numbers
+      are different before comparing.
+
+    Plus the WIRE, which is a separate fact: `main()` must print
+    `render_report` of the record it wrote. That half cannot see a
+    `render_report` mutation — both sides of the comparison move together — so
+    it guards only that the text reaching the operator describes the record
+    reaching disk.
+    """
+    if not _guard("report headline"):
+        return False
+    probe = FakeProbe(
+        per_origin={
+            f"https://{PROBE_HOST}/library/sections": (FAKE_LIB_TTFB, FAKE_LIB_TOTAL),
+            f"http://{PROBE_DIRECT}/library/sections": (
+                FAKE_LIB_DIRECT_TTFB,
+                FAKE_LIB_DIRECT_TOTAL,
+            ),
+            f"http://{PROBE_DIRECT}/identity": (FAKE_DIRECT_TTFB, FAKE_DIRECT_TOTAL),
+        }
+    )
+    record, _, error = _fake_run(token=PROBE_TOKEN, probe=probe)
     if record is None:
-        print(f"FAIL: the report states what the record states ({error})")
+        print(f"FAIL: the report headline is the unauthenticated Traefik overhead ({error})")
         return False
     report = MOD.render_report(record)
 
-    def _fmt(value):
-        return "n/a" if value is None else f"{value:.1f}"
-
-    def _expected_cells(target):
-        return [
-            "/".join(_fmt(target[series][stat]) for stat in ("min_ms", "median_ms", "max_ms"))
-            for series in ("ttfb", "total")
-        ]
-
-    lines = [line.strip() for line in report.splitlines()]
-    rows = {}
-    for target in record["targets"]:
-        rows[target["name"]] = next(
-            (line for line in lines if line.startswith(target["name"] + " ")), None
+    def _median(via, path):
+        target = next(
+            (t for t in record["targets"] if t["via"] == via and t["path"] == path), None
         )
-    missing_rows = sorted(name for name, line in rows.items() if line is None)
-    wrong_cells = sorted(
-        target["name"]
-        for target in record["targets"]
-        if rows[target["name"]] is not None
-        and not all(cell in rows[target["name"]] for cell in _expected_cells(target))
-    )
+        return None if target is None else target["ttfb"]["median_ms"]
 
-    by_via = {t["via"]: t for t in record["targets"] if t["path"] == MOD.UNAUTH_PATH}
-    traefik, direct = by_via.get("traefik"), by_via.get("direct")
-    if traefik is None or direct is None:
-        print(f"FAIL: the report states what the record states (missing leg: {sorted(by_via)})")
-        return False
-    # Self-guard: the mutations this check exists for are only visible while the
-    # three statistics differ from one another AND the two legs differ from one
-    # another. Asserted rather than assumed, so a future timing change cannot
-    # quietly turn every comparison below into a tautology.
+    unauth_overhead = _median("traefik", MOD.UNAUTH_PATH) - _median("direct", MOD.UNAUTH_PATH)
+    library_overhead = _median("traefik", "/library/sections") - _median(
+        "direct", "/library/sections"
+    )
+    # If these ever coincide, dropping the path filter becomes unobservable and
+    # every assertion below is satisfied by a report that measures the wrong pair.
     discriminating = (
-        len({traefik["ttfb"][s] for s in ("min_ms", "median_ms", "max_ms")}) == 3
-        and traefik["ttfb"]["median_ms"] != direct["ttfb"]["median_ms"]
+        unauth_overhead != library_overhead
+        and unauth_overhead != -unauth_overhead  # a zero difference hides the sign too
+        and len(record["targets"]) == 4
     )
-    expected_overhead = f"{traefik['ttfb']['median_ms'] - direct['ttfb']['median_ms']:+.1f} ms"
-    overhead_line = next((line for line in lines if "overhead" in line), "")
-    overhead_ok = overhead_line.endswith(expected_overhead) and "n/a" not in overhead_line
+    expected = f"{unauth_overhead:+.1f} ms"
+    line = next((line.strip() for line in report.splitlines() if "overhead" in line), "")
+    headline_ok = (
+        MOD.UNAUTH_PATH in line
+        and line.endswith(expected)
+        and "n/a" not in line
+        and f"{library_overhead:+.1f} ms" not in line
+    )
 
-    # The WIRE, separately: main() must print the report for the record it wrote.
-    # This half cannot see a `render_report` mutation — both sides of the
-    # comparison would move together — so the value assertions above are what
-    # guard the content; this guards only that the text reaching the operator
-    # describes the record reaching disk.
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "report.jsonl"
-        cli_rc, output, _, cli_error = _cli_run(_cli_argv(out))
+        cli_rc, streams, _, cli_error = _cli_run(_cli_argv(out))
         written, parse_error = _read_records(out)
     printed_ok = (
         cli_error is None
         and parse_error is None
         and cli_rc == 0
         and len(written or []) == 1
-        and MOD.render_report(written[0]) in output
+        and MOD.render_report(written[0]) in streams.out
     )
 
+    ok = discriminating and headline_ok and printed_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: the report headline is the unauthenticated Traefik overhead "
+        f"(expected={expected!r} (library A/B would be {library_overhead:+.1f} ms) line={line!r}, "
+        f"fixture_discriminates={discriminating}, main_printed_the_written_record={printed_ok})"
+    )
+    return ok
+
+
+def test_the_report_goes_to_stdout_and_the_diagnostics_to_stderr() -> bool:
+    """AC: the numbers land on STDOUT; notes, warnings and failures land on STDERR.
+
+    Which stream a line lands on is part of the published contract — the Step 1b
+    runbook is about to tell the operator to redirect stdout into the baseline
+    file — and until now nothing here could see it: `_cli_run` merged both
+    streams into one buffer, so `print(render_report(record), file=sys.stderr)`
+    left every check green while the operator's `> baseline.txt` captured
+    nothing but a note about their token (mem-1785123232-2aff).
+
+    Both directions are asserted, on a run that produces some of each: the
+    report must be ON stdout and NOT on stderr, and the unreachable-target
+    warning must be on stderr and NOT on stdout — a warning printed to stdout
+    would land inside the transcript as if it were part of the measurement.
+    """
+    if not _guard("report on stdout"):
+        return False
+    direct_host = PROBE_DIRECT.split(":")[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "streams.jsonl"
+        rc, streams, _, error = _cli_run(_cli_argv(out), failing_hosts={direct_host})
+        written, parse_error = _read_records(out)
+    if error or parse_error or not written:
+        print(
+            f"FAIL: the report goes to stdout and the diagnostics to stderr "
+            f"({error or parse_error or 'nothing was written'})"
+        )
+        return False
+
+    report = MOD.render_report(written[-1])
+    # A rendered report always carries its own header row; asserting a fragment
+    # too as well as the whole thing means a harness that prints a TRUNCATED
+    # report to stdout and the rest to stderr cannot satisfy this either.
+    fragment = f"label={PROBE_LABEL}"
+    report_on_stdout = report in streams.out and fragment in streams.out
+    report_not_on_stderr = fragment not in streams.err and "endpoint" not in streams.err
+    warning_on_stderr = "WARNING" in streams.err and "WARNING" not in streams.out
+    # The note about the absent token is a diagnostic too, and it is emitted
+    # before the measurement rather than after it.
+    note_on_stderr = MOD.TOKEN_ENV in streams.err and MOD.TOKEN_ENV not in streams.out
     ok = (
-        discriminating
-        and not missing_rows
-        and not wrong_cells
-        and overhead_ok
-        and printed_ok
+        rc == 1
+        and report_on_stdout
+        and report_not_on_stderr
+        and warning_on_stderr
+        and note_on_stderr
     )
     print(
-        f"{'OK' if ok else 'FAIL'}: the report states what the record states "
-        f"(rows_missing={missing_rows}, rows_with_wrong_cells={wrong_cells}, "
-        f"overhead_expected={expected_overhead!r} line={overhead_line!r}, "
-        f"fixture_discriminates={discriminating}, main_printed_the_written_record={printed_ok})"
+        f"{'OK' if ok else 'FAIL'}: the report goes to stdout and the diagnostics to stderr "
+        f"(rc={rc!r}, report_on_stdout={report_on_stdout}, report_kept_off_stderr="
+        f"{report_not_on_stderr}, warning_on_stderr_only={warning_on_stderr}, "
+        f"token_note_on_stderr_only={note_on_stderr}, streams={streams!r})"
+    )
+    return ok
+
+
+def test_an_answered_but_rejected_probe_is_not_a_measurement() -> bool:
+    """AC: a non-2xx contributes NO latency, and the run does not exit 0.
+
+    The live defect this closes: the authenticated targets were gated on the
+    token being PRESENT, never on it WORKING, and `time_request` only failed on
+    `OSError`/`HTTPException` — so a 401 was a flawless round trip and got filed
+    as a library-load measurement. Against the real Plex with a bogus token:
+    `traefik/library/sections succeeded=2/2 failed=0 errors=[] statuses=[401]
+    ttfb_median=66.7`, `direct/library/sections ... ttfb_median=0.382`, record
+    `authenticated: true`, exit 0. A rejection is not a library load, and 0.382
+    ms differenced against a real post-change number proves whatever you like
+    (mem-1785123219-03c9).
+
+    It generalises well past auth, which is why the fix is at the status and not
+    at the token: a Traefik 404 or a 502 error page is answered fast by Traefik
+    for a backend it never reached, and files as an excellent baseline.
+
+    So: a rejected sample takes the same road as a dead socket — no TTFB, no
+    total, no bytes, its elapsed time kept only as the `failed_after_ms`
+    diagnostic — while the STATUS is retained, because that is the operator's
+    only signal that they measured an error page. Driven against a healthy
+    second leg so the check cannot pass on a harness that reports nothing for
+    everything.
+    """
+    if not _guard("non-2xx is not a measurement"):
+        return False
+    record, transport, error = _transport_run(status_by_host={PROBE_HOST: PROBE_REJECT_STATUS})
+    if record is None:
+        print(f"FAIL: an answered-but-rejected probe is not a measurement ({error})")
+        return False
+    rejected = next((t for t in record["targets"] if t["via"] == "traefik"), {})
+    healthy = next((t for t in record["targets"] if t["via"] == "direct"), {})
+    rejected_ok = (
+        rejected.get("succeeded") == 0
+        and rejected.get("failed") == len(FAKE_TTFB)
+        # Kept, not swallowed: the report's status column is what tells the
+        # operator which of the two failures they are looking at.
+        and rejected.get("statuses") == [PROBE_REJECT_STATUS]
+        and bool(rejected.get("errors"))
+        and all(str(PROBE_REJECT_STATUS) in e for e in rejected.get("errors", []))
+        and all(
+            (rejected.get(series) or {}).get("count") == 0
+            for series in ("ttfb", "total", "bytes")
+        )
+        and (rejected.get("ttfb") or {}).get("median_ms") is None
+        and (rejected.get("total") or {}).get("median_ms") is None
+        # The round trip DID take time; it is a diagnostic, never a latency.
+        and len(rejected.get("failed_after_ms") or []) == len(FAKE_TTFB)
+    )
+    contrast_ok = (
+        healthy.get("succeeded") == len(FAKE_TTFB)
+        and (healthy.get("ttfb") or {}).get("median_ms") is not None
+        and not healthy.get("errors")
+    )
+
+    # ...and through the ENTRY POINT, where the exit code is what an operator
+    # reading a one-shot capture actually sees. Every leg is rejected here, with
+    # a token in play, which is exactly the stale-token case.
+    direct_host = PROBE_DIRECT.split(":")[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp) / "rejected.jsonl"
+        rc, streams, _, cli_error = _cli_run(
+            _cli_argv(out),
+            token=PROBE_TOKEN,
+            status_by_host={PROBE_HOST: PROBE_REJECT_STATUS, direct_host: PROBE_REJECT_STATUS},
+        )
+        written, parse_error = _read_records(out)
+    on_disk = (written or [{}])[-1]
+    cli_ok = (
+        cli_error is None
+        and parse_error is None
+        # NOT 0. The record is still written first, so nothing is lost — that is
+        # exactly what 1 means.
+        and rc == 1
+        and len(written or []) == 1
+        and bool(on_disk.get("targets"))
+        and all(t.get("succeeded") == 0 for t in on_disk.get("targets", []))
+        and all(t.get("statuses") == [PROBE_REJECT_STATUS] for t in on_disk.get("targets", []))
+        # The operator is pointed at the actual cause rather than left to read a
+        # suspiciously fast library number.
+        and MOD.TOKEN_ENV in streams.err
+        and str(PROBE_REJECT_STATUS) in streams.err
+    )
+    ok = bool(transport.opened) and rejected_ok and contrast_ok and cli_ok
+    print(
+        f"{'OK' if ok else 'FAIL'}: an answered-but-rejected probe is not a measurement "
+        f"(rejected leg {rejected.get('succeeded')}/{rejected.get('requested')} "
+        f"statuses={rejected.get('statuses')} ttfb_median="
+        f"{(rejected.get('ttfb') or {}).get('median_ms')!r} errors={rejected.get('errors')}, "
+        f"healthy leg measured={contrast_ok}, cli rc={rc!r} (expected 1, NOT 0) "
+        f"blamed_the_token={MOD.TOKEN_ENV in streams.err}, cli_error={cli_error or parse_error})"
     )
     return ok
 
@@ -1271,7 +1705,7 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
         blocker = pathlib.Path(tmp) / "not-a-directory"
         blocker.write_text("a regular file, so it cannot be anything's parent\n", encoding="utf-8")
         unwritable = blocker / "plex-latency.jsonl"
-        rc, output, transport, error = _cli_run(_cli_argv(unwritable))
+        rc, streams, transport, error = _cli_run(_cli_argv(unwritable))
         wrote_nothing = not unwritable.exists()
 
         bad_timeout = pathlib.Path(tmp) / "bad-timeout.jsonl"
@@ -1286,10 +1720,14 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
         error is None
         and rc == 3
         and wrote_nothing
-        and str(unwritable) in output
-        # The measurement happened and its numbers are still on screen: that
-        # report is now the only copy, so losing it too would be the real cost.
-        and f"label={PROBE_LABEL}" in output
+        # The failure is a diagnostic and belongs on stderr, next to the other
+        # diagnostics...
+        and str(unwritable) in streams.err
+        # ...while the measurement happened and its numbers are still on STDOUT:
+        # that report is now the only copy, so losing it too would be the real
+        # cost, and a report emitted on the same stream as the failure is a
+        # report the operator's redirect did not capture.
+        and f"label={PROBE_LABEL}" in streams.out
         and bool(transport.opened)
     )
     timeout_ok = (
@@ -1303,7 +1741,8 @@ def test_a_lost_record_is_not_reported_as_a_lost_measurement() -> bool:
     print(
         f"{'OK' if ok else 'FAIL'}: a failed write is not reported as a failed measurement "
         f"(write rc={rc!r} (expected 3, NOT 1) escaped={error!r} named_the_path="
-        f"{str(unwritable) in output} report_survived={f'label={PROBE_LABEL}' in output} "
+        f"{str(unwritable) in streams.err} "
+        f"report_survived_on_stdout={f'label={PROBE_LABEL}' in streams.out} "
         f"wrote_nothing={wrote_nothing}, "
         f"bad_timeout rc={timeout_rc!r} (expected 2) escaped={timeout_error!r} "
         f"probed_anyway={bool(timeout_transport.opened)})"
@@ -1381,12 +1820,15 @@ TESTS = (
     test_record_carries_label_vantage_and_utc_timestamp,
     test_summary_statistics_are_computed_from_samples,
     test_failed_sample_is_a_measurement_of_nothing,
+    test_an_answered_but_rejected_probe_is_not_a_measurement,
     test_ttfb_and_total_summarise_the_same_samples,
     test_partial_failure_does_not_inflate_the_sample_count,
     test_label_and_vantage_are_mandatory,
     test_direct_leg_is_skippable_and_the_record_says_so,
     test_cli_appends_the_record_and_honours_its_exit_contract,
     test_report_states_what_the_record_states,
+    test_report_headline_is_the_unauthenticated_traefik_overhead,
+    test_the_report_goes_to_stdout_and_the_diagnostics_to_stderr,
     test_cli_wires_the_token_and_the_timeout,
     test_a_lost_record_is_not_reported_as_a_lost_measurement,
     test_harness_is_offline_safe,
