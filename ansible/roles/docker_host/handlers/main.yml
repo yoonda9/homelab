@@ -8,3 +8,38 @@
     chdir: "{{ docker_host_project_dir }}"
   register: docker_host_traefik_restart
   changed_when: docker_host_traefik_restart.rc == 0
+
+# Same reason, one service over (plex-monitoring Step 2a): prometheus.yml is
+# mounted read-only and parsed at start, and Prometheus runs without
+# --web.enable-lifecycle, so a rendered scrape config reaches the running process
+# ONLY through this restart. `docker compose up -d` does not touch a container
+# whose own spec is unchanged, and a new scrape job changes no compose spec.
+- name: Restart prometheus
+  ansible.builtin.command:
+    cmd: docker compose restart prometheus
+    chdir: "{{ docker_host_project_dir }}"
+  register: docker_host_prometheus_restart
+  changed_when: docker_host_prometheus_restart.rc == 0
+
+# Third service, same invariant, and this one was MEASURED rather than reasoned
+# by analogy (plex-monitoring Step 4a): grafana/grafana:13.1.0 reads
+# /etc/grafana/provisioning ONCE AT START. With the container up, editing the
+# datasource file under the live `:ro` mount left `url` unchanged 40s later, and
+# adding a whole PROVIDER entry left its dashboards unseen — both delivered by a
+# restart of the same container (logs/red-step04a-r3-battery.log rows D1/D2,
+# logs/red-step04a-r3-provider-poll.log rows P1/P2). The DASHBOARD JSON is the
+# exception and is deliberately not notified: the provider POLLS its
+# `options.path` every updateIntervalSeconds, so an edited dashboard reaches the
+# server with no restart at all (row D5).
+#
+# The stake here is not a stale panel. The datasource template ships a
+# `deleteDatasources:` MIGRATION, and until grafana re-reads it the file on disk
+# disagrees with the running process — so the migration would fire at whatever
+# unrelated moment something else restarted the container (a host reboot), and
+# not at the `just play` the operator is watching.
+- name: Restart grafana
+  ansible.builtin.command:
+    cmd: docker compose restart grafana
+    chdir: "{{ docker_host_project_dir }}"
+  register: docker_host_grafana_restart
+  changed_when: docker_host_grafana_restart.rc == 0

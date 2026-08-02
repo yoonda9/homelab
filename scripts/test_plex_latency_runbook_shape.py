@@ -11,11 +11,19 @@ capturing the baseline that Step 4 is compared against:
     plan, so it is pinned as prose, not as a flag,
   * a **results section** carrying the plan's own metric names (TTFB and total
     load time, per endpoint, min/median/max) plus the run's UTC timestamp and
-    vantage — and left **UNFILLED**, because a fabricated baseline silently
-    invalidates Step 4's whole comparison. The prohibition is stated once, at
-    the `## 5.` heading, and §5 holds THREE tables plus the LAN-control
-    headline, so the guard is scoped to the SECTION and not to the one table a
-    header regex can recognise (mem-1785131238-5b83),
+    vantage, split ROW BY ROW into what has been MEASURED and what is STILL
+    OWED. Until 2026-07-28 this was a blanket "§5 is unfilled", which was right
+    while no capture existed and became wrong the moment one did — a guard that
+    forbids the genuine result has to be deleted to land it. The replacement is
+    the stronger claim: the external legs must carry the recorded values, the
+    LAN control and the DevTools numbers must still be placeholders, and every
+    row must land in exactly one half. The guard is scoped to the SECTION and
+    not to the one table a header regex can recognise (mem-1785131238-5b83),
+  * **cross-file agreement with the RECORD**: §5's filled cells must equal the
+    external baseline record in `logs/plex-latency.jsonl`. Shape alone is not
+    enough — a mutation that drifted the run stamp to a timestamp no record
+    carries stayed GREEN under the partition check, and a committed number that
+    no longer matches its record is the invented baseline arriving by drift,
   * **cross-file agreement**: every `measure_plex_latency.py` command line the
     runbook prints actually parses against the harness's REAL argparse parser,
     with the external capture carrying `--vantage external --skip-direct` and
@@ -47,6 +55,7 @@ below is registered in `TESTS`.
 
 import contextlib
 import io
+import json
 import pathlib
 import re
 import shlex
@@ -56,6 +65,11 @@ import types
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "plex-latency-baseline.md"
 HARNESS = REPO_ROOT / "scripts" / "measure_plex_latency.py"
+LATENCY_LOG = REPO_ROOT / "logs" / "plex-latency.jsonl"
+
+#: The record §5 reports. Schema 4 is the first version that refused to count a
+#: non-2xx as a measurement, which is why §3d tells Step 4 to filter on it.
+BASELINE_RECORD = {"schema": 4, "vantage": "external", "label": "baseline"}
 
 #: The harness script as it is invoked from the repo root.
 INVOKES = "measure_plex_latency.py"
@@ -182,6 +196,29 @@ RESULTS_SECTION = 5
 #: what forces whoever adds it to come back here (mem-1785131238-5b83).
 EXPECTED_RESULT_TABLES = 3
 
+#: How many DATA rows those three tables hold: 6 run-metadata fields, 4 harness
+#: endpoint rows (both legs x both endpoints), 6 DevTools measurements.
+#:
+#: This is the pin that makes a deletion structurally unhideable, and it is here
+#: because per-row patterns alone were not (mem-1785132263-15f0). Twelve patterns
+#: covered sixteen rows, so a pattern was satisfied by whichever twin survived
+#: and 7 of 16 single-row deletions were GREEN — including all four harness
+#: endpoint rows, the artefact the task names by name, and both `/library/sections`
+#: XHR rows, i.e. the library-load leg of the A/B. Neither the table count nor
+#: "every table has data rows" can see it: the tables are all still there, and
+#: one row is enough.
+#:
+#: The count also closes a hole no pattern can reach. GFM makes the trailing `|`
+#: OPTIONAL, so `| Plex version ... | Plex 1.41.2, idle, 0 sessions` renders as a
+#: normal FILLED row, is dropped by `_tables` (which requires the line to end in
+#: `|`), and is therefore invisible to the placeholder predicate — a fabricated
+#: cell in the committed doc. The same row WITH its trailing pipe reddens. Only
+#: the count sees the dropped one.
+#:
+#: The per-row patterns below are kept, and made one-per-row, because the count
+#: says only THAT a row went missing; the patterns say WHICH.
+EXPECTED_RESULT_ROWS = 16
+
 #: A cell that has NOT been filled in: `___`, `TBD`, `n/a`, or a `/`-separated
 #: run of them (`___ / ___ / ___`), optionally in backticks. Anything else in a
 #: measured column — a digit above all — is a number nobody measured.
@@ -194,48 +231,106 @@ PLACEHOLDER = re.compile(
 #: "no filled cells" is trivially true of a table that is not there. Matching
 #: across all of §5's tables rather than per-table keeps this from also pinning
 #: which table a field lives in.
-REQUIRED_ROWS = {
+#:
+#: ONE PATTERN PER ROW, never per row FAMILY. A pattern shared by two rows is
+#: satisfied by whichever twin survives, so both are individually deletable and
+#: — worse — deletable TOGETHER: `\btraefik\s*/` covered both traefik rows,
+#: `\bdirect\s*/` both direct ones, and one `/library/sections ... XHR` pattern
+#: both XHR rows, while `Plex version` had no pattern at all. Where two rows
+#: share a prefix, the discriminating SUFFIX is what has to be pinned
+#: (mem-1785132263-15f0). `EXPECTED_RESULT_ROWS` is the backstop that does not
+#: depend on getting this enumeration right; these names are the diagnostic.
+#: The rows the EXTERNAL capture of 2026-07-28 filled in, which must therefore
+#: carry a value. Until that capture existed the whole section was required to be
+#: unfilled, and that was the right predicate then: the only way §5 could have
+#: held a number was for someone to invent one. It is the wrong predicate now,
+#: because the capture happened (record `2026-07-28T02:43:04.348185Z`, vantage
+#: `external`, in `logs/plex-latency.jsonl`) and a guard that forbids the real
+#: result is a guard that has to be deleted to land it.
+#:
+#: So the polarity flips ROW BY ROW rather than section-wide, and the section-wide
+#: claim is REPLACED, not relaxed. Blanket "§5 is unfilled" was satisfiable by a
+#: doc where nothing had happened; this partition is satisfiable only by the doc
+#: that describes exactly what HAS happened — the external legs measured, the LAN
+#: control and the DevTools numbers still owed. Inventing a LAN control now
+#: reddens for the same reason inventing an external one used to.
+FILLED_ROWS = {
     "UTC timestamp row": r'\bUTC\b',
     "vantage row": r'\bvantage\b',
-    "network row": r'\bnetwork\b',
     "label row": r'\blabel\b',
     "repeats row": r'\brepeats\b',
-    "a traefik endpoint row": r'\btraefik\s*/',
-    "a direct-:32400 endpoint row": r'\bdirect\s*/',
+    "traefik/identity row": r'\btraefik\s*/\s*identity\b',
+    "traefik/library/sections row": r'\btraefik\s*/\s*library/sections\b',
+}
+
+#: The rows still owed, which must therefore still be placeholders. Two are
+#: operator knowledge no file in this repo holds (which carrier the hotspot was
+#: on, what Plex was doing at capture time); two are the direct-:32400 legs that
+#: only exist on the LAN, which `--skip-direct` is why the record stamps
+#: `direct_probed=false`; six are §4's browser numbers, which are the plan's own
+#: Demo metric and were not taken.
+PENDING_ROWS = {
+    "network row": r'\bnetwork\b',
+    "Plex version / server state row": r'\bPlex\s+version\b',
+    "direct/identity row": r'\bdirect\s*/\s*identity\b',
+    "direct/library/sections row": r'\bdirect\s*/\s*library/sections\b',
     "initial-document TTFB row": r'\bdocument\b[^|]*\bTTFB\b',
-    "/library/sections XHR row": r'/library/sections\b[^|]*\bXHR\b',
+    "/library/sections XHR — TTFB row": r'/library/sections\b[^|]*\bXHR\b[^|]*\bTTFB\b',
+    "/library/sections XHR — duration row": (
+        r'/library/sections\b[^|]*\bXHR\b[^|]*\bduration\b'
+    ),
     "DOMContentLoaded row": r'\bDOMContentLoaded\b',
     "Load row": r'\bLoad\b',
     "requests / transferred row": r'\brequests\b',
 }
 
+#: Presence is still pinned over ALL sixteen, exactly as before — the partition
+#: above says what each row must CONTAIN, never whether it must exist.
+REQUIRED_ROWS = {**FILLED_ROWS, **PENDING_ROWS}
 
-def test_results_section_is_present_and_unfilled() -> bool:
-    """§5's cells are ALL still placeholders — every table, not one of three.
 
-    §5 opens with *"Leave every cell as `___` until a real capture has been
-    taken. Do not estimate, interpolate or copy a number from a LAN run"* and
-    then holds THREE tables: Run metadata, Harness results, and the Browser
-    DevTools numbers that are the plan's own Demo metric. The prohibition is
-    stated at the SECTION, so the predicate is scoped to the SECTION — sliced
-    between `## 5.` and the next `##` — and applied to every table inside.
-    Scoping it instead to the one table a header regex can recognise left a
-    complete invented DevTools baseline, and an invented run stamp, both GREEN
-    (mem-1785131238-5b83).
+def test_results_section_separates_measured_from_still_owed() -> bool:
+    """§5 reports the capture that HAPPENED and nothing else — row by row.
 
-    Three claims, all of them the same claim — that Step 4 diffs against a
+    §5 holds THREE tables: Run metadata, Harness results, and the Browser
+    DevTools numbers that are the plan's own Demo metric. The predicate is scoped
+    to the SECTION — sliced between `## 5.` and the next `##` — and applied to
+    every table inside. Scoping it instead to the one table a header regex can
+    recognise left a complete invented DevTools baseline, and an invented run
+    stamp, both GREEN (mem-1785131238-5b83).
+
+    **This check used to require the whole section to be unfilled**, which was
+    correct while no capture existed: the only way a number could appear was for
+    someone to invent it. The external capture then happened for real (§3a, the
+    record stamped `2026-07-28T02:43:04.348185Z`, vantage `external`), and a
+    guard that forbids the genuine result is a guard that must be deleted in
+    order to land it — which is how a real assertion gets quietly hollowed out.
+
+    So the claim is REPLACED rather than relaxed, and it is strictly the stronger
+    one. Blanket "unfilled" was satisfied by a doc where nothing had happened.
+    The partition below is satisfied only by the doc describing exactly what HAS
+    happened: `FILLED_ROWS` (the run stamp and both traefik legs) must carry
+    values, `PENDING_ROWS` (the two direct-:32400 legs, the six DevTools numbers,
+    and the two metadata cells only the operator holds) must still be
+    placeholders. Inventing a LAN control today reddens for precisely the reason
+    inventing an external one did yesterday.
+
+    Four claims, all of them the same claim — that Step 4 diffs against a
     MEASUREMENT and can never tell an invented one from a real one:
 
       * the harness table carries the plan's metric names (endpoint, TTFB,
         total, min/median/max),
       * §5 still holds the rows it owes — the run stamp (UTC timestamp,
-        vantage, network, label, repeats), both legs of the A/B, and the five
-        DevTools numbers — because a placeholder guard alone is satisfied by
-        deleting the row,
-      * and every measured cell in every table, plus the LAN-control headline
-        that is the one number Step 4 actually reads, is still a placeholder.
-
-    Step 1c (the operator) fills these in. Anything filled in here is invented.
+        vantage, network, label, repeats, server state), both legs of the A/B on
+        both endpoints, and the six DevTools numbers — because a value guard
+        alone is satisfied by deleting the row. Pinned TWICE: by the data-row
+        COUNT, which no deletion and no dropped row can satisfy, and by one
+        pattern per row, which is what names the row that went,
+      * every row lands in exactly one half of the partition — an unclassified
+        row FAILS, because matching neither predicate is how a fabricated row
+        would otherwise satisfy both,
+      * and the LAN-control headline, the one number Step 4 actually reads, is
+        still a placeholder — §3b has not been run.
     """
     body = _read(RUNBOOK)
     section = _section(body, RESULTS_SECTION)
@@ -261,8 +356,34 @@ def test_results_section_is_present_and_unfilled() -> bool:
     # every column after the first is a MEASURED column.
     data_rows = [cells for table in tables for cells in table[1:]]
     measured = [cell for cells in data_rows for cell in cells[1:]]
-    filled = [cell for cell in measured if re.search(r'\d', cell)]
-    unheld = [cell for cell in measured if not PLACEHOLDER.fullmatch(cell)]
+
+    # Each row is classified by its OWN label against the partition, and every
+    # row must land in exactly one half. An unclassified row is a failure, not a
+    # pass: it is how a fabricated row (or a renamed real one) would otherwise
+    # slip past both predicates by matching neither.
+    def _classify(label: str) -> str | None:
+        hits = {
+            state
+            for state, rows in (("filled", FILLED_ROWS), ("pending", PENDING_ROWS))
+            for pattern in rows.values()
+            if re.search(pattern, label, re.IGNORECASE)
+        }
+        return hits.pop() if len(hits) == 1 else None
+
+    unclassified, still_placeheld, wrongly_filled = [], [], []
+    for cells in data_rows:
+        label, values = cells[0], cells[1:]
+        state = _classify(label)
+        if state is None:
+            unclassified.append(label)
+        elif state == "filled":
+            # Owed a real value: a placeholder here means the capture's own
+            # numbers went missing from the doc that reports them.
+            still_placeheld += [label for cell in values if PLACEHOLDER.fullmatch(cell)]
+        else:
+            # Not measured yet: anything but a placeholder is invented.
+            wrongly_filled += [f"{label}={cell}" for cell in values
+                               if not PLACEHOLDER.fullmatch(cell)]
 
     first_column = " | ".join(cells[0] for cells in data_rows)
     present = {
@@ -277,6 +398,8 @@ def test_results_section_is_present_and_unfilled() -> bool:
         "§5 section found": bool(section.strip()),
         f"§5 holds {EXPECTED_RESULT_TABLES} tables": len(tables)
         == EXPECTED_RESULT_TABLES,
+        f"§5 holds {EXPECTED_RESULT_ROWS} data rows": len(data_rows)
+        == EXPECTED_RESULT_ROWS,
         "every table has data rows": bool(tables)
         and all(len(t) > 1 for t in tables),
         "LAN-control headline present": headline is not None,
@@ -286,12 +409,13 @@ def test_results_section_is_present_and_unfilled() -> bool:
     }
 
     missing = [k for k, v in {**structure, **metrics, **present}.items() if not v]
-    ok = not missing and not filled and not unheld
+    ok = not missing and not unclassified and not still_placeheld and not wrongly_filled
     print(
         f"{'OK' if ok else 'FAIL'}: §{RESULTS_SECTION} carries the plan's metrics and "
-        f"is left UNFILLED (tables={len(tables)}, rows={len(data_rows)}, "
-        f"cells={len(measured)}, missing={missing}, filled_cells={filled}, "
-        f"not_placeheld={unheld})"
+        f"splits MEASURED from STILL-OWED (tables={len(tables)}, rows={len(data_rows)}, "
+        f"cells={len(measured)}, missing={missing}, unclassified={unclassified}, "
+        f"empty_but_owed_a_value={still_placeheld}, "
+        f"filled_but_never_measured={wrongly_filled})"
     )
     return ok
 
@@ -372,7 +496,14 @@ def _load_parser(harness: pathlib.Path):
     if not source:
         return None
     exec(compile(source, str(harness), "exec"), module.__dict__)  # noqa: S102
-    return module._parser()
+    # Read through getattr, not as an attribute: a rename of `_parser` on the
+    # harness side is a DRIFT, which this check exists to report, and a bare
+    # `module._parser()` reports it as an AttributeError traceback that aborts
+    # every later check in the file instead of as one clean FAIL line
+    # (mem-1785125369-fb77, and the shape mem-1785130504-e000 fixed for
+    # `ns.skip_direct`). None flows into `unparsed` and reddens.
+    factory = getattr(module, "_parser", None)
+    return factory() if callable(factory) else None
 
 
 def test_documented_invocations_match_the_real_harness(harness: pathlib.Path = HARNESS) -> bool:
@@ -448,6 +579,95 @@ def test_documented_invocations_match_the_real_harness(harness: pathlib.Path = H
     return ok
 
 
+def test_results_match_the_recorded_capture(log: pathlib.Path = LATENCY_LOG) -> bool:
+    """CROSS-FILE: §5's filled cells must equal the RECORD they claim to report.
+
+    The partition check above pins that a cell is filled, never that it is
+    filled with the truth. That gap is real and was found by mutation: drifting
+    §5's run stamp to a timestamp no record in `logs/plex-latency.jsonl` carries
+    left the gate GREEN. A number in a committed doc that no longer matches its
+    record is exactly the invented baseline the whole section exists to prevent —
+    it just gets there by drift instead of by fabrication, and Step 4 cannot tell
+    those apart either.
+
+    So every filled cell is read back out of the doc and compared against the
+    external baseline record itself: the run stamp (timestamp, vantage, label,
+    repeats) and, for both traefik legs, `n`, the TTFB and total min/median/max
+    at the doc's own one-decimal rounding, and the status.
+
+    Reads two artifacts, so it reddens for a drift introduced on either side —
+    someone editing the table by hand, and equally someone appending a *newer*
+    external `baseline` record without updating the doc. `log` is defaulted
+    rather than hardcoded so this check can be proven load-bearing against a
+    doctored copy, exactly as `_load_parser`'s `harness` argument is.
+    """
+    body = _read(RUNBOOK)
+    section = _section(body, RESULTS_SECTION)
+    rows = {cells[0]: cells[1:] for table in _tables(section) for cells in table[1:]}
+
+    records = []
+    for line in log.read_text(encoding="utf-8").splitlines() if log.is_file() else []:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    matching = [
+        r for r in records
+        if all(r.get(k) == v for k, v in BASELINE_RECORD.items())
+    ]
+
+    def _cell(pattern: str) -> str:
+        for label, values in rows.items():
+            if re.search(pattern, label, re.IGNORECASE):
+                return " ".join(values).replace("`", "").strip()
+        return ""
+
+    def _triple(stat: dict) -> str:
+        return " / ".join(f"{round(stat[k], 1):.1f}" for k in ("min_ms", "median_ms", "max_ms"))
+
+    checks = {
+        "the log holds exactly one external baseline record": len(matching) == 1,
+    }
+    if len(matching) == 1:
+        record = matching[0]
+        by_name = {t["name"]: t for t in record.get("targets", [])}
+        checks |= {
+            "run stamp: timestamp": _cell(r'\bUTC\b') == record["timestamp"],
+            "run stamp: vantage": _cell(r'\bvantage\b') == record["vantage"],
+            "run stamp: label": _cell(r'\blabel\b') == record["label"],
+            "run stamp: repeats": _cell(r'\brepeats\b') == str(record["repeats"]),
+        }
+        for name, pattern in (
+            ("traefik/identity", r'\btraefik\s*/\s*identity\b'),
+            ("traefik/library/sections", r'\btraefik\s*/\s*library/sections\b'),
+        ):
+            target = by_name.get(name)
+            if target is None:
+                checks[f"{name}: present in the record"] = False
+                continue
+            documented = _cell(pattern)
+            expected = (
+                f"{target['succeeded']}/{target['requested']} "
+                f"{_triple(target['ttfb'])} {_triple(target['total'])} "
+                f"{'/'.join(str(s) for s in target['statuses'])}"
+            )
+            checks[f"{name}: n, TTFB, total and status match the record"] = (
+                " ".join(documented.split()) == " ".join(expected.split())
+            )
+
+    missing = [k for k, v in checks.items() if not v]
+    ok = not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: §{RESULTS_SECTION}'s filled cells match the "
+        f"{BASELINE_RECORD['vantage']} record in {log.name} "
+        f"(records={len(records)}, matching={len(matching)}, missing={missing})"
+    )
+    return ok
+
+
 def test_no_literal_token_in_the_runbook() -> bool:
     """`$PLEX_TOKEN` from the environment, never a pasted value.
 
@@ -498,8 +718,9 @@ def test_no_literal_token_in_the_runbook() -> bool:
 TESTS = (
     test_runbook_exists_and_nonempty,
     test_external_vantage_requirement,
-    test_results_section_is_present_and_unfilled,
+    test_results_section_separates_measured_from_still_owed,
     test_documented_invocations_match_the_real_harness,
+    test_results_match_the_recorded_capture,
     test_no_literal_token_in_the_runbook,
 )
 

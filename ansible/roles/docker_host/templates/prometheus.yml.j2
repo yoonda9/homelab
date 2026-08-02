@@ -27,3 +27,58 @@ scrape_configs:
     static_configs:
       - targets:
           - traefik:8082
+
+  # Proxmox VE (plex-monitoring Step 2). MULTI-TARGET exporter, and the shape
+  # below is the whole point: the TARGET is the PVE API host, the exporter is
+  # only the address the request is sent to. metrics_path MUST be /pve — the
+  # exporter's default /metrics path answers 200 with its OWN scrape/process
+  # metrics, so a job pointed straight at pve-exporter:9221 reads UP in
+  # Status -> Targets and produces ZERO pve_* series.
+  # The params are written out for legibility only: cluster and node ALREADY
+  # default to '1' in the exporter (on_pve(module='default', target='localhost',
+  # cluster='1', node='1')), measured against the shipped 3.9.0 image. They are
+  # NOT what makes pve_up{id="lxc/110"} exist — metrics_path and the
+  # __param_target relabel below are.
+  - job_name: pve-exporter
+    metrics_path: /pve
+    params:
+      cluster: ['1']
+      node: ['1']
+    static_configs:
+      - targets:
+          - {{ docker_host_pve_api_host }}
+    relabel_configs:
+      # The configured target becomes the ?target= query parameter …
+      - source_labels: [__address__]
+        target_label: __param_target
+      # … and is kept as the instance label, so series are attributed to the PVE
+      # host rather than to the exporter container.
+      - source_labels: [__param_target]
+        target_label: instance
+      # … while the request itself is dialed at the exporter.
+      - target_label: __address__
+        replacement: pve-exporter:9221
+
+  # Plex Media Server (plex-monitoring Step 3). The SHAPE IS THE OPPOSITE of the
+  # job above and that is deliberate: this exporter is NOT multi-target. It
+  # serves its metrics on the plain default path (config.ru mounts
+  # Prometheus::Middleware::Exporter; the collector runs only when PATH_INFO is
+  # exactly "/metrics"), so a metrics_path here is a 404 and the target reads
+  # DOWN, params are ignored, and there is no __param_target to relabel. The
+  # target IS the exporter.
+  #
+  # The interval/timeout pair is job-local and both halves are required. The
+  # exporter's collect_media_metrics runs SYNCHRONOUSLY inside the scrape and
+  # issues one /library/sections/<key>/all per section (plus a second per `show`
+  # section) once every METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS (300s), while
+  # PLEX_TIMEOUT alone is 10s per request — so on the global 15s interval and
+  # Prometheus' default 10s timeout, one scrape every fifth minute is the one
+  # that times out. Prometheus REFUSES a config whose scrape_timeout exceeds its
+  # scrape_interval, so raising the timeout without raising the interval loads
+  # nothing at all; the two move together.
+  - job_name: plex-exporter
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    static_configs:
+      - targets:
+          - plex-exporter:9594

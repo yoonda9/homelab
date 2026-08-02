@@ -199,33 +199,49 @@ can move, the DevTools number is what the household actually perceives.
 
 ---
 
-## 5. RESULTS — to be filled in by the operator
+## 5. RESULTS — the external capture, taken 2026-07-28
 
-> ✋ **Leave every cell as `___` until a real capture has been taken.** Do not
-> estimate, interpolate or copy a number from a LAN run. Step 4 cannot tell an
-> invented baseline from a measured one, and an invented one makes every
-> conclusion drawn from the comparison false. An empty table is a known gap; a
-> fabricated one is a wrong answer.
+> ✋ **Every cell here is either MEASURED or still `___`.** Do not estimate,
+> interpolate or copy a number from a LAN run. Step 4 cannot tell an invented
+> baseline from a measured one, and an invented one makes every conclusion drawn
+> from the comparison false. An empty cell is a known gap; a fabricated one is a
+> wrong answer.
+>
+> The external capture (§3a) is **done** — the rows below carrying numbers come
+> from `logs/plex-latency.jsonl`, the record stamped
+> `2026-07-28T02:43:04.348185Z`, and from nowhere else. Still owed, and still
+> `___`: the LAN control (§3b), the DevTools numbers (§4), and the two metadata
+> cells only the operator holds. `test_plex_latency_runbook_shape.py` pins that
+> split row by row, so neither half can drift without the gate saying so.
+>
+> ⚠️ Before trusting these numbers for a comparison, read
+> `docs/plex-remote-latency-audit.md` §4: the link this was taken on has a
+> sample-to-sample RTT spread far larger than any effect Steps 2–3 could
+> produce, so a Step 4 diff against this baseline cannot resolve one.
 
 ### Run metadata
 
 | field | value |
 |---|---|
-| UTC timestamp of the run (from the report header) | `___` |
-| vantage | `___` |
+| UTC timestamp of the run (from the report header) | `2026-07-28T02:43:04.348185Z` |
+| vantage | `external` |
 | network used (carrier / hotspot / other) | `___` |
-| label passed to the harness | `___` |
-| repeats | `___` |
+| label passed to the harness | `baseline` |
+| repeats | `10` |
 | Plex version / server state at capture | `___` |
 
 ### Harness results (`scripts/measure_plex_latency.py`)
 
 | endpoint | n | TTFB min / med / max (ms) | total min / med / max (ms) | status |
 |---|---|---|---|---|
-| traefik/identity | `___` | `___ / ___ / ___` | `___ / ___ / ___` | `___` |
-| traefik/library/sections | `___` | `___ / ___ / ___` | `___ / ___ / ___` | `___` |
+| traefik/identity | `10/10` | `157.0 / 293.2 / 485.6` | `157.0 / 293.3 / 485.7` | `200` |
+| traefik/library/sections | `10/10` | `164.8 / 183.9 / 926.3` | `164.8 / 186.3 / 926.4` | `200` |
 | direct/identity (LAN control only) | `___` | `___ / ___ / ___` | `___ / ___ / ___` | `___` |
 | direct/library/sections (LAN control only) | `___` | `___ / ___ / ___` | `___ / ___ / ___` | `___` |
+
+The external run passed `--skip-direct` (the backend is RFC1918 and unreachable
+off-LAN), so its record is stamped `direct_probed=false` and the two `direct/`
+rows stay unfilled until §3b runs on the LAN.
 
 Headline from the LAN control — Traefik overhead on `/identity`
 (median TTFB): `___` ms

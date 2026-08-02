@@ -196,6 +196,78 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
 
+  # Proxmox VE exporter (plex-monitoring Step 2): host + per-guest CPU/memory/
+  # disk/network for the PVE node and every LXC, including the Plex CT 110.
+  # Scrape-only like the two above — Prometheus reaches it at pve-exporter:9221
+  # over the internal compose network. It talks OUT to the PVE API at
+  # {{ docker_host_pve_api_host }}:8006; it is a MULTI-TARGET exporter, so the
+  # scrape job must ask for /pve?target=<pve host> (prometheus.yml.j2) — the
+  # default /metrics path serves only this container's own process metrics.
+  pve-exporter:
+    image: {{ docker_host_pve_exporter_image }}
+    restart: unless-stopped
+    # Env-var configuration activates ONLY when PVE_USER is set; the exporter
+    # then reads PVE_TOKEN_NAME/PVE_TOKEN_VALUE/PVE_VERIFY_SSL. Without PVE_USER
+    # it ignores all three and falls back to an on-disk /etc/prometheus/pve.yml
+    # which this image does not ship — measured on 3.9.0, cli.py:110 opens that
+    # path unguarded, so the process dies at STARTUP with FileNotFoundError and
+    # `restart: unless-stopped` makes it a crash loop. It does NOT stay up and
+    # serve 401s; there is no scrape at all (logs/calibration-step02a-f3.log, A).
+    # PVE_TOKEN_VALUE is read from the
+    # sibling .env (rendered from vault_pve_api_token), never a literal here.
+    # PVE_VERIFY_SSL=false is required, not cosmetic: the PVE certificate is
+    # self-signed (mise.toml PROXMOX_VE_INSECURE=true), so verification on would
+    # error every scrape at the TLS handshake.
+    environment:
+      - PVE_USER={{ docker_host_pve_user }}
+      - PVE_TOKEN_NAME={{ docker_host_pve_token_name }}
+      - PVE_TOKEN_VALUE=${PVE_TOKEN_VALUE:-}
+      - PVE_VERIFY_SSL=false
+    # --no-collector.config drops one PVE API call per guest; the config
+    # collector's metrics are not used by any dashboard here.
+    command:
+      - --no-collector.config
+
+  # Plex Media Server exporter (plex-monitoring Step 3): library sizes, stream
+  # counts and transcode counts for the Plex server in CT 110. Scrape-only like
+  # the three above — Prometheus reaches it at plex-exporter:9594 over the
+  # internal compose network. It talks OUT to Plex at {{ docker_host_plex_url }},
+  # the same cross-LXC path Traefik's file provider already uses.
+  #
+  # UNLIKE pve-exporter this is NOT a multi-target exporter: config.ru mounts
+  # Prometheus::Middleware::Exporter and the collector runs only when PATH_INFO
+  # is exactly "/metrics", so the scrape job is an ordinary single-target one
+  # with no metrics_path (prometheus.yml.j2). Copying the /pve shape here is a
+  # 404, not a no-op.
+  plex-exporter:
+    image: {{ docker_host_plex_exporter_image }}
+    restart: unless-stopped
+    # Configuration is env-var ONLY (collector.rb `initialize`): there is no
+    # config file and no CLI flag, so this service has no `command:` — one
+    # region fewer than pve-exporter, and a command here would REPLACE the
+    # image's CMD rather than configure anything.
+    #
+    # PLEX_ADDR is not optional-with-a-sane-default: unset it defaults to
+    # http://localhost:32400, i.e. the exporter probes its OWN container and
+    # every scrape answers 200 with plex_up 0 while the target still reads UP.
+    # PLEX_TOKEN is read from the sibling .env (rendered from vault_plex_token),
+    # never a literal here; empty until Step 3b, and empty means /metrics 500s
+    # (see env.j2). PLEX_RETRIES_COUNT stays 0 because the library sweep runs
+    # synchronously inside the scrape and retries multiply the 10s PLEX_TIMEOUT
+    # against the job's own scrape_timeout. METRICS_PREFIX is the image default
+    # and is written out anyway: it is the first token of every series name the
+    # Step-3b falsifiers and the Step-4 dashboards ask for, and nothing in the
+    # container complains if it moves.
+    environment:
+      - PORT=9594
+      - PLEX_ADDR={{ docker_host_plex_url }}
+      - PLEX_TOKEN=${PLEX_TOKEN:-}
+      - PLEX_TIMEOUT=10
+      - PLEX_RETRIES_COUNT=0
+      - PLEX_SSL_VERIFY=true
+      - METRICS_PREFIX=plex
+      - METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS=300
+
 volumes:
   uptime-kuma-data:
   grafana-data:

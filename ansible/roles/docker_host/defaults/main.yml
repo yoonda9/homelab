@@ -20,6 +20,35 @@ docker_host_prometheus_image: prom/prometheus:v3.12.0
 # Prometheus scrape targets (never routed/exposed — no Traefik labels).
 docker_host_node_exporter_image: prom/node-exporter:v1.11.1
 docker_host_cadvisor_image: gcr.io/cadvisor/cadvisor:v0.55.1
+docker_host_pve_exporter_image: prompve/prometheus-pve-exporter:3.9.0
+# Plex Media Server exporter (plex-monitoring Step 3). Verified against the
+# registry rather than off a research doc: the ghcr tag list carries 1.0.0,
+# 1.1.2, 1.1.3, 2.0.0, 2.1.0 and latest (plus 45 commit-sha tags), and 2.1.0
+# resolves to an OCI index (sha256:ab89d0ba039e...) with a linux/amd64 manifest.
+# The runner-up jsclayton/prometheus-plex-exporter publishes ONLY latest and
+# main — no version tag exists, so it cannot satisfy
+# test_no_floating_service_image_tags without a digest pin, and that is what
+# decided the choice. Staleness recorded rather than discovered later: MIT, not
+# archived, last release AND last push both 2024-12-22.
+docker_host_plex_exporter_image: ghcr.io/axsuul/plex-media-server-exporter:2.1.0
+
+# Proxmox VE exporter coordinates (plex-monitoring Step 2). All NON-SECRET, so
+# they live here rather than in the vault — only the token VALUE is a secret and
+# it comes from vault_pve_api_token via env.j2. The API host is the same
+# endpoint mise.toml already commits as PROXMOX_VE_ENDPOINT; the shape guard
+# asserts the two agree instead of pinning the address twice.
+docker_host_pve_api_host: 192.168.1.50
+# The user MUST carry its realm. Measured, because the same sentence used to
+# assert a status code the operator never sees: PVE answers `401 Unauthorized`
+# to a realm-less token, the exporter raises `proxmoxer.core.ResourceException`
+# and turns it into HTTP 500 for the scrape — so Prometheus shows the SAME
+# lastError as a missing token, and the realm is only visible in the exporter's
+# own `docker logs` (logs/calibration-step02a-f3.log, C).
+# Created with role PVEAuditor at / (propagate) in Step 2b.
+docker_host_pve_user: prometheus@pve
+# The token ID the operator mints under that user; the exporter sends
+# `PVEAPIToken=<user>!<name>=<value>`, so this must match the minted ID exactly.
+docker_host_pve_token_name: prometheus
 
 # Cloudflare Tunnel connector (Step 4). Concrete pin, live-verified real/current
 # on Docker Hub (2026-07-14: current `latest`, multi-arch). Outbound-only — the

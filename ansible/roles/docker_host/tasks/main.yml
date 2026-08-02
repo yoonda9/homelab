@@ -102,14 +102,51 @@
     - grafana/dashboards
     - homepage
 
+# prometheus.yml is a READ-ONLY BIND MOUNT read once at start, so rendering it is
+# not delivering it: the compose spec of the prometheus service is unchanged, and
+# `docker compose up -d` below therefore leaves the container running with the
+# old scrape config. There is no `--web.enable-lifecycle`, so `POST /-/reload`
+# answers 403. The handler is the whole delivery path — same reason traefik.yml
+# above has one.
 - name: Render the Prometheus scrape configuration
   ansible.builtin.template:
     src: prometheus.yml.j2
     dest: "{{ docker_host_project_dir }}/prometheus/prometheus.yml"
     owner: root
     group: root
-    mode: "0640"
+    # 0644, not the 0640 the other renders use: prom/prometheus runs as `nobody`
+    # (uid 65534), so a group-only-readable config is "permission denied" ->
+    # "Error loading config" -> exit -> restart loop. Harmless to publish: the
+    # scrape config carries no credential (the PVE token is an env var from the
+    # 0600 .env). Traefik's renders stay 0640 because that container runs as root.
+    # THIS LINE IS A REPAIR, NOT A PRECAUTION. It was first written as "the mode
+    # only started mattering once the handler above existed" — false. Read off
+    # the live host on 2026-07-29: `stack-prometheus-1` has been `Restarting`
+    # with RestartCount 20801 since it was created on 2026-07-15, logging
+    # `open /etc/prometheus/prometheus.yml: permission denied` once a minute; the
+    # file there is 640 root:root and the TSDB volume has been empty since 28 May.
+    # `restart: unless-stopped` had been re-reading that file all along. So the
+    # next `just play` ENDS a two-week monitoring outage, and every dashboard,
+    # alert and operator gate that queries Prometheus is dark until it runs.
+    mode: "0644"
+  notify: Restart prometheus
 
+# THE GRAFANA RENDERS STAY 0640 (and their dirs 0750) — that is a MEASUREMENT,
+# not an oversight, and it is recorded here because the 0644 above invites the
+# opposite edit. grafana/grafana:13.1.0 declares `User=472` and a uid with no
+# explicit gid runs with GID 0: `id` inside the pinned image reports
+# `uid=472(grafana) gid=0(root)`. These files are root:root, so the ROOT-GROUP
+# bits answer for the container and 0750/0640 is readable to it. Measured on
+# 2026-07-30 against the image itself (logs/calibration-step04a-grafana-identity.log
+# rows A1/B1/B4, logs/calibration-step04a-delivered-tree-boots.log row D1): the
+# delivered tree read as 472:0 is READABLE, a real server booted on it
+# provisions the datasource and lands the dashboard in its store with no
+# permission line in the log, and the same tree read as 472:472 is DENIED.
+# Prometheus needed 0644 for the opposite reason, also measured: prom/prometheus
+# runs 65534:65534, matching neither owner nor group.
+# THE COMPANION IS IN compose.yml.j2: this holds only while the grafana service
+# declines to override `user:` away from gid 0, which
+# scripts/test_grafana_provisioning_shape.py checks alongside these modes.
 - name: Render the Grafana datasource provisioning
   ansible.builtin.template:
     src: grafana-datasource.yml.j2
@@ -117,6 +154,15 @@
     owner: root
     group: root
     mode: "0640"
+  # RENDERING IT IS NOT DELIVERING IT — the same invariant as prometheus.yml
+  # above, measured on grafana/grafana:13.1.0 rather than inferred from it:
+  # /etc/grafana/provisioning is read ONCE AT START, so with the container up
+  # this file's `url` was still the old one 40s after it changed under the live
+  # `:ro` mount, and a restart of the same container delivered it
+  # (logs/red-step04a-r3-battery.log rows D1/D2). This template also carries a
+  # `deleteDatasources:` migration, so without the handler the file on disk
+  # disagrees with the running process until something unrelated restarts it.
+  notify: Restart grafana
 
 - name: Render the Grafana dashboard provider provisioning
   ansible.builtin.template:
@@ -125,11 +171,144 @@
     owner: root
     group: root
     mode: "0640"
+  # The PROVIDER config is start-only too, and that is a separate measurement
+  # from the datasource's — a second provider entry added under the live mount
+  # left its dashboard unseen 40s later and appeared on restart
+  # (logs/red-step04a-r3-provider-poll.log rows P1/P2). What POLLS is the
+  # dashboard DIRECTORY this file points at, not this file.
+  notify: Restart grafana
 
+# NO `notify:` HERE, AND THAT IS MEASURED TOO. The dashboard provider polls its
+# `options.path` every `updateIntervalSeconds`, so an edited dashboard reaches
+# the running server on its own: with the container up, this JSON's new title was
+# live 40s later with no restart (logs/red-step04a-r3-battery.log row D5).
+# `scripts/test_traefik_config_shape.py`'s RELOAD_CONTRACT therefore carries the
+# two provisioning renders above and NOT this one — the absence is a decision.
 - name: Install the Grafana starter dashboard
   ansible.builtin.copy:
     src: grafana-homelab-dashboard.json
     dest: "{{ docker_host_project_dir }}/grafana/dashboards/homelab.json"
+    owner: root
+    group: root
+    mode: "0640"
+
+# The Proxmox VE dashboard (plex-monitoring Step 4b). Same no-`notify:` reasoning
+# as the starter dashboard above — the provider POLLS this directory — and the
+# same 0640 root:root, which is readable to the container's 472:0 through the
+# root-group bits (see the block above this file's grafana renders).
+#
+# WHICH PANELS REST ON WHICH EVIDENCE — read this before calling an empty panel a
+# deployment failure, because the two halves fail for different reasons:
+#
+#   * EVERY series name in the JSON is SOURCED, not invented. All 12 distinct
+#     pve_* names were read out of prompve/prometheus-pve-exporter:3.9.0 — the
+#     tag defaults/main.yml pins — by walking its own collector modules
+#     (logs/calibration-step04b-pve-series.py / .log: 38 metric families across
+#     collector/cluster.py and collector/node.py).
+#     scripts/test_grafana_provisioning_shape.py holds every delivered dashboard
+#     to that list, so a near-miss like `pve_memory_used_bytes` reddens offline.
+#   * ONLY ONE OF THEM IS PINNED TO THIS CLUSTER: `pve_up{id="lxc/110"}`, gate
+#     2b's acceptance (task-1785324247-3934), which has NEVER RUN. That is
+#     deliberately the series the `guest` drop-down is built from
+#     (`label_values(pve_up{id=~"lxc/.*"}, id)`), so an empty drop-down at Step 4d
+#     is not a dashboard bug — it is 2b's exporter not reporting.
+#   * WHAT IS NOT VERIFIED, and cannot be from this gate: whether the live PVE
+#     API populates each family for an LXC on THIS cluster.
+#     ClusterResourcesCollector emits a sample only when the API response carries
+#     the matching key, and the exporter's own docstring says the block-I/O
+#     families are "not available for all storage types" — so panel 9
+#     (`pve_disk_read_bytes_total` / `pve_disk_written_bytes_total`) is the one
+#     most likely to be legitimately empty. Everything else here comes off
+#     /cluster/resources, the same call `pve_up`'s guest rows come from.
+#
+# The dashboard `uid` is `pve-overview` and it MUST stay distinct from the
+# starter's `homelab-overview`. Measured on grafana/grafana:13.1.0
+# (logs/calibration-step04b-uid-collision.log rows U0/U1/U2): two provisioned
+# dashboards sharing a uid leave ONE of them in the store, which one depends on
+# the FILE NAME, and the server disables the whole provider's writes
+# (`dashboards provisioning provider has no database write permissions because of
+# duplicates`) — silently, on a HEALTHY server, taking the starter dashboard's
+# updates down with it.
+- name: Install the Grafana Proxmox VE dashboard
+  ansible.builtin.copy:
+    src: grafana-pve-dashboard.json
+    dest: "{{ docker_host_project_dir }}/grafana/dashboards/pve.json"
+    owner: root
+    group: root
+    mode: "0640"
+
+# The composite "Plex Health" dashboard (plex-monitoring Step 4c). Same
+# no-`notify:` reasoning and the same 0640 root:root as the two dashboards above.
+# It overlays THREE sources on one view so a stutter can be read across them at a
+# single timestamp: proxy latency for the public Plex route, Plex's own stream
+# state, and CT 110's resources. It is also the ONLY thing in this repo that
+# reads Step 1a's tuned latency buckets — that step's whole deliverable was
+# invisible until this file existed.
+#
+# EVERY SERIES NAME HERE IS SOURCED, AND THE THREE HALVES ARE SOURCED
+# DIFFERENTLY. Read this before calling an empty panel a deployment failure.
+#
+#   * TRAEFIK (panels 5, 6). `traefik_service_request_duration_seconds_bucket`
+#     and the label value `service="plex@file"` were MEASURED off traefik:v3.7.5
+#     — the tag defaults/main.yml pins — booted offline with this repo's own
+#     metrics block and a file-provider `plex` router
+#     (logs/calibration-step04c-traefik-plex-series.py / .log, 7/7). The `@file`
+#     suffix is the PROVIDER: the same run's docker-provider control came back
+#     `whoami@docker`, so moving the Plex service off dynamic.yml.j2 and onto a
+#     container label would rename the series out from under both panels. The 13
+#     `le` boundaries that came back on that series are exactly the ladder
+#     traefik.yml.j2 pins, which is what makes panel 5 a reader of Step 1a rather
+#     than a coincidence.
+#   * PLEX (panels 1, 2, 3, 4, 7, 8). All 7 families the exporter can emit were
+#     read out of ghcr.io/axsuul/plex-media-server-exporter:2.1.0 itself
+#     (logs/calibration-step04c-plex-series.py / .log, 5/5). Unlike the PVE
+#     exporter the names are NOT literals in its source — collector.rb registers
+#     each as `:"#{@metrics_prefix}_<suffix>"` — so these names are only correct
+#     while `METRICS_PREFIX=plex` in compose.yml.j2, which
+#     scripts/test_traefik_config_shape.py's PLEX_EXPORTER_ENV pins.
+#   * PVE (panels 9, 10, 11). The same 4b vocabulary, hard-scoped to
+#     `id="lxc/110"` — the Plex CT — rather than to a drop-down.
+#
+# PANEL 4 EXCLUDES `type="show_episode"`, AND THAT IS NOT A STYLE CHOICE. The
+# exporter's `collect_media_metrics` emits one series per library section,
+# `{title=<section>, type=<section type>}` = its item count — and then, for a
+# `show` section ONLY, a SECOND, SYNTHETIC series
+# `{title="<section> - Episodes", type="show_episode"}` carrying that section's
+# episode count (collector.rb:182-214 in the pinned image). So the bare
+# `sum(plex_media_count)` this panel shipped with in round 1 added every TV
+# library's episodes to its titles: it populates, it reads plausible, and it is
+# wrong by the size of the TV library — the class the vocabulary check cannot
+# see, because every name in it is real. Excluding the synthetic rows was
+# preferred over breaking out `by (type)` because the panel is a single stat and
+# its number should mean one thing; the guard accepts either, and it accepts
+# leaving the family unaggregated. Do not "simplify" the selector away.
+#
+# WHAT IS NOT VERIFIED, AND A GREEN GUARD IS NOT EVIDENCE OF IT. The repo-side
+# guard proves this file parses, is delivered where Grafana looks, is readable to
+# the container, points at the provisioned datasource uid, and names only series
+# the two pinned exporters declare. It CANNOT prove a panel populates, and THREE
+# OF THE FOUR SOURCES DEPEND ON OPERATOR GATES THAT HAVE NEVER RUN:
+#   - 1b (traefik redeploy) for panels 5 and 6,
+#   - 2b (the PVE token) for panels 9, 10 and 11,
+#   - 3b (the Plex token) for panels 2, 3, 4, 7 and 8 — panel 1's heartbeat is
+#     the exception and answers even with no token, at the value 0.
+# Prometheus itself has been in a restart loop since 15 July, so until `just play`
+# runs, EVERY panel here is empty and that is the expected state, not a defect.
+# Confirming they populate is Step 4d, and it is an operator's job.
+#
+# THIS DASHBOARD DECLARES NO TEMPLATE VARIABLE and interpolates none — no `$var`,
+# no `${var}`, no `[[var]]`, and the rate windows are literal `[5m]` like the
+# sibling dashboards'. That is deliberate: nothing offline reads `templating` at
+# all today (task-1785497167-e413), so a variable declared here would be a name
+# no check could tie to its uses.
+#
+# The dashboard `uid` is `plex-health`, distinct from `homelab-overview` and
+# `pve-overview` — see the block above the PVE delivery for what a collision does
+# to the whole provider, measured.
+- name: Install the Grafana Plex Health dashboard
+  ansible.builtin.copy:
+    src: grafana-plex-health-dashboard.json
+    dest: "{{ docker_host_project_dir }}/grafana/dashboards/plex-health.json"
     owner: root
     group: root
     mode: "0640"

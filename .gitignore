@@ -46,3 +46,6 @@ PROMPT.md
 
 # Evaluation Sandbox
 .eval-sandbox/
+
+# Logs
+logs/

@@ -62,6 +62,46 @@ metrics:
     entryPoint: metrics
     addEntryPointsLabels: true
     addServicesLabels: true
+    # Latency histogram boundaries in SECONDS, ascending. Traefik's OWN default
+    # here is 0.1/0.3/1.2/5.0 (`traefik --help`; it does NOT use client_golang's
+    # DefBuckets for this histogram), and that default puts every NON-STREAMING
+    # request this proxy serves into its first bucket. Streaming is the exception,
+    # not a rounding error: its top boundary is 5.0 and a 16 MB body to a ~2 MB/s
+    # reader records 6961.43 ms server-side (line B3 of
+    # logs/calibration-step01a-server-side-duration.log), i.e. +Inf even unchanged.
+    #
+    # READ THIS BEFORE RETUNING: what these boundaries measure is SERVER-SIDE
+    # handler duration. `traefik_entrypoint_request_duration_seconds` does NOT
+    # include TCP connect, the TLS handshake, or client transit, so the client-side
+    # numbers in docs/runbooks/plex-latency-baseline.md (remote /identity TTFB
+    # 157/293/486 ms) are the wrong ruler and must not be used here — a previous
+    # revision of these values was, wrongly, calibrated on them. Verified against
+    # traefik:v3.7.5 by injecting 100 ms of RTT in front of the proxy: client TTFB
+    # moved 241 ms -> 351 ms and the recorded mean stayed 200.54 ms
+    # (logs/calibration-step01a-server-side-duration.log). Consistent with
+    # docs/plex-remote-latency-audit.md §3, where DNS+TCP+TLS is 77-85% of every
+    # remote sample — none of which is in this series.
+    #
+    # So: 0.00025..0.001 resolves the floor, which is where the traffic actually
+    # is (an empty-backend request through this proxy records 0.392 ms; the LAN
+    # capture puts direct-to-Plex /identity at 0.327 ms median). 0.0025..0.25 is
+    # the working band for authenticated queries. 1.0..30.0 is the streaming tail:
+    # the response write does reach this metric once the body outgrows the socket
+    # buffers (16 MB to a ~2 MB/s reader recorded 6.96 s server-side).
+    buckets:
+      - 0.00025
+      - 0.0005
+      - 0.001
+      - 0.0025
+      - 0.005
+      - 0.01
+      - 0.025
+      - 0.05
+      - 0.1
+      - 0.25
+      - 1.0
+      - 5.0
+      - 30.0
 
 log:
   level: INFO

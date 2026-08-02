@@ -3,8 +3,55 @@
 # internal compose network, set as the default datasource.
 apiVersion: 1
 
+# PINNING A uid IS A MIGRATION, BECAUSE THE STORE THIS FILE MEETS IS NOT EMPTY.
+# `grafana-data` is a named volume and this file shipped `name: Prometheus` with
+# NO `uid:` from a8c17db (2026-06-19) until 2026-07-30, so the live store holds
+# that datasource under a GENERATED uid (`PBFA97CFB590B2093`). Provisioning
+# matches an existing datasource BY NAME, and handing it a name it already has
+# with a uid it does not is fatal, not a no-op: measured on grafana/grafana:13.1.0
+# (logs/red-step04a-migration-battery.log row M2) the server logs `Datasource
+# provisioning error: data source not found` and EXITS 1 — the provisioning
+# module fails and takes every module that depends on it down with it. With
+# `restart: unless-stopped` that is the RestartCount 20801 crash loop this wave
+# exists to end, and it does not self-heal because the next `just play`
+# re-delivers the same file.
+#
+# Deleting by name first is the documented upgrade path and it is what makes the
+# apply idempotent in BOTH directions: row M3 lands it on the dirty store
+# (stored uid becomes `Prometheus`, `GET /api/datasources/uid/Prometheus` -> 200),
+# row M4 reboots that store with this same file unchanged, and row M5 is a
+# greenfield store — all three HEALTHY. Grafana applies `deleteDatasources`
+# BEFORE `datasources` whatever order they appear in, so this deletes and
+# re-creates in a single pass rather than leaving a window with no datasource:
+# row M8 puts this block BELOW the list and the store still ends up holding
+# `Prometheus`, which it could not if the delete ran last.
+#
+# `orgId` is OPTIONAL and it is still load-bearing — the two are not the same
+# claim, and both were measured. Omitting the key is fine (row M9: it defaults to
+# org 1, where the datasource lives, and the delete lands), but naming the WRONG
+# org is fatal (row M6: `orgId: 2` dies exactly the way M2 does), and so is
+# naming the wrong NAME (row M7). It is written out here because an explicit org
+# is what the next reader can check against the entry below.
+# scripts/test_grafana_provisioning_shape.py ties the deleted NAME and orgId to
+# that entry — reading an absent orgId on either side as 1, per M9 — because
+# nothing else does.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
 datasources:
   - name: Prometheus
+    # A NAME IS NOT A uid. Every panel and target of the delivered dashboards
+    # references its datasource by `uid`, and with this line absent Grafana
+    # GENERATES one — measured against grafana/grafana:13.1.0 itself on
+    # 2026-07-30, reading the server's own store: the datasource landed as
+    # `PBFA97CFB590B2093` while the dashboard JSON asked for `Prometheus`, so
+    # the reference resolved to nothing (logs/calibration-step04a-grafana-identity.log
+    # row C1). Pinning it makes the two sides agree by construction rather than
+    # by coincidence (row C2: stored uid == `Prometheus`), and
+    # scripts/test_grafana_provisioning_shape.py holds every dashboard the role
+    # delivers to this value.
+    uid: Prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
