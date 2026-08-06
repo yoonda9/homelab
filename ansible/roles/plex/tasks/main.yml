@@ -234,12 +234,13 @@
     # 'plexmediaserver'". An unconditional update_cache indexes the new repo.
     update_cache: true
 
-- name: Install Plex watchdog dependencies
+- name: Install Plex watchdog and diagnostic dependencies
   ansible.builtin.apt:
     name:
       - sysstat
       - lsof
       - procps
+      - sqlite3
     state: present
 
 - name: Ensure the Plex watchdog output directory exists
@@ -331,6 +332,16 @@
     enabled: true
     state: started
     daemon_reload: true
+
+- name: Verify Plex SQLite DB is in WAL mode (read-only audit)
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - "{{ plex_state_dir }}/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+      - "PRAGMA journal_mode;"
+  register: plex_sqlite_wal
+  changed_when: false
+  failed_when: plex_sqlite_wal.stdout != 'wal'
 
 # --- Hardware-transcode acceptance gate (design §4.3/§6) -------------------
 # Probe the VA-API driver on the render node and FAIL the play unless the modern
