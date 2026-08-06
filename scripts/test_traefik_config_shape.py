@@ -1631,7 +1631,7 @@ PLEX_EXPORTER_ENV = {
     "PLEX_RETRIES_COUNT": "0",
     "PLEX_SSL_VERIFY": "true",
     "METRICS_PREFIX": "plex",
-    "METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS": "300",
+    "METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS": "1800",
 }
 # Prometheus' own default scrape timeout, applied to any job that does not set
 # one. `PLEX_TIMEOUT` alone is 10 s PER REQUEST and the library sweep issues one
@@ -4008,7 +4008,7 @@ def test_plex_scrape_job_is_single_target() -> bool:
       `collect_media_metrics` runs SYNCHRONOUSLY inside the scrape request and
       issues one `/library/sections/<key>/all` per section (plus a second per
       `show` section) every `METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS`, while
-      `PLEX_TIMEOUT` alone is 10 s per request. Every fifth minute one scrape
+      `PLEX_TIMEOUT` alone is 10 s per request. Every thirtieth minute one scrape
       does the sweep; on the default budget that scrape is the one that fails.
       The global is READ, not pinned as `15`, so raising the global raises this
       floor with it.

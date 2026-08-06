@@ -70,15 +70,15 @@ scrape_configs:
   # The interval/timeout pair is job-local and both halves are required. The
   # exporter's collect_media_metrics runs SYNCHRONOUSLY inside the scrape and
   # issues one /library/sections/<key>/all per section (plus a second per `show`
-  # section) once every METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS (300s), while
+  # section) once every METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS (1800s), while
   # PLEX_TIMEOUT alone is 10s per request — so on the global 15s interval and
-  # Prometheus' default 10s timeout, one scrape every fifth minute is the one
+  # Prometheus' default 10s timeout, one scrape every thirtieth minute is the one
   # that times out. Prometheus REFUSES a config whose scrape_timeout exceeds its
   # scrape_interval, so raising the timeout without raising the interval loads
   # nothing at all; the two move together.
   - job_name: plex-exporter
     scrape_interval: 60s
-    scrape_timeout: 30s
+    scrape_timeout: 50s
     static_configs:
       - targets:
           - plex-exporter:9594
