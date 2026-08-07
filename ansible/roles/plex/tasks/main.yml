@@ -240,6 +240,14 @@
       - sysstat
       - lsof
       - procps
+      # fuser(1) ships in psmisc, and the watchdog's lock-holder probe shells
+      # out to `fuser -v` against the Plex SQLite DB. Absent it, that probe has
+      # never run on this host — it reports status "missing" every time, which
+      # is the whole of the 34/34 empty lock_holders.fuser in the capture
+      # corpus. It belongs HERE and not in plex_media_packages: that list is
+      # the Intel QSV driver set (defaults/main.yml), a different concern that
+      # merely happens to also be an apt install.
+      - psmisc
       - sqlite3
     state: present
 
