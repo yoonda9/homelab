@@ -487,6 +487,27 @@ class TestSnapshotStructuredShape(unittest.TestCase):
             f.write("#!/bin/sh\nexit 1\n")
         os.chmod(path, 0o755)
 
+    # Distinct text per probe, so the row also catches a cross-wiring: a fallback
+    # that substituted lsof's line into fuser's site would keep "no [dry-run]"
+    # true while still fabricating.
+    SPEAKING_STUBS = {
+        "fuser": "/tmp/library.db: 1234m 5678",
+        "lsof": "COMMAND  PID USER  FD  TYPE  NAME\nPlex  1234 plex  42u  REG  library.db",
+        "pidstat": "REAL PIDSTAT 1234 plex 0.4 0.0",
+        "ps": "REAL PS 1234 plex Plex Media Server",
+    }
+
+    def _install_speaking_stub(self, name: str):
+        """A probe that RUNS and SPEAKS -- status "ok" with non-empty output, which
+        is the healthy post-`psmisc` case (Step 1c) the operator demos under
+        `--dry-run`. Shell BUILTINS only: `PATH` is the stub dir alone, so `cat`
+        and friends are not resolvable from inside the stub itself."""
+        path = os.path.join(self.stub_dir, name)
+        lines = " ".join(f"'{ln}'" for ln in self.SPEAKING_STUBS[name].split("\n"))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"#!/bin/sh\nprintf '%s\\n' {lines}\nexit 0\n")
+        os.chmod(path, 0o755)
+
     def _capture(self, dry_run=True):
         engine = watchdog.WatchdogEngine(
             log_path=self.log_path,
@@ -587,6 +608,41 @@ class TestSnapshotStructuredShape(unittest.TestCase):
                 self.assertIn(
                     marker, value["output"] or "",
                     f"an empty-output probe must still get {probe}'s dry-run fallback",
+                )
+
+    def test_a_probe_that_ran_and_spoke_keeps_its_own_output_under_dry_run(self):
+        # The predicate's DISCRIMINATING half, and the arm the other three rows
+        # leave open: they pin that the fallback FIRES (missing; ok-but-empty) and
+        # that it never fires in a LIVE capture. None of them pins that it does
+        # NOT fire when the probe ran and SPOKE -- so substituting unconditionally
+        # (`if True:`) keeps the whole suite green while `--dry-run` overwrites
+        # real fuser/lsof output with a simulated line that still carries
+        # status="ok", a real elapsed_ms and error=None. That is a fabrication
+        # wearing every mark of a probe that actually ran, which is this row's own
+        # failure class inverted; the helper's docstring promises it cannot happen.
+        # Step 1c installs psmisc and makes real fuser output the demo path.
+        for name in self.SPEAKING_STUBS:
+            self._install_speaking_stub(name)
+        os.environ["PATH"] = self.stub_dir
+        record = self._capture(dry_run=True)
+
+        self.assertTrue(record["dry_run"], "this arm must be exercised under --dry-run")
+        for holder, probe in (
+            ("lock_holders", "fuser"),
+            ("lock_holders", "lsof"),
+            ("process_traces", "pidstat"),
+        ):
+            with self.subTest(site=f"{holder}.{probe}"):
+                value = record[holder][probe]
+                self.assertEqual(value["status"], "ok", "the stub ran and exited 0")
+                output = value["output"] or ""
+                self.assertIn(
+                    self.SPEAKING_STUBS[probe].split("\n")[0], output,
+                    f"{holder}.{probe} lost the output of a probe that actually ran",
+                )
+                self.assertNotIn(
+                    "[dry-run]", json.dumps(value),
+                    f"{holder}.{probe} overwrote a real probe's output with simulated text",
                 )
 
     def test_no_fallback_text_leaks_into_a_live_capture(self):
