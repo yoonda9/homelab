@@ -578,6 +578,24 @@ class TestSnapshotStructuredShape(unittest.TestCase):
                     value["status"], "missing",
                     "the real status must survive the fallback, not be overwritten by it",
                 )
+                # The same sentence names three fields, not one: `status`,
+                # `elapsed_ms` and `error` are all "left untouched". Pinning
+                # only the status reads like pinning all three -- zeroing
+                # elapsed_ms or dropping error inside the fallback kept the
+                # whole suite green while the JSONL record on disk lost the
+                # measurement. Step 4 exports
+                # plex_watchdog_probe_duration_seconds out of elapsed_ms, and
+                # `error` is the only place the reason survives once `output`
+                # has been replaced by simulated text.
+                self.assertGreater(
+                    value["elapsed_ms"], 0.0,
+                    f"the fallback overwrote {probe}'s measured elapsed_ms",
+                )
+                self.assertIsNotNone(
+                    value["error"],
+                    f"the fallback dropped {probe}'s error, so the record cannot "
+                    "say why the probe produced nothing",
+                )
                 self.assertIsNotNone(
                     value["output"],
                     f"--dry-run stopped simulating: {holder}.{probe} has no fallback text",
