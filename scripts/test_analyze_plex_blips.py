@@ -10,6 +10,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -450,6 +451,444 @@ class TestAnalyzePlexBlips(unittest.TestCase):
         )
         header = next(csv.reader(io.StringIO(analyzer.format_output([ev], "csv"))))
         self.assertEqual(len(header), 8, f"csv header widened outside Step 2c: {header}")
+
+    # --- Step 2c: the report separates the stone from the ripple -------------
+    #
+    # Three more VERBATIM corpus lines, same rule as 2b's block: inline
+    # literals, never read from /tmp at test time. Line numbers are into
+    # /tmp/plex-logs/2026-08-07/"Plex Media Server.log".
+    #
+    # EVERY NUMBER ASSERTED BELOW WAS MEASURED AT THIS TURN over that file
+    # (logs/builder-2c-corpus-measurements.log), not carried from plan.md:
+    #   holders  42 events / 35210.0 ms   vs   waiters 32 events / 9450.0 ms
+    #            -- the stone is 3.7x the ripple, and the report printed only
+    #            the ripple, under a label ("Total Lock Delay Duration") that
+    #            names neither side.
+    #   sites    MetadataItemSetting.cpp:459 x27, MetadataItemSetting.cpp:409
+    #            x13, StatisticsManager.cpp:288 x2 -- so the Demo's site is the
+    #            FIRST holder and NOT the loudest, which is why the fixtures
+    #            below deliberately put those two in conflict.
+    #   header   179 events against a taxonomy table summing 137 -- 42 events
+    #            (every TX_HELD) uncounted, because the table iterates a
+    #            hardcoded five-name list.
+    #   curve    over --start 06:37:00 --end 06:43:00: 4 -> 12 -> 3. NOT the
+    #            5 -> 13 -> 3 of plan.md: 77 counted events in the file have
+    #            min 2 / max 12, and the only two "(13 live)" lines in the
+    #            corpus are the pair 2b pinned as unclassifiable.
+
+    # :3387 and :3392 -- two more MetadataItemSetting.cpp:459 holders, which
+    # make :459 outrank :288 by both count and total held time.
+    HELD_METADATA_ITEM_SETTING_2 = (
+        "Aug 07, 2026 06:38:49.891 [132687881837368] WARN - [Req#8ecb7] Held "
+        "transaction for too long (/home/runner/_work/plex-media-server/"
+        "plex-media-server/Library/MetadataItemSetting.cpp:459): 0.830000 seconds"
+    )
+    HELD_METADATA_ITEM_SETTING_3 = (
+        "Aug 07, 2026 06:38:51.680 [132687879727928] WARN - [Req#8ec9d] Held "
+        "transaction for too long (/home/runner/_work/plex-media-server/"
+        "plex-media-server/Library/MetadataItemSetting.cpp:459): 1.110000 seconds"
+    )
+    # :3547 and :3616 -- the real peak and the real trough of the 06:37-06:43
+    # saturation curve. Both classify (1763 ms and 774 ms are over threshold),
+    # so the curve is readable off the event stream rather than off the file.
+    COMPLETED_SLOW_12_LIVE = (
+        "Aug 07, 2026 06:40:43.501 [132688110742328] DEBUG - Completed: "
+        "[192.168.1.111:41040] 200 GET /identity (12 live) #8ecdd 1763ms 338 bytes"
+    )
+    COMPLETED_SLOW_3_LIVE = (
+        "Aug 07, 2026 06:42:50.886 [132688110742328] DEBUG - Completed: "
+        "[192.168.1.111:55372] 200 GET /activities (3 live) #8ed23 774ms 203 bytes"
+    )
+
+    def _parse_all(self, *lines):
+        """Parses fixture lines into events, failing loudly on any that do not."""
+        events = []
+        for line in lines:
+            ev = analyzer.parse_log_line(line, "Plex Media Server.log", threshold_ms=500)
+            self.assertIsNotNone(ev, f"fixture line failed to classify: {line[:80]}")
+            events.append(ev)
+        return events
+
+    @staticmethod
+    def _section(out, heading):
+        """Returns one '## <heading>' section of the report, up to the next '## '."""
+        body = []
+        collecting = False
+        for line in out.splitlines():
+            if line.startswith("## "):
+                if collecting:
+                    break
+                collecting = line[3:].strip() == heading
+                continue
+            if collecting:
+                body.append(line)
+        return "\n".join(body)
+
+    def _the_blip_slice(self):
+        """The four holders, two waiters and three counted events, in log order."""
+        return self._parse_all(
+            self.HELD_STATISTICS_MANAGER,        # 06:37:33.273  :288    540.0 ms
+            self.COMPLETED_SLOW_4_LIVE,          # 06:37:39.377   4 live
+            self.HELD_METADATA_ITEM_SETTING,     # 06:37:36.346  :459    310.0 ms
+            self.STALL_STATISTICS_BANDWIDTH,     # 06:38:22.285          110.0 ms
+            self.STALL_STATISTICS_MEDIA,         # 06:38:27.179          160.0 ms
+            self.HELD_METADATA_ITEM_SETTING_2,   # 06:38:49.891  :459    830.0 ms
+            self.HELD_METADATA_ITEM_SETTING_3,   # 06:38:51.680  :459   1110.0 ms
+            self.COMPLETED_SLOW_12_LIVE,         # 06:40:43.501  12 live
+            self.COMPLETED_SLOW_3_LIVE,          # 06:42:50.886   3 live
+        )
+
+    def test_the_taxonomy_table_lists_tx_held_alongside_the_other_classes(self):
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        table = self._section(out, "Event Counts by Taxonomy")
+        self.assertIn("| TX_HELD | 4 |", table, f"TX_HELD missing from the taxonomy table:\n{table}")
+        # ...without displacing the five classes that were already there.
+        self.assertIn("| TX_STALL | 2 |", table)
+        self.assertIn("| SLOW_QUERY | 3 |", table)
+        self.assertIn("| STREAM_DROP | 0 |", table)
+        self.assertIn("| SCHEDULED_TASK | 0 |", table)
+        self.assertIn("| EXPORTER_SCRAPE | 0 |", table)
+
+    def test_the_taxonomy_table_sums_to_the_headers_own_total(self):
+        # THE REPORT MUST RECONCILE WITH ITSELF. Over the real 08-07 file the
+        # header said 179 and this table said 137; over the dated directory,
+        # 5811 against 5748. Adding TX_HELD to the hardcoded list closes
+        # today's gap and leaves the defect, so the last event here carries a
+        # taxonomy that is in NO list anywhere in the module: if the table is
+        # still a fixed enumeration, this row is the one that goes missing.
+        events = self._the_blip_slice()
+        events.append(analyzer.LogEvent(
+            "2026-08-07 06:42:59.000", "06:42:59.000", "PLUGIN_STALL", "132687902931768",
+            None, "a class no enumeration in this module knows about", "raw", "Plex Media Server.log",
+        ))
+        out = analyzer.format_output(events, "markdown", window_sec=120.0)
+
+        m = re.search(r"\*\*Total Events Matched\*\*:\s*(\d+)", out)
+        self.assertIsNotNone(m, "the header total is missing from the report")
+        header_total = int(m.group(1))
+        self.assertEqual(header_total, len(events))
+
+        rows = re.findall(r"^\|\s*([A-Z_]+)\s*\|\s*(\d+)\s*\|$", self._section(out, "Event Counts by Taxonomy"), re.M)
+        tabulated = sum(int(n) for _, n in rows)
+        self.assertEqual(
+            tabulated, header_total,
+            f"taxonomy table sums to {tabulated} but the header claims {header_total}; rows={rows}",
+        )
+        self.assertIn(("PLUGIN_STALL", "1"), rows, f"an unenumerated class went unreported: {rows}")
+
+    def test_holders_and_waiters_are_counted_and_totalled_separately(self):
+        # The sentence the report has to make true. One number over both
+        # classes is the defect: 4 holders holding 2790.0 ms is a different
+        # fact from 2 waiters delayed 270.0 ms, and the old report printed
+        # only the second under a label that named neither.
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+        self.assertTrue(section.strip(), "no holders-vs-waiters section in the report")
+
+        self.assertRegex(section, r"Holders \(TX_HELD\)\s*\|\s*4\s*\|\s*2790\.0")
+        self.assertRegex(section, r"Waiters \(TX_STALL\)\s*\|\s*2\s*\|\s*270\.0")
+        # And the waiter-only Executive Metric now says which side it measures,
+        # rather than reading as the whole of lock contention.
+        metrics = self._section(out, "Executive Metrics")
+        self.assertIn("270.0 ms", metrics)
+        self.assertRegex(metrics, r"Lock Holders \(TX_HELD\)\s*\|\s*4 events / 2790\.0 ms")
+        self.assertRegex(metrics, r"Lock Waiters \(TX_STALL\)\s*\|\s*2 events / 270\.0 ms")
+
+    def test_the_report_names_the_first_holder_by_its_basenamed_site(self):
+        # THE DISCRIMINATOR, and it is not a grep for the site. The string
+        # "StatisticsManager.cpp:288" is ALREADY in this report at the parent
+        # sha -- four times over the real corpus -- because the timeline prints
+        # `details`, and `details` carries the raw 90-character CI path. What
+        # is zero times at the parent is the site NOT preceded by a slash.
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+
+        self.assertRegex(section, r"(?<!/)\bStatisticsManager\.cpp:288\b")
+        self.assertRegex(section, r"06:37:33\.273")
+        self.assertNotIn("/home/runner/", section, "the holder section must name sites basenamed, not by CI path")
+        # Anti-vacuity: the pathed form is still in the report (the timeline
+        # prints it), so the assertion above is about the new section and not
+        # about the corpus.
+        self.assertIn("/home/runner/", out)
+
+    def test_the_holder_breakdown_ranks_the_loudest_site_not_only_the_first(self):
+        # Over the real file :288 is 2 of 42 lines and MetadataItemSetting.cpp:459
+        # is 27. A breakdown that names only the Demo's site names the first
+        # holder and hides the loudest one, so the fixtures put the two in
+        # conflict: :288 is first in time, :459 is 3 events / 2250.0 ms.
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+
+        self.assertRegex(section, r"MetadataItemSetting\.cpp:459\s*\|\s*3\s*\|\s*2250\.0")
+        self.assertRegex(section, r"StatisticsManager\.cpp:288\s*\|\s*1\s*\|\s*540\.0")
+        # Read the ORDER off the attribution table's own rows. Comparing raw
+        # offsets in the section would be confounded by the "First holder"
+        # line, which names :288 above the table by design and would make this
+        # assertion pass or fail for a reason that is not the ranking.
+        ranked = [
+            row.split("|")[1].strip()
+            for row in section.splitlines()
+            if re.match(r"^\|\s*\S+\.cpp:\d+\s*\|", row)
+        ]
+        self.assertEqual(
+            ranked, ["MetadataItemSetting.cpp:459", "StatisticsManager.cpp:288"],
+            "the holder breakdown must rank by held time, so the loudest site is not hidden below the first one",
+        )
+
+    def test_the_live_connection_curve_is_reported_first_peak_last(self):
+        # 4 -> 12 -> 3, the measured curve over 06:37:00-06:43:00 and the
+        # honest replacement for plan.md's 5 -> 13 -> 3. These three fixtures
+        # ARE the corpus's own first, peak and last counted events in that
+        # window.
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        metrics = self._section(out, "Executive Metrics")
+        self.assertRegex(metrics, r"Live Connections.*\|.*4 -> 12 -> 3")
+        self.assertIn("06:40:43.501", metrics)
+
+    def test_a_range_with_no_holders_still_renders_and_says_so(self):
+        # ANTI-VACUITY for every row above: a report that hardcoded the holder
+        # prose would pass them all. Waiters only -> the section must render,
+        # state that there are no holders, and not invent a peak connection
+        # count out of a set of events that carries none.
+        events = self._parse_all(self.STALL_STATISTICS_BANDWIDTH, self.STALL_STATISTICS_MEDIA)
+        out = analyzer.format_output(events, "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+
+        self.assertRegex(section, r"Holders \(TX_HELD\)\s*\|\s*0\s*\|\s*0\.0")
+        self.assertRegex(section, r"Waiters \(TX_STALL\)\s*\|\s*2\s*\|\s*270\.0")
+        self.assertNotIn(".cpp:", section)
+        self.assertIn("| TX_HELD | 0 |", self._section(out, "Event Counts by Taxonomy"))
+        self.assertRegex(self._section(out, "Executive Metrics"), r"Live Connections.*\|\s*n/a\s*\|")
+
+    # --- Step 2c round 2: the columns the round-1 guards stopped short of ----
+    #
+    # The block above ships NINE new numeric report cells and pins FIVE. Every
+    # assertion in it has the shape `assertRegex(section, r"Holders
+    # \(TX_HELD\)\s*\|\s*4\s*\|\s*2790\.0")` -- row-shaped, and it ends at the
+    # second cell. A mutation run over the delivered code (round 1's own
+    # numbers, logs/critic-2c-mutants.log) put five mutants through it green:
+    #   M06  max_hold_ms = 0.0                       the Holders row's Max cell
+    #   M07  max_wait_ms = 0.0                       the Waiters row's Max cell
+    #   M08  "Max Held (ms)" prints the TOTAL        on the real corpus that is
+    #        MetadataItemSetting.cpp:459 at 24170.0 where 2510.0 is true -- a
+    #        10x wrong number in a shipped report, suite green
+    #   M09  "First Seen" prints the LAST seen       independent of the
+    #        **First holder** line, which has its own min() and IS guarded
+    #   M13  the no-holders sentence deleted         in a test whose own NAME
+    #        is "..._still_renders_and_says_so"; only the renders half is
+    #        asserted
+    # The repair is ADDITIVE ONLY -- new methods below, no line above touched
+    # -- because acceptance 3 forbids modifying a test line, so the weak
+    # assertions stay exactly where they are and these stand beside them.
+    #
+    # The fix for the shape is to stop matching a prefix of a row and start
+    # comparing the row's CELLS by identity: a prefix match cannot fail on a
+    # column it never reaches.
+
+    @staticmethod
+    def _row_cells(section, label):
+        """Returns one markdown table row's cells, split and stripped.
+
+        `label` is matched against the row's FIRST cell by equality, so a row
+        is addressed by its own name rather than by an offset into the table.
+        Returns None when no row carries that label.
+        """
+        for line in section.splitlines():
+            if not line.strip().startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if cells and cells[0] == label:
+                return cells
+        return None
+
+    def test_every_cell_of_the_holders_and_waiters_rows_is_pinned(self):
+        # M06 and M07. The fixtures make max != total on BOTH sides on purpose
+        # (1110.0 of 2790.0 held; 160.0 of 270.0 waited), so a Max column that
+        # printed the total, or zero, is red here rather than green by
+        # coincidence.
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+
+        holders = self._row_cells(section, "Holders (TX_HELD)")
+        waiters = self._row_cells(section, "Waiters (TX_STALL)")
+        self.assertEqual(holders, ["Holders (TX_HELD)", "4", "2790.0", "1110.0"], f"section:\n{section}")
+        self.assertEqual(waiters, ["Waiters (TX_STALL)", "2", "270.0", "160.0"], f"section:\n{section}")
+        self.assertNotEqual(holders[2], holders[3], "fixture no longer separates the held total from the held max")
+        self.assertNotEqual(waiters[2], waiters[3], "fixture no longer separates the waited total from the waited max")
+
+    def test_every_cell_of_the_holder_attribution_rows_is_pinned(self):
+        # M08 and M09, and the fixture discriminates both at once:
+        # MetadataItemSetting.cpp:459 is 3 events over 2250.0 ms whose worst
+        # single hold is 1110.0 ms (so Max != Total) and whose first sighting
+        # 06:37:36.346 is not its last 06:38:51.680 (so First != Last).
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+
+        loudest = self._row_cells(section, "MetadataItemSetting.cpp:459")
+        first = self._row_cells(section, "StatisticsManager.cpp:288")
+        self.assertEqual(
+            loudest,
+            ["MetadataItemSetting.cpp:459", "3", "2250.0", "1110.0", "2026-08-07 06:37:36.346"],
+            f"section:\n{section}",
+        )
+        self.assertEqual(
+            first,
+            ["StatisticsManager.cpp:288", "1", "540.0", "540.0", "2026-08-07 06:37:33.273"],
+            f"section:\n{section}",
+        )
+        self.assertNotEqual(loudest[2], loudest[3], "fixture no longer separates a site's total from its max")
+        self.assertNotIn("06:38:51.680", section, "First Seen is showing the site's LAST sighting")
+
+    def test_every_cell_of_the_live_connection_curve_is_pinned(self):
+        # The curve cell carries a fourth number nothing reads: how many events
+        # the curve was computed over. 3 of the 9 fixture events carry a count,
+        # and a curve quoted without that denominator cannot be told from one
+        # computed over two events.
+        out = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        metrics = self._section(out, "Executive Metrics")
+
+        self.assertEqual(
+            self._row_cells(metrics, "Live Connections (first -> peak -> last)"),
+            ["Live Connections (first -> peak -> last)", "4 -> 12 -> 3 (peak at 06:40:43.501, 3 counted events)"],
+            f"metrics:\n{metrics}",
+        )
+
+    def test_the_no_holder_range_says_so_in_words_and_promises_no_breakdown(self):
+        # M13, the missing half of test_a_range_with_no_holders_still_renders_
+        # and_says_so: that test asserts the zero rows and never the sentence,
+        # so deleting the sentence leaves the suite green and the reader with
+        # a holder table of zeroes and no statement of why.
+        events = self._parse_all(self.STALL_STATISTICS_BANDWIDTH, self.STALL_STATISTICS_MEDIA)
+        out = analyzer.format_output(events, "markdown", window_sec=120.0)
+        section = self._section(out, "Lock Contention: Holders vs Waiters")
+
+        self.assertIn("No TX_HELD holder events in this range", section, f"section:\n{section}")
+        self.assertNotIn("Holder Attribution by Code Site", out, "an empty breakdown section rendered anyway")
+        # Anti-vacuity: hardcoding that sentence into every report would pass
+        # the line above, so the same two claims must be FALSE when holders
+        # exist.
+        with_holders = analyzer.format_output(self._the_blip_slice(), "markdown", window_sec=120.0)
+        self.assertNotIn("No TX_HELD holder events", with_holders)
+        self.assertIn("Holder Attribution by Code Site", with_holders)
+
+    def test_the_executive_footnote_points_at_rows_and_sections_that_exist(self):
+        # THE ONE SENTENCE IN THE REPORT WHOSE JOB IS TO PREVENT THE CONFUSION
+        # THIS ROW EXISTS TO END, and round 1 shipped it pointing at the wrong
+        # row: "the holder side is the row beneath it". The row beneath
+        # "Total Lock Delay Duration" is "Lock Waiters (TX_STALL)" -- the SAME
+        # side, printing the SAME number. The holder row is two beneath. A
+        # reader who follows the pointer lands back on the ripple.
+        #
+        # So the footnote addresses rows and sections by LABEL, never by
+        # position, and this test holds it to the report it is printed in:
+        # every name it quotes must be a row or a heading of THAT report. That
+        # also settles the second half of the charge -- the footnote promised a
+        # code-site breakdown that does not render when there are no holders.
+        no_holders = self._parse_all(self.STALL_STATISTICS_BANDWIDTH, self.STALL_STATISTICS_MEDIA)
+        for label, events in (("with holders", self._the_blip_slice()), ("no holders", no_holders)):
+            with self.subTest(corpus=label):
+                out = analyzer.format_output(events, "markdown", window_sec=120.0)
+                footnote = next(
+                    (l for l in out.splitlines() if l.startswith('*"Total Lock Delay Duration"')), ""
+                )
+                self.assertTrue(footnote, f"no Executive Metrics footnote in the {label} report")
+
+                self.assertNotRegex(
+                    footnote, r"\brow (beneath|below|above|under) it\b",
+                    "the footnote points at a row by position; the row beneath the waiter total "
+                    "is the waiter row, so a positional pointer sends the reader to the wrong side",
+                )
+                quoted = re.findall(r'"([^"]+)"', footnote)
+                self.assertIn(
+                    "Lock Holders (TX_HELD)", quoted,
+                    f"the footnote must name the holder row by its own label; quoted={quoted}",
+                )
+                headings = [l.lstrip("#").strip() for l in out.splitlines() if l.startswith("#")]
+                for name in quoted:
+                    self.assertTrue(
+                        f"| {name} |" in out or name in headings,
+                        f"the footnote quotes {name!r}, which is no row and no heading of the "
+                        f"{label} report it is printed in",
+                    )
+
+    # --- Step 2c round 3: the lines in the section that are NOT table rows ---
+    #
+    # Round 2 replaced every row-shaped prefix match with a cell-by-cell
+    # equality, on the finding that A PREFIX MATCH CANNOT FAIL ON A COLUMN IT
+    # NEVER REACHES. The sibling half, and the residue that finding left
+    # behind: A SECTION-SCOPED MATCH CANNOT FAIL ON A LINE THAT ANOTHER LINE IN
+    # THE SAME SECTION SATISFIES. Every guard round 2 strengthened addresses a
+    # table ROW; the one line of this section that is not a row was left with
+    # no guard of its own. The two assertions aimed at it --
+    #     assertRegex(section, r"(?<!/)\bStatisticsManager\.cpp:288\b")
+    #     assertRegex(section, r"06:37:33\.273")
+    # -- are BOTH satisfied by the attribution table's own row,
+    #     | StatisticsManager.cpp:288 | 1 | 540.0 | 540.0 | 2026-08-07 06:37:33.273 |
+    # so they cannot tell the prose line from its neighbour:
+    #   N01  the whole **First holder** line DELETED          survived, green
+    #        -- and that line carries acceptance 5's own sentence, so the row's
+    #        Demo claim could be deleted outright with nothing red
+    #   N02  its duration prints the ALL-HOLDER total         survived, green
+    #        -- 2790.0 here, and on the real corpus it ships "(35210.0 ms)"
+    #        where 540.0 ms is true: 65x wrong under a green suite, which is
+    #        round 1's M08 (10x wrong, green) one container up
+    # The line's duration was a TENTH numeric value that no census in this row
+    # ever counted, because the censuses counted table cells.
+    #
+    # The cheap discriminator is to MUTATE BY DELETION FIRST: a line whose
+    # deletion is green has no guard of its own, however many regexes mention
+    # its content. So this pins the section's non-table lines as a CLOSED SET
+    # by equality -- the same closure move the taxonomy table got, and the
+    # reason it is a set rather than the one charged line: the no-holders
+    # sentence is guarded by an assertIn of its first clause only, so its
+    # second clause ("the counts above are the waiter side only") could be
+    # dropped green too. Additive as before: no line above is touched.
+
+    @staticmethod
+    def _non_table_lines(section):
+        """Every line of a section that is not a markdown table row."""
+        return [l for l in section.splitlines() if l.strip() and not l.strip().startswith("|")]
+
+    def test_every_non_table_line_of_the_contention_section_is_pinned(self):
+        # N01 and N02, and the whole class they belong to, at both corpora.
+        events = self._the_blip_slice()
+        section = self._section(
+            analyzer.format_output(events, "markdown", window_sec=120.0),
+            "Lock Contention: Holders vs Waiters",
+        )
+        self.assertEqual(
+            self._non_table_lines(section),
+            [
+                "**First holder**: 2026-08-07 06:37:33.273 -- StatisticsManager.cpp:288 (540.0 ms)",
+                "### Holder Attribution by Code Site",
+            ],
+            f"section:\n{section}",
+        )
+
+        no_holders = self._parse_all(self.STALL_STATISTICS_BANDWIDTH, self.STALL_STATISTICS_MEDIA)
+        nh_section = self._section(
+            analyzer.format_output(no_holders, "markdown", window_sec=120.0),
+            "Lock Contention: Holders vs Waiters",
+        )
+        self.assertEqual(
+            self._non_table_lines(nh_section),
+            ["No TX_HELD holder events in this range; the counts above are the waiter side only."],
+            f"section:\n{nh_section}",
+        )
+
+        # Anti-vacuity, so a later fixture edit cannot leave the equalities
+        # above true by coincidence. The first holder's own 540.0 ms must be
+        # neither number the Holders row prints (2790.0 total / 1110.0 max),
+        # or N02 and a print-the-max variant would both pass; and the first
+        # holder must not also be the last, or min() and max() agree.
+        holders = self._row_cells(section, "Holders (TX_HELD)")
+        self.assertNotIn(
+            "540.0", holders[2:],
+            f"fixture no longer separates the first holder's duration from the holder totals: {holders}",
+        )
+        held = sorted(e.timestamp for e in events if e.event_type == "TX_HELD")
+        self.assertNotEqual(held[0], held[-1], "fixture no longer separates the first holder from the last")
+
 
 
 def main() -> int:

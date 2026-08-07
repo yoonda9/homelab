@@ -360,6 +360,37 @@ def format_output(events: List[LogEvent], format_type: str, start: Optional[str]
         total_lock_delay_ms = sum(e.duration_ms for e in events if e.event_type == "TX_STALL" and e.duration_ms is not None)
         max_query_latency_ms = max([e.duration_ms for e in events if e.event_type == "SLOW_QUERY" and e.duration_ms is not None], default=0.0)
 
+        # The two sides of one contention, kept apart on purpose. TX_STALL is
+        # the WAITER side -- requests that gave up waiting -- and it is the only
+        # side "Total Lock Delay Duration" has ever measured. TX_HELD is the
+        # HOLDER side, the code site that was holding the lock they waited on.
+        # Over the 2026-08-07 log the two are 32 events / 9450.0 ms against 42
+        # events / 35210.0 ms: summing them would report a single number that
+        # is true of neither, and printing only the first reads as a
+        # contradiction (a small delay total next to large stalls) until you
+        # see it is the ripple and not the stone.
+        holder_events = [e for e in events if e.event_type == "TX_HELD"]
+        waiter_events = [e for e in events if e.event_type == "TX_STALL"]
+        total_hold_ms = sum(e.duration_ms for e in holder_events if e.duration_ms is not None)
+        max_hold_ms = max([e.duration_ms for e in holder_events if e.duration_ms is not None], default=0.0)
+        max_wait_ms = max([e.duration_ms for e in waiter_events if e.duration_ms is not None], default=0.0)
+
+        # The saturation curve, read off the events that actually carry a
+        # count. First and last are positional because analyze_path hands this
+        # function a chronologically sorted list; the peak is computed, not
+        # positional. None is spelled "n/a" rather than 0, because a range
+        # whose events carry no count is not a range with no connections.
+        counted_events = [e for e in events if e.live_connections is not None]
+        if counted_events:
+            peak_event = max(counted_events, key=lambda e: e.live_connections)
+            live_curve_str = (
+                f"{counted_events[0].live_connections} -> {peak_event.live_connections} -> "
+                f"{counted_events[-1].live_connections} "
+                f"(peak at {peak_event.time_only}, {len(counted_events)} counted events)"
+            )
+        else:
+            live_curve_str = "n/a"
+
         impacted_sessions = set()
         stream_drops_count = 0
         for e in events:
@@ -388,9 +419,28 @@ def format_output(events: List[LogEvent], format_type: str, start: Optional[str]
         lines.append("| Metric | Value |")
         lines.append("| :--- | :--- |")
         lines.append(f"| Total Lock Delay Duration | {total_lock_delay_ms:.1f} ms ({total_lock_delay_ms / 1000.0:.2f} s) |")
+        lines.append(f"| Lock Waiters (TX_STALL) | {len(waiter_events)} events / {total_lock_delay_ms:.1f} ms |")
+        lines.append(f"| Lock Holders (TX_HELD) | {len(holder_events)} events / {total_hold_ms:.1f} ms |")
         lines.append(f"| Maximum Query Latency | {max_query_latency_ms:.1f} ms |")
         lines.append(f"| Impacted Streaming Clients | {impacted_str} |")
-        lines.append(f"| Correlated Triggers | {triggers_str} |\n")
+        lines.append(f"| Correlated Triggers | {triggers_str} |")
+        lines.append(f"| Live Connections (first -> peak -> last) | {live_curve_str} |\n")
+        # Every row and section this footnote sends a reader to is named by its
+        # LABEL, never by its position. The row beneath "Total Lock Delay
+        # Duration" is "Lock Waiters (TX_STALL)" -- the same side, printing the
+        # same number -- so "the row beneath it" pointed at the ripple, which is
+        # the confusion this section exists to end. The breakdown is promised
+        # only in the reports that render one: with no holders there is no
+        # attribution table to send anyone to.
+        footnote = (
+            "*\"Total Lock Delay Duration\" is the WAITER side only (TX_STALL), kept at its "
+            "original meaning and restated under a label that names the side by the "
+            "\"Lock Waiters (TX_STALL)\" row. The holder side is the \"Lock Holders (TX_HELD)\" "
+            "row. The two are compared under \"Lock Contention: Holders vs Waiters\""
+        )
+        if holder_events:
+            footnote += ", which attributes the holders by code site under \"Holder Attribution by Code Site\""
+        lines.append(footnote + ".*\n")
 
         counts: dict[str, int] = {}
         for e in events:
@@ -399,9 +449,62 @@ def format_output(events: List[LogEvent], format_type: str, start: Optional[str]
         lines.append("## Event Counts by Taxonomy\n")
         lines.append("| Taxonomy | Count |")
         lines.append("| :--- | :--- |")
-        for taxonomy in ["TX_STALL", "SLOW_QUERY", "STREAM_DROP", "SCHEDULED_TASK", "EXPORTER_SCRAPE"]:
+        # The five names below are printed in a fixed order, including at zero,
+        # so the table's shape does not change with the corpus. Anything else
+        # `counts` holds is printed after them: the header counts len(events)
+        # while this table used to count five names, so every TX_HELD event was
+        # invisible here -- 5811 in the header against 5748 tabulated over the
+        # dated directory, 179 against 137 over the single 08-07 file. Adding
+        # TX_HELD to the list would close today's gap and leave the defect, so
+        # the table is now closed against the counts dict instead: whatever
+        # taxonomy a future step introduces, the table still sums to the header.
+        known_taxonomies = ["TX_STALL", "TX_HELD", "SLOW_QUERY", "STREAM_DROP", "SCHEDULED_TASK", "EXPORTER_SCRAPE"]
+        for taxonomy in known_taxonomies:
             lines.append(f"| {taxonomy} | {counts.get(taxonomy, 0)} |")
+        for taxonomy in sorted(k for k in counts if k not in known_taxonomies):
+            lines.append(f"| {taxonomy} | {counts[taxonomy]} |")
         lines.append("")
+
+        lines.append("## Lock Contention: Holders vs Waiters\n")
+        lines.append("| Side | Events | Total Duration (ms) | Max (ms) |")
+        lines.append("| :--- | :--- | :--- | :--- |")
+        lines.append(f"| Holders (TX_HELD) | {len(holder_events)} | {total_hold_ms:.1f} | {max_hold_ms:.1f} |")
+        lines.append(f"| Waiters (TX_STALL) | {len(waiter_events)} | {total_lock_delay_ms:.1f} | {max_wait_ms:.1f} |\n")
+
+        if holder_events:
+            first_holder = min(holder_events, key=lambda e: e.timestamp)
+            first_dur = "-" if first_holder.duration_ms is None else f"{first_holder.duration_ms:.1f} ms"
+            lines.append(
+                f"**First holder**: {first_holder.timestamp} -- "
+                f"{first_holder.hold_site or '(unattributed)'} ({first_dur})\n"
+            )
+
+            # Ranked by total time held, not by first appearance: over the
+            # 08-07 log the first holder is StatisticsManager.cpp:288 at 2 of
+            # 42 lines, while MetadataItemSetting.cpp:459 accounts for 27. A
+            # breakdown ordered by time would name the first holder and hide
+            # the loudest one.
+            site_stats: dict[str, dict] = {}
+            for e in holder_events:
+                site = e.hold_site or "(unattributed)"
+                st = site_stats.setdefault(site, {"count": 0, "total": 0.0, "max": 0.0, "first": e.timestamp})
+                st["count"] += 1
+                if e.duration_ms is not None:
+                    st["total"] += e.duration_ms
+                    st["max"] = max(st["max"], e.duration_ms)
+                if e.timestamp < st["first"]:
+                    st["first"] = e.timestamp
+
+            lines.append("### Holder Attribution by Code Site\n")
+            lines.append("| Hold Site | Events | Total Held (ms) | Max Held (ms) | First Seen |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- |")
+            for site, st in sorted(site_stats.items(), key=lambda kv: (-kv[1]["total"], -kv[1]["count"], kv[0])):
+                lines.append(f"| {site} | {st['count']} | {st['total']:.1f} | {st['max']:.1f} | {st['first']} |")
+            lines.append("")
+        else:
+            lines.append(
+                "No TX_HELD holder events in this range; the counts above are the waiter side only.\n"
+            )
 
         lines.append(f"## Correlated Event Clusters (Window: {window_sec:.1f}s)\n")
         multi_clusters = [c for c in clusters if len(c) >= 2]
