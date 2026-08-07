@@ -6,6 +6,7 @@ slow queries (>500ms), and network/relay collapses, 30s debounce rate-limiting,
 and structured JSONL diagnostic snapshots (fuser, lsof, pidstat).
 """
 
+import inspect
 import json
 import os
 import pathlib
@@ -320,6 +321,112 @@ class TestPlexBlipWatchdog(unittest.TestCase):
         shutil.rmtree(pid_plex)
         self.assertEqual(watchdog.get_plex_fd_count(proc_dir=mock_proc, dry_run=False), -1)
         self.assertGreaterEqual(watchdog.get_plex_fd_count(proc_dir=mock_proc, dry_run=True), 0)
+
+
+class TestRunCmdStructuredResult(unittest.TestCase):
+    """Step 1a — `_run_cmd`'s structured probe result (design §5.1).
+
+    The contract is `{status, elapsed_ms, output, error}` with `status` in exactly
+    four spellings. Each spelling is reached by a named input, all four below:
+      ok      -> a command that exits normally (`sys.executable -c print(...)`)
+      timeout -> a command that sleeps past the timeout (`time.sleep(5)` at 0.2s)
+      missing -> a binary that is not on PATH (the no-`psmisc` `fuser` case)
+      error   -> a path that exists but is not executable (PermissionError)
+    """
+
+    CONTRACT_KEYS = {"status", "elapsed_ms", "output", "error"}
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_runcmd_")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_run_cmd_timeout_records_elapsed_ms(self):
+        # The regression that matters most: the pre-change code had no clock at
+        # all, so asserting only status=="timeout" would pass for the wrong
+        # reason. Assert the NUMBER. `lsof` crossing the threshold on the DB
+        # files is itself a contention signal and must survive the timeout.
+        timeout = 0.2
+        res = watchdog._run_cmd(
+            [sys.executable, "-c", "import time; time.sleep(5)"], timeout=timeout
+        )
+        self.assertIsInstance(res, dict, "probe result must be the structured dict")
+        self.assertEqual(set(res), self.CONTRACT_KEYS)
+        self.assertEqual(res["status"], "timeout")
+        self.assertIsInstance(res["elapsed_ms"], float)
+        self.assertGreaterEqual(
+            res["elapsed_ms"], timeout * 1000.0 * 0.9,
+            "elapsed_ms must be the measured duration, not 0/None, on the timeout path",
+        )
+        self.assertLess(
+            res["elapsed_ms"], timeout * 1000.0 + 1500.0,
+            "elapsed_ms must be ~the timeout, not the 5s the command wanted to sleep",
+        )
+
+    def test_run_cmd_default_timeout_is_two_seconds(self):
+        # 0.5s was tuned for the healthy case; lsof exceeded it in 12/12 in-blip
+        # snapshots. Per-probe override stays available via the same kwarg.
+        default = inspect.signature(watchdog._run_cmd).parameters["timeout"].default
+        self.assertEqual(default, 2.0)
+
+    def test_run_cmd_missing_binary_is_missing_not_error(self):
+        # The no-`psmisc` `fuser` case. Today "missing" and "error" are the same
+        # string, so this test must separate them.
+        res = watchdog._run_cmd(["plex-blip-no-such-binary-xyz"], timeout=0.5)
+        self.assertIsInstance(res, dict)
+        self.assertEqual(set(res), self.CONTRACT_KEYS)
+        self.assertEqual(res["status"], "missing")
+        self.assertNotEqual(res["status"], "error", "a deployment defect is not a runtime hiccup")
+        self.assertIsNone(res["output"])
+        self.assertIsNotNone(res["error"])
+        self.assertIsInstance(res["elapsed_ms"], float)
+        self.assertGreaterEqual(res["elapsed_ms"], 0.0)
+
+    def test_run_cmd_ok_preserves_output(self):
+        payload = "plex  1234 F....m  \tuser  (interior   whitespace kept)"
+        res = watchdog._run_cmd(
+            [sys.executable, "-c", f"print({payload!r})"], timeout=5.0
+        )
+        self.assertIsInstance(res, dict)
+        self.assertEqual(set(res), self.CONTRACT_KEYS)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["output"], payload, "output preserved byte-for-byte after strip")
+        self.assertIsNone(res["error"])
+        self.assertIsInstance(res["elapsed_ms"], float)
+        self.assertGreater(res["elapsed_ms"], 0.0)
+
+    def test_run_cmd_error_is_reachable_and_distinct_from_missing(self):
+        # Fourth spelling: the file EXISTS (so it is not "missing") but cannot be
+        # executed -> PermissionError -> generic except.
+        not_executable = os.path.join(self.test_dir, "probe.sh")
+        with open(not_executable, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho hi\n")
+        os.chmod(not_executable, 0o644)
+
+        res = watchdog._run_cmd([not_executable], timeout=0.5)
+        self.assertIsInstance(res, dict)
+        self.assertEqual(set(res), self.CONTRACT_KEYS)
+        self.assertEqual(res["status"], "error")
+        self.assertNotEqual(res["status"], "missing")
+        self.assertIsNone(res["output"])
+        self.assertIsNotNone(res["error"])
+
+    def test_run_cmd_status_vocabulary_is_exactly_four_spellings(self):
+        seen = {
+            watchdog._run_cmd([sys.executable, "-c", "pass"], timeout=5.0)["status"],
+            watchdog._run_cmd(
+                [sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2
+            )["status"],
+            watchdog._run_cmd(["plex-blip-no-such-binary-xyz"], timeout=0.5)["status"],
+        }
+        not_executable = os.path.join(self.test_dir, "probe2.sh")
+        with open(not_executable, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(not_executable, 0o644)
+        seen.add(watchdog._run_cmd([not_executable], timeout=0.5)["status"])
+
+        self.assertEqual(seen, {"ok", "timeout", "missing", "error"})
 
 
 if __name__ == "__main__":

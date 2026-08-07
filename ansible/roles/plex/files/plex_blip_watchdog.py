@@ -79,8 +79,29 @@ def check_trigger(line: str, threshold_ms: float = 500.0) -> Optional[Dict[str, 
     return None
 
 
-def _run_cmd(cmd: list[str], timeout: float = 0.5) -> str:
-    """Run an external diagnostic probe safely with a hard timeout."""
+def _run_cmd(cmd: list[str], timeout: float = 2.0) -> Dict[str, Any]:
+    """Run an external diagnostic probe safely with a hard timeout.
+
+    ALWAYS returns status + elapsed_ms, never a bare string:
+        {"status": "ok"|"timeout"|"missing"|"error",
+         "elapsed_ms": float, "output": str|None, "error": str|None}
+
+    Three properties this shape exists for, each evidence-driven:
+      - The default is 2.0s, not 0.5s: `lsof` exceeded 500ms in 12/12 in-blip
+        snapshots, so the probe was tuned for the healthy case. Per-probe
+        override stays on the same kwarg.
+      - `elapsed_ms` is recorded EVEN ON TIMEOUT. A probe crossing the threshold
+        on the database files is itself a contention signal; the old contract
+        discarded it, and had no clock to measure it with in the first place.
+      - `missing` is separated from `error`. A binary that is not installed is a
+        deployment defect (34/34 `fuser` failures were one missing package) and
+        must not be spelled the same way as a runtime hiccup.
+    """
+    started = time.monotonic()
+
+    def _elapsed_ms() -> float:
+        return (time.monotonic() - started) * 1000.0
+
     try:
         proc = subprocess.run(
             cmd,
@@ -89,11 +110,34 @@ def _run_cmd(cmd: list[str], timeout: float = 0.5) -> str:
             text=True,
             timeout=timeout
         )
-        return proc.stdout.strip()
+        return {
+            "status": "ok",
+            "elapsed_ms": _elapsed_ms(),
+            "output": proc.stdout.strip(),
+            "error": None,
+        }
     except subprocess.TimeoutExpired:
-        return "[probe timeout exceeded]"
+        return {
+            "status": "timeout",
+            "elapsed_ms": _elapsed_ms(),
+            "output": None,
+            "error": f"probe timeout exceeded ({timeout}s)",
+        }
+    except FileNotFoundError as e:
+        # Before the generic handler, otherwise "missing" is unreachable.
+        return {
+            "status": "missing",
+            "elapsed_ms": _elapsed_ms(),
+            "output": None,
+            "error": f"probe binary not found: {e}",
+        }
     except Exception as e:
-        return f"[probe error: {e}]"
+        return {
+            "status": "error",
+            "elapsed_ms": _elapsed_ms(),
+            "output": None,
+            "error": f"probe error: {e}",
+        }
 
 
 def get_plex_fd_count(proc_dir: str = "/proc", dry_run: bool = False) -> int:
