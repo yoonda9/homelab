@@ -449,10 +449,67 @@ class TestModuleLatencyBoundIsTrue(unittest.TestCase):
     only the timeout and the count asserted, deleting ", so 8.0s worst case" from
     the header outright was GREEN 16/16 (logs/critic-5507-r2-header-bound-hole.py),
     and that product is the one number an operator actually reads.
+
+    Round 3 asserted that product, which is one layer better and still not the
+    bound: `probes * default` equals what the code delivers only if no call site
+    overrides the timeout and every call is spelled `_run_cmd([` on one line. With
+    the product asserted, giving lsof the per-probe override `_run_cmd`'s own
+    docstring advertises was GREEN with the header claiming 8.0s against a true
+    11.0s, and a fifth probe spelled either through a variable or across lines was
+    GREEN against a true 10.0s (logs/critic-5507-r3-bound-derivation.py). The bound
+    is now summed per call site off the AST, so the guard computes it the way the
+    code does; logs/builder-5507-r4-guard-closes.py scores those three RED here and
+    GREEN again once the header is corrected to match.
+
+    That sum is not merely a better formula -- it is the number the code burns.
+    With every probe blocked, the real capture_snapshot measures 8015.11 ms here;
+    give lsof the 5.0s override and it measures 11017.88 ms against a derivation
+    that moved to exactly 11.0s, while `probes * default` stays at 8.0s
+    (logs/builder-5507-r4-bound-is-measured.py).
     """
 
     def _module_source(self):
         return pathlib.Path(inspect.getsourcefile(watchdog)).read_text(encoding="utf-8")
+
+    def _effective_probe_bound(self):
+        """Derive the worst case the way the CODE computes it: walk every call to
+        `_run_cmd` and sum that call's OWN effective timeout.
+
+        `probes * default` is the product of two inputs, not the bound. It equals
+        the delivered bound only under two things the code does not enforce: that
+        no call site overrides the timeout, and that every call is spelled
+        `_run_cmd([` on one line. `_run_cmd`'s own docstring advertises the
+        override, and a formatter may rewrap any of these calls at any time.
+        Reading the AST is override-aware and spelling-independent, so what comes
+        back is the bound itself and there is nothing left over to pin.
+
+        A timeout that is not a literal makes the bound UNDERIVABLE, and an
+        underivable bound may not be certified: those sites come back named, so
+        the caller fails loudly instead of silently crediting the default.
+
+        Returns (call_sites, worst_case_seconds, underivable_sites).
+        """
+        default = inspect.signature(watchdog._run_cmd).parameters["timeout"].default
+        sites, worst_case, underivable = 0, 0.0, []
+        for node in ast.walk(ast.parse(self._module_source())):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "id", None) != "_run_cmd":
+                continue
+            sites += 1
+            # Both spellings of an override: the advertised kwarg, and the
+            # second positional the signature also accepts.
+            override = next(
+                (kw.value for kw in node.keywords if kw.arg == "timeout"),
+                node.args[1] if len(node.args) > 1 else None,
+            )
+            if override is None:
+                worst_case += default
+            elif isinstance(override, ast.Constant):
+                worst_case += override.value
+            else:
+                underivable.append(f":{node.lineno} {ast.unparse(override)}")
+        return sites, worst_case, underivable
 
     def test_header_does_not_advertise_the_retired_500ms_bound(self):
         # Flip the guard's polarity, never delete it: the header must not claim a
@@ -468,7 +525,7 @@ class TestModuleLatencyBoundIsTrue(unittest.TestCase):
     def test_header_states_the_bound_the_code_actually_delivers(self):
         # Derived, not hardcoded. A fifth probe or a new default must force the
         # header to move in the same commit rather than silently going stale.
-        probes = self._module_source().count("_run_cmd([")
+        probes, _bound, _underivable = self._effective_probe_bound()
         default = inspect.signature(watchdog._run_cmd).parameters["timeout"].default
         self.assertEqual(probes, 4, "capture_snapshot's serial probe count")
 
@@ -483,20 +540,25 @@ class TestModuleLatencyBoundIsTrue(unittest.TestCase):
             f"that is what makes the delivered bound {probes} x {default}s",
         )
 
-    def test_header_names_the_product_and_not_only_its_two_inputs(self):
-        # The timeout and the count are pinned above; their PRODUCT is what an
-        # operator quotes, and it was pinned by nothing. Derived, never 8000: a
-        # fifth probe or a changed default must move this sentence in the same
-        # commit, which is the whole point of the guard.
-        probes = self._module_source().count("_run_cmd([")
-        default = inspect.signature(watchdog._run_cmd).parameters["timeout"].default
-        worst_case = probes * default
+    def test_header_names_the_bound_each_call_site_actually_adds_up_to(self):
+        # The bound an operator quotes, derived the way the code computes it --
+        # summed per call site, never `probes * default` and never 8000. A fifth
+        # probe, a changed default, a formatter rewrapping one of these calls, or
+        # lsof taking the per-probe override its own docstring advertises must all
+        # move this sentence in the same commit.
+        probes, worst_case, underivable = self._effective_probe_bound()
+        self.assertEqual(
+            underivable, [],
+            "a probe's timeout is not a literal, so the module's worst case cannot "
+            "be derived and the header's claim cannot be certified: "
+            + " | ".join(underivable),
+        )
 
         header = inspect.getdoc(watchdog) or ""
         self.assertIn(
             f"{worst_case}s worst case", header,
-            f"module docstring must name the bound it delivers ({probes} probes x "
-            f"{default}s = {worst_case}s), not merely the two inputs to it",
+            f"module docstring must name the bound it delivers -- {probes} serial "
+            f"probes summing to {worst_case}s at their own effective timeouts",
         )
 
     def test_no_surviving_docstring_calls_the_bounded_snapshot_instantaneous(self):
