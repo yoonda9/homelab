@@ -4,9 +4,11 @@
 Monitors Plex Media Server logs using standard asynchronous inotify file stream
 events (zero CPU polling). Matches DB transaction lock stalls, slow library
 queries (>500ms), and network relay connectivity drops. Enforces a 30-second
-debounce cooldown window and executes instant diagnostic snapshots (<500ms)
-including fuser/lsof on SQLite databases, pidstat, and open descriptor counts,
-serialized as structured JSON Lines.
+debounce cooldown window and executes bounded diagnostic snapshots (2.0s default
+per probe, four probes serial, so 8.0s worst case) including fuser/lsof on SQLite
+databases, pidstat, and open descriptor counts, serialized as structured JSON Lines.
+The snapshot is bounded, not instant: a probe that blocks is itself the signal, so
+each one is allowed to run to its timeout and report the elapsed time it burned.
 """
 
 import argparse

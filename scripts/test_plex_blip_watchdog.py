@@ -429,5 +429,50 @@ class TestRunCmdStructuredResult(unittest.TestCase):
         self.assertEqual(seen, {"ok", "timeout", "missing", "error"})
 
 
+class TestModuleLatencyBoundIsTrue(unittest.TestCase):
+    """Raising a timeout retires a latency budget, and the module header is where
+    that budget is written down.
+
+    The header's `<500ms` claim was already false before Step 1a (measured 2011.75 ms
+    at 5c9a830, 4x over), so this row did not create the falsehood. What it created is
+    the CONTRADICTION: `_run_cmd`'s own docstring now names 0.5s as the retired number
+    while the header still advertises it as the bound. One file, one figure, two
+    answers. These tests pin the header to the code instead of to a literal, so the
+    next person to touch the default cannot leave the two disagreeing again.
+    """
+
+    def _module_source(self):
+        return pathlib.Path(inspect.getsourcefile(watchdog)).read_text(encoding="utf-8")
+
+    def test_header_does_not_advertise_the_retired_500ms_bound(self):
+        # Flip the guard's polarity, never delete it: the header must not claim a
+        # bound the code cannot honour. 500ms is now unreachable -- ONE probe may
+        # take 2.0s -- so the string must be gone from the module docstring.
+        header = inspect.getdoc(watchdog) or ""
+        self.assertNotIn(
+            "<500ms", header,
+            "module docstring still advertises the retired 0.5s probe budget; "
+            "capture_snapshot's measured worst case is 8014.65 ms (16x)",
+        )
+
+    def test_header_states_the_bound_the_code_actually_delivers(self):
+        # Derived, not hardcoded. A fifth probe or a new default must force the
+        # header to move in the same commit rather than silently going stale.
+        probes = self._module_source().count("_run_cmd([")
+        default = inspect.signature(watchdog._run_cmd).parameters["timeout"].default
+        self.assertEqual(probes, 4, "capture_snapshot's serial probe count")
+
+        header = inspect.getdoc(watchdog) or ""
+        self.assertIn(
+            f"{default}s", header,
+            "module docstring must name the per-probe timeout it actually uses",
+        )
+        self.assertIn(
+            "four probes serial", header,
+            "module docstring must disclose that the probes run serially, since "
+            f"that is what makes the delivered bound {probes} x {default}s",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
