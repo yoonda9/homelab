@@ -88,6 +88,13 @@ APT_NAME_KEYS = ("name", "pkg", "package")
 # already uses a block, and B1 in the same log missed for the same reason.
 BLOCK_KEYS = ("block", "rescue", "always")
 
+# A task's conditional. Read as a KEY and never as a VALUE — see
+# test_psmisc_is_installed_by_the_watchdog_deps_task for why that distinction is
+# the guard. It is INHERITED: a `when:` on a block gates every task inside it,
+# which is the shape of the very task cited above — :355-357 is the `- name:`,
+# then `when: docker_host_acme_reset | bool` at :356, then the `block:` at :357.
+WHEN_KEY = "when"
+
 # The apt states that actually put a package on the host. The choice list is
 # CLOSED — modules/apt.py:1268 is
 #     state=dict(type='str', default='present',
@@ -103,31 +110,40 @@ def _load(path: pathlib.Path):
     return yaml.safe_load(path.read_text()) if path.is_file() else None
 
 
-def _iter_tasks(tasks):
-    """Every task in a task list, with block/rescue/always flattened into it.
+def _iter_tasks(tasks, inherited=()):
+    """Every task in a task list, paired with the `when:` gates it sits under.
 
     Recursive because blocks nest. See BLOCK_KEYS for why a top-level-only walk
-    is not enough.
+    is not enough, and WHEN_KEY for why the gate is carried DOWN: a task inside
+    a gated block is gated even though it holds no `when:` of its own.
+
+    The gate tuple names each conditional's owner so a failure says WHERE it is
+    rather than merely that one exists.
     """
     for task in tasks or []:
         if not isinstance(task, dict):
             continue
-        yield task
+        gates = inherited + (
+            (f"when: on {task.get('name')!r}",) if WHEN_KEY in task else ()
+        )
+        yield task, gates
         for section in BLOCK_KEYS:
-            yield from _iter_tasks(task.get(section))
+            yield from _iter_tasks(task.get(section), gates)
 
 
 def _apt_tasks():
-    """Every apt task in tasks/main.yml as (task name, packages, apt state).
+    """Every apt task in tasks/main.yml as (name, packages, apt state, gates).
 
     The package parameter may be a single string or a list under any of its
     three spellings; all are normalised to a list so a one-package task is
     censused the same way as a multi-package one. `state` is reported with the
     module's own default applied, so callers never have to distinguish "no
-    state key" from "state: present".
+    state key" from "state: present". `gates` is the task's own `when:` plus
+    every one it inherits from an enclosing block, empty when it is
+    unconditional.
     """
     census = []
-    for task in _iter_tasks(_load(PLEX_TASKS)):
+    for task, gates in _iter_tasks(_load(PLEX_TASKS)):
         for key in APT_KEYS:
             args = task.get(key)
             if not isinstance(args, dict):
@@ -140,16 +156,17 @@ def _apt_tasks():
                     task.get("name"),
                     list(names or []),
                     args.get("state", APT_DEFAULT_STATE),
+                    gates,
                 )
             )
     return census
 
 
 def _watchdog_deps():
-    """(packages, state) for the watchdog-deps task, or None if it is not there."""
-    for task_name, packages, state in _apt_tasks():
+    """(packages, state, gates) for the watchdog-deps task, or None if absent."""
+    for task_name, packages, state, gates in _apt_tasks():
         if task_name == WATCHDOG_DEPS_TASK:
-            return packages, state
+            return packages, state, gates
     return None
 
 
@@ -182,23 +199,65 @@ def test_psmisc_is_installed_by_the_watchdog_deps_task() -> bool:
     state check is complete rather than a spot check because apt's choice list
     is closed; see APT_INSTALLING_STATES.
 
-    `when:` is deliberately NOT read, and this row makes no claim about the task
-    RUNNING. A `when:` value is an arbitrary Jinja expression that cannot be
-    decided statically, so a guard here could only catch the literal `false` —
-    a sentence stronger than the guard, which is the defect this file was
-    rejected for once already. No task in this role carries one today.
+    It also asserts the task carries NO CONDITIONAL — neither its own `when:`
+    nor one inherited from an enclosing block — and `when:` is read as a KEY and
+    never as a VALUE. That distinction is the whole guard. A `when:` VALUE is
+    arbitrary Jinja with no closed set: `when: false` and
+    `when: plex_watchdog_enabled | default(false)` both skip the task, and no
+    static reader can decide the second, so "the value is not false" would be a
+    spot check dressed as a rule. Key PRESENCE is closed and total — the key is
+    there or it is not, as complete as apt's own choice list above — and it
+    evaluates no Jinja. Under either gate the play installs nothing while
+    membership and state stay green (logs/builder-f02c-r3-red.txt, C1 and C2).
+
+    The gate is read at the CENSUS's reach and not merely on the task, because a
+    `when:` on an enclosing block gates every task inside it — and the one
+    precedent this file cites to arm BLOCK_KEYS,
+    docker_host/tasks/main.yml:355-357, is itself a `when:` (:356) sitting on a
+    block (:357). Closing only the task's own key would be the identical hazard
+    at a smaller radius; C3 and C4 in the same log missed exactly like C1 and C2.
+
+    WHAT THE GATE CHECK DOES NOT REACH, named so this sentence stays weaker than
+    the guard rather than stronger: a `when:` on the `roles:` entry that invokes
+    this role, and a `tags:`/`--skip-tags` exclusion. Neither is closed because
+    neither is armed, and both were measured rather than assumed —
+    ansible/site.yml:48-52 is `hosts: plex` with a bare `- plex` role entry, and
+    no task in this role carries `tags:` at all (`meta/main.yml:14` is
+    `galaxy_tags:`, Galaxy metadata rather than a task tag).
+
+    A `when:` on the PLAY is deliberately NOT on that list. A previous spelling
+    of this paragraph named it, which named a hole that CANNOT EXIST: ansible
+    refuses the attribute outright — `'when' is not a valid attribute for a
+    Play`, syntax-check exit 4 — so it is no world rather than an unreached one.
+    Measured beside its neighbour in logs/finalizer-f02c-doc-edges.py, where the
+    `roles:`-entry world syntax-checks clean and is MISSED (a real edge, named
+    above) and the play world does not survive the parser at all.
+
+    The previous spelling of this paragraph DECLINED the guard, on two grounds:
+    that a `when:` value is undecidable (true, and answered above by reading the
+    key instead) and that "No task in this role carries one today" (FALSE —
+    tasks/main.yml:145 and :191 both carry one, in the very file this test
+    parses). That false half is what turned undecidability into a decision, and
+    it is why this row now guards rather than explains.
+
+    STRICTER THAN "the task runs", DELIBERATELY: any `when:` reds this row, even
+    one that is always true. Making the watchdog deps conditional changes what
+    this row claims, so it should be a deliberate edit with this sentence in
+    hand rather than a silent pass.
     """
     entry = _watchdog_deps()
-    packages, state = entry if entry else ([], None)
+    packages, state, gates = entry if entry else ([], None, ())
     has_psmisc = PACKAGE in packages
     kept = [pkg for pkg in WATCHDOG_DEPS_INCUMBENTS if pkg in packages]
     additive = kept == WATCHDOG_DEPS_INCUMBENTS
     installing = state in APT_INSTALLING_STATES
-    ok = has_psmisc and additive and installing
+    unconditional = not gates
+    ok = has_psmisc and additive and installing and unconditional
     print(
         f"{'OK' if ok else 'FAIL'}: {PACKAGE} installed by {WATCHDOG_DEPS_TASK!r} "
         f"(psmisc={has_psmisc} incumbents_kept={kept} of "
-        f"{WATCHDOG_DEPS_INCUMBENTS} state={state!r} installing={installing}) "
+        f"{WATCHDOG_DEPS_INCUMBENTS} state={state!r} installing={installing} "
+        f"unconditional={unconditional} gates={list(gates)}) "
         f"-> packages={packages}"
     )
     return ok
@@ -221,7 +280,7 @@ def test_psmisc_is_not_in_plex_media_packages() -> bool:
     real_list = isinstance(media_packages, list) and bool(media_packages)
     wired = any(
         f"{{{{ {MEDIA_PACKAGES_VAR} }}}}" in pkg
-        for _, packages, _ in _apt_tasks()
+        for _, packages, _, _ in _apt_tasks()
         for pkg in packages
     )
     absent = real_list and PACKAGE not in media_packages
@@ -256,13 +315,14 @@ def test_psmisc_has_exactly_one_apt_home_in_the_role() -> bool:
     this repo, and no `loop:` anywhere in this role. They are named so the
     sentence stays weaker than the guard rather than stronger.
 
-    `state:` is deliberately NOT filtered here. A second task naming psmisc with
-    `state: absent` is a real conflict with this row's subject, not a false
-    alarm, so it should red — unlike the positive row, which reads state because
-    its own name is a claim about installation.
+    `state:` and `when:` are deliberately NOT filtered here, for one reason. A
+    second task naming psmisc — whether it removes psmisc, or installs it behind
+    a conditional — is a real conflict with this row's subject, not a false
+    alarm, so it should red. The positive row reads both because its own name is
+    a claim about installation; this row's name is a claim about COUNT.
     """
     homes = [
-        task_name for task_name, packages, _ in _apt_tasks() if PACKAGE in packages
+        task_name for task_name, packages, _, _ in _apt_tasks() if PACKAGE in packages
     ]
     ok = homes == [WATCHDOG_DEPS_TASK]
     print(
