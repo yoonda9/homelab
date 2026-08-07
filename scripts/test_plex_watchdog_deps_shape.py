@@ -71,36 +71,85 @@ WATCHDOG_DEPS_INCUMBENTS = ["sysstat", "lsof", "procps", "sqlite3"]
 # by finding nothing anywhere.
 APT_KEYS = ("ansible.builtin.apt", "apt")
 
+# All THREE spellings of the apt module's package parameter. ansible-core 2.21.1
+# modules/apt.py:1274 is
+#     package=dict(type='list', elements='str', aliases=['pkg', 'name'])
+# — the CANONICAL parameter is `package`, and `name` is merely one of three legal
+# synonyms. Reading `name:` alone censuses a third of the surface: a second
+# psmisc home spelled `pkg:` or `package:` installs the binary just as well and
+# is invisible. That is the identical hazard APT_KEYS above exists to close, one
+# level down, and it was measurably open (logs/builder-f02c-r2-red.txt: B2 and B3
+# both left all four rows green).
+APT_NAME_KEYS = ("name", "pkg", "package")
+
+# block/rescue/always each carry a task list of their own, so a walk over the
+# top-level list alone cannot see an apt task nested inside one. Armed by repo
+# usage rather than hypothesis: ansible/roles/docker_host/tasks/main.yml:357
+# already uses a block, and B1 in the same log missed for the same reason.
+BLOCK_KEYS = ("block", "rescue", "always")
+
+# The apt states that actually put a package on the host. The choice list is
+# CLOSED — modules/apt.py:1268 is
+#     state=dict(type='str', default='present',
+#                choices=['absent', 'build-dep', 'fixed', 'latest', 'present'])
+# — so enumerating the two installing states is a complete test rather than a
+# spot check. `build-dep` installs a package's BUILD dependencies and not the
+# package; `fixed` repairs broken dependencies; `absent` removes it.
+APT_INSTALLING_STATES = ("present", "latest")
+APT_DEFAULT_STATE = "present"
+
 
 def _load(path: pathlib.Path):
     return yaml.safe_load(path.read_text()) if path.is_file() else None
 
 
-def _apt_tasks():
-    """Every apt task in the role as (task name, package names it installs).
+def _iter_tasks(tasks):
+    """Every task in a task list, with block/rescue/always flattened into it.
 
-    `name:` may be a single string or a list; both are normalised to a list so
-    a one-package task is censused the same way as a multi-package one.
+    Recursive because blocks nest. See BLOCK_KEYS for why a top-level-only walk
+    is not enough.
     """
-    census = []
-    for task in _load(PLEX_TASKS) or []:
+    for task in tasks or []:
         if not isinstance(task, dict):
             continue
+        yield task
+        for section in BLOCK_KEYS:
+            yield from _iter_tasks(task.get(section))
+
+
+def _apt_tasks():
+    """Every apt task in tasks/main.yml as (task name, packages, apt state).
+
+    The package parameter may be a single string or a list under any of its
+    three spellings; all are normalised to a list so a one-package task is
+    censused the same way as a multi-package one. `state` is reported with the
+    module's own default applied, so callers never have to distinguish "no
+    state key" from "state: present".
+    """
+    census = []
+    for task in _iter_tasks(_load(PLEX_TASKS)):
         for key in APT_KEYS:
             args = task.get(key)
             if not isinstance(args, dict):
                 continue
-            names = args.get("name")
+            names = args.get("name") or args.get("pkg") or args.get("package")
             if isinstance(names, str):
                 names = [names]
-            census.append((task.get("name"), list(names or [])))
+            census.append(
+                (
+                    task.get("name"),
+                    list(names or []),
+                    args.get("state", APT_DEFAULT_STATE),
+                )
+            )
     return census
 
 
-def _watchdog_deps_packages():
-    for task_name, packages in _apt_tasks():
+def _watchdog_deps():
+    """(packages, state) for the watchdog-deps task, or None if it is not there."""
+    for task_name, packages, state in _apt_tasks():
         if task_name == WATCHDOG_DEPS_TASK:
-            return packages
+            return packages, state
     return None
 
 
@@ -112,8 +161,9 @@ def test_watchdog_deps_task_carries_an_inline_package_list() -> bool:
     "psmisc is not in the wrong place" — passing precisely because it found
     nothing to check. This row is what makes the other three mean something.
     """
-    packages = _watchdog_deps_packages()
-    found = packages is not None
+    entry = _watchdog_deps()
+    found = entry is not None
+    packages = entry[0] if entry else None
     inline = bool(packages) and not any("{{" in pkg for pkg in packages)
     ok = found and inline
     print(
@@ -124,16 +174,32 @@ def test_watchdog_deps_task_carries_an_inline_package_list() -> bool:
 
 
 def test_psmisc_is_installed_by_the_watchdog_deps_task() -> bool:
-    """POSITIVE: psmisc lands in the watchdog-deps list, beside the incumbents."""
-    packages = _watchdog_deps_packages() or []
+    """POSITIVE: psmisc lands in the watchdog-deps list, beside the incumbents.
+
+    The row is named "is INSTALLED by", so it also reads `state:` — under
+    `state: absent` the task removes psmisc and this row's own name is false
+    while membership alone stays green (logs/builder-f02c-r2-red.txt, A1). The
+    state check is complete rather than a spot check because apt's choice list
+    is closed; see APT_INSTALLING_STATES.
+
+    `when:` is deliberately NOT read, and this row makes no claim about the task
+    RUNNING. A `when:` value is an arbitrary Jinja expression that cannot be
+    decided statically, so a guard here could only catch the literal `false` —
+    a sentence stronger than the guard, which is the defect this file was
+    rejected for once already. No task in this role carries one today.
+    """
+    entry = _watchdog_deps()
+    packages, state = entry if entry else ([], None)
     has_psmisc = PACKAGE in packages
     kept = [pkg for pkg in WATCHDOG_DEPS_INCUMBENTS if pkg in packages]
     additive = kept == WATCHDOG_DEPS_INCUMBENTS
-    ok = has_psmisc and additive
+    installing = state in APT_INSTALLING_STATES
+    ok = has_psmisc and additive and installing
     print(
         f"{'OK' if ok else 'FAIL'}: {PACKAGE} installed by {WATCHDOG_DEPS_TASK!r} "
         f"(psmisc={has_psmisc} incumbents_kept={kept} of "
-        f"{WATCHDOG_DEPS_INCUMBENTS}) -> packages={packages}"
+        f"{WATCHDOG_DEPS_INCUMBENTS} state={state!r} installing={installing}) "
+        f"-> packages={packages}"
     )
     return ok
 
@@ -155,7 +221,7 @@ def test_psmisc_is_not_in_plex_media_packages() -> bool:
     real_list = isinstance(media_packages, list) and bool(media_packages)
     wired = any(
         f"{{{{ {MEDIA_PACKAGES_VAR} }}}}" in pkg
-        for _, packages in _apt_tasks()
+        for _, packages, _ in _apt_tasks()
         for pkg in packages
     )
     absent = real_list and PACKAGE not in media_packages
@@ -174,10 +240,30 @@ def test_psmisc_has_exactly_one_apt_home_in_the_role() -> bool:
     The row's stated negative names `plex_media_packages`, but that is one of
     three wrong homes — psmisc bolted onto the python3-debian or
     plexmediaserver task installs the binary just as well and reads just as
-    green. Censusing every apt task closes all of them at once, including any
-    apt task added after this file was written.
+    green. Censusing every apt task closes all of them at once.
+
+    WHAT THE CENSUS ACTUALLY REACHES, stated exactly, because the previous
+    spelling of this sentence ("including any apt task added after this file was
+    written") claimed a closure the walk did not have and was rejected for it.
+    It reads `ansible/roles/plex/tasks/main.yml` — the role's ONLY task file, and
+    the role contains no include_tasks/import_tasks/include_role — walking every
+    task with block/rescue/always flattened, under both spellings of the module
+    (APT_KEYS) and all three of its package parameter (APT_NAME_KEYS).
+
+    It does NOT reach the free-form `action:`/`local_action:` invocation, nor
+    package names produced by a `loop:`. Neither is closed here because neither
+    is armed: there is no `action:`/`local_action:` in any first-party YAML in
+    this repo, and no `loop:` anywhere in this role. They are named so the
+    sentence stays weaker than the guard rather than stronger.
+
+    `state:` is deliberately NOT filtered here. A second task naming psmisc with
+    `state: absent` is a real conflict with this row's subject, not a false
+    alarm, so it should red — unlike the positive row, which reads state because
+    its own name is a claim about installation.
     """
-    homes = [task_name for task_name, packages in _apt_tasks() if PACKAGE in packages]
+    homes = [
+        task_name for task_name, packages, _ in _apt_tasks() if PACKAGE in packages
+    ]
     ok = homes == [WATCHDOG_DEPS_TASK]
     print(
         f"{'OK' if ok else 'FAIL'}: {PACKAGE} appears in exactly one apt task, "
