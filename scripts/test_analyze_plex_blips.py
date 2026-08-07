@@ -889,6 +889,98 @@ class TestAnalyzePlexBlips(unittest.TestCase):
         held = sorted(e.timestamp for e in events if e.event_type == "TX_HELD")
         self.assertNotEqual(held[0], held[-1], "fixture no longer separates the first holder from the last")
 
+    def test_every_non_table_line_of_the_executive_metrics_section_is_pinned(self):
+        # THE CLOSURE MOVE ABOVE, APPLIED ONE CONTAINER UP -- and this is the
+        # line the census says is the last unpinned one. The round-3 guard
+        # closed the set of ONE section; the reporting work adds exactly three
+        # non-table lines plus one heading to the whole report, and the third
+        # lives here, in Executive Metrics: the footnote whose entire job is to
+        # end the holder/waiter confusion.
+        #
+        # Its only other guard,
+        # test_the_executive_footnote_points_at_rows_and_sections_that_exist,
+        # asserts that every name the footnote QUOTES is a row or a heading of
+        # the report it is printed in, and forbids a positional pointer. That
+        # cannot tell a name from ITS SIBLING ON THE OTHER SIDE of the very
+        # distinction the sentence draws, because both labels are real rows.
+        # Three mutants survive it, scored differentially against this file
+        # with and without this method (/var/tmp/fin2c/mutants.py):
+        #   X01  the two sides SWAPPED                      survived, green
+        #        -- which is round 1's rejected defect in LABEL form: round 1
+        #        pointed at the wrong side by position ("the row beneath it"),
+        #        X01 points at the wrong side by name, and the guard built to
+        #        close that class is green either way
+        #   X02  the comparison-section pointer dropped     survived, green
+        #   X03  "is the WAITER side only (TX_STALL)" ->
+        #        "is the whole of lock contention"          survived, green
+        #        -- one number over both classes reasserted in prose, which is
+        #        the exact defect this row exists to end
+        #
+        # So the footnote is pinned by EQUALITY, as a closed set, at both
+        # corpora -- and the two corpora are what keep the conditional promise
+        # clause honest: the with-holders footnote carries the "Holder
+        # Attribution by Code Site" promise, the no-holders one must not.
+        # Additive as before: no line above is touched.
+        events = self._the_blip_slice()
+        section = self._section(
+            analyzer.format_output(events, "markdown", window_sec=120.0), "Executive Metrics"
+        )
+        self.assertEqual(
+            self._non_table_lines(section),
+            [
+                '*"Total Lock Delay Duration" is the WAITER side only (TX_STALL), kept at its '
+                "original meaning and restated under a label that names the side by the "
+                '"Lock Waiters (TX_STALL)" row. The holder side is the "Lock Holders (TX_HELD)" '
+                'row. The two are compared under "Lock Contention: Holders vs Waiters", which '
+                'attributes the holders by code site under "Holder Attribution by Code Site".*'
+            ],
+            f"section:\n{section}",
+        )
+
+        no_holders = self._parse_all(self.STALL_STATISTICS_BANDWIDTH, self.STALL_STATISTICS_MEDIA)
+        nh_section = self._section(
+            analyzer.format_output(no_holders, "markdown", window_sec=120.0), "Executive Metrics"
+        )
+        self.assertEqual(
+            self._non_table_lines(nh_section),
+            [
+                '*"Total Lock Delay Duration" is the WAITER side only (TX_STALL), kept at its '
+                "original meaning and restated under a label that names the side by the "
+                '"Lock Waiters (TX_STALL)" row. The holder side is the "Lock Holders (TX_HELD)" '
+                'row. The two are compared under "Lock Contention: Holders vs Waiters".*'
+            ],
+            f"section:\n{nh_section}",
+        )
+
+        # Anti-vacuity in two parts, so neither equality above can be true by
+        # fixture coincidence.
+        #
+        # (a) The two corpora must actually DIFFER here, or one of the two
+        #     literals is never exercised and the conditional promise clause
+        #     is pinned by nothing.
+        self.assertNotEqual(
+            self._non_table_lines(section), self._non_table_lines(nh_section),
+            "fixtures no longer separate the promised breakdown from the unpromised one",
+        )
+        # (b) The sentence's own claim, checked against the table it is
+        #     printed under rather than restated: "Total Lock Delay Duration"
+        #     must carry the WAITER row's duration and NOT the holder row's.
+        #     Read off the report, so a fixture edit moves both together and
+        #     no figure here can go stale -- and if the two sides ever print
+        #     the same number, the equalities above would pass under a swap
+        #     for the wrong reason, which this refuses.
+        total = self._row_cells(section, "Total Lock Delay Duration")[1]
+        waiters = self._row_cells(section, "Lock Waiters (TX_STALL)")[1]
+        holders = self._row_cells(section, "Lock Holders (TX_HELD)")[1]
+        self.assertIn(
+            total.split(" (")[0], waiters,
+            f"the footnote calls the total the waiter side, but the waiter row prints {waiters!r} "
+            f"against a total of {total!r}",
+        )
+        self.assertNotIn(
+            total.split(" (")[0], holders,
+            f"fixture no longer separates the waiter total from the holder total: {holders!r}",
+        )
 
 
 def main() -> int:
