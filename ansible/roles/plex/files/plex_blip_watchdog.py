@@ -497,14 +497,29 @@ class WatchdogEngine:
             "trigger_event": trigger.get("event_type", "UNKNOWN"),
             "delay_ms": trigger.get("delay_ms"),
             "trigger_line": trigger.get("line", ""),
+            # Step 2's attribution fields, read from the trigger and never
+            # re-derived from trigger_line -- a second parse is a second spelling.
+            #
+            # ALWAYS PRESENT, `None` when the trigger does not carry them. This is
+            # deliberately the OPPOSITE of the trigger dict, where they are absent
+            # rather than None so that asking is a question about the line. The
+            # record has a different consumer: the 34 captures already on disk span
+            # three trigger_event values and share ONE key set, so key HOMOGENEITY
+            # is the invariant that corpus has. Making the key set a function of
+            # trigger_event would break a reader taking a column across records,
+            # while `rec["hold_site"] is None` answers the same question here
+            # without a KeyError.
+            "hold_site": trigger.get("hold_site"),
+            "live_connections": trigger.get("live_connections"),
             "lock_holders": {
                 "fuser": fuser_out,
                 "lsof": lsof_out,
             },
             "process_traces": {
                 # pidstat is a process trace, not a sysstat metric (design 5.1);
-                # sysstat_metrics keeps fd_count. Top-level keys are unchanged, so
-                # the captures already on disk stay parseable.
+                # sysstat_metrics keeps fd_count. Step 1b moved nothing at the top
+                # level; Step 2d ADDED two keys above and REMOVED none, which is
+                # what keeps the captures already on disk parseable.
                 "pidstat": pidstat_out,
                 "ps_aux_t": ps_out,
             },

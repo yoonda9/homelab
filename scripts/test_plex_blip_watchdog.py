@@ -444,7 +444,12 @@ class TestSnapshotStructuredShape(unittest.TestCase):
     skips a candidate it cannot run and keeps searching the rest of PATH).
     """
 
-    TOP_LEVEL_KEYS = {
+    # Step 2d flipped this from eight to ten. The eight below the fold are the
+    # keys the 34 captures already on disk carry; `hold_site` and
+    # `live_connections` are Step 2's Integration line (plan.md:95). The set is
+    # still an EQUALITY, not a subset: an addition is a deliberate edit here and
+    # a removal still breaks every capture already written.
+    KEYS_ALREADY_ON_DISK = {
         "timestamp",
         "trigger_event",
         "delay_ms",
@@ -454,6 +459,7 @@ class TestSnapshotStructuredShape(unittest.TestCase):
         "sysstat_metrics",
         "dry_run",
     }
+    TOP_LEVEL_KEYS = KEYS_ALREADY_ON_DISK | {"hold_site", "live_connections"}
     PROBE_KEYS = {"status", "elapsed_ms", "output", "error"}
 
     TRIGGER = {
@@ -682,12 +688,25 @@ class TestSnapshotStructuredShape(unittest.TestCase):
                 )
 
     # (c) additive-only at the top level: 448 KB of captures already on disk
-    def test_top_level_keys_are_exactly_the_eight_already_on_disk(self):
+    def test_top_level_keys_are_exactly_the_ten_after_step_2(self):
         record = self._capture()
         self.assertEqual(
             set(record), self.TOP_LEVEL_KEYS,
-            "Steps 2-3 add sqlite/hold_site/live_connections -- an ADDITION here is "
-            "expected and a REMOVAL breaks the captures already written",
+            "Step 2d added hold_site/live_connections and Step 3 adds sqlite -- an "
+            "ADDITION here is expected and a REMOVAL breaks the captures already written",
+        )
+
+    def test_the_eight_keys_already_on_disk_are_all_still_written(self):
+        # The removal half of the sentence above, stated as its own row so that
+        # widening the set can never be mistaken for satisfying it. Measured at
+        # this turn over /tmp/plex-logs/plex_blip_diagnostics_*.jsonl: 34 records,
+        # 448,202 bytes, THREE distinct trigger_event values (STREAM_DROP 13,
+        # SLOW_QUERY 15, TX_STALL 6) and ONE key set across all 34.
+        record = self._capture()
+        self.assertTrue(
+            self.KEYS_ALREADY_ON_DISK.issubset(set(record)),
+            "dropping a key the 34 captures on disk carry breaks every consumer of them; "
+            f"missing: {sorted(self.KEYS_ALREADY_ON_DISK - set(record))}",
         )
 
 
@@ -1020,6 +1039,166 @@ class TestTxHeldAndLiveConnections(unittest.TestCase):
         for line in (self.REQUEST_13_LIVE, self.COMPLETED_CLOSE_13_LIVE):
             with self.subTest(line=line[:60]):
                 self.assertIsNone(watchdog.check_trigger(line, threshold_ms=500.0))
+
+
+class TestSnapshotCarriesHoldSiteAndLiveConnections(unittest.TestCase):
+    """Step 2d — plan.md:95: "Writes `hold_site` and `live_connections` into the
+    Step 1 snapshot structure."
+
+    Step 2a put both on the TRIGGER dict; this row puts them in the ARTIFACT.
+    Until it landed, the one capture Step 2a changes -- a holder line, which
+    previously classified as nothing at all -- reached disk with its defining
+    field missing, recoverable only by re-parsing `trigger_line`, where the site
+    is still the 90-character CI build path.
+
+    THE ABSENT CASE IS `None`, NOT A MISSING KEY, and that is the opposite of the
+    trigger dict's choice (DEC-227, absent-not-None). Two different consumers:
+
+      - The trigger dict is read by ONE caller in the same process, immediately,
+        and `"hold_site" in trigger` is a question about the LINE.
+      - The record is read by a human or a script over a growing pile of JSONL.
+        Measured over the 448,202 bytes / 34 records already on disk: THREE
+        distinct trigger_event values, ONE key set. Key homogeneity, not key
+        presence, is the invariant that corpus actually has -- so absent-not-None
+        would make the key set a function of trigger_event and break a consumer
+        that reads a column across records. `rec["hold_site"] is None` says "this
+        capture's trigger named no site" without a KeyError.
+
+    Every fixture is REUSED from TestTxHeldAndLiveConnections rather than retyped:
+    those literals are byte-identical members of the corpus, and a second copy is
+    a second chance to mistype one into a synthesised fixture.
+
+    The two rows that matter run the REAL CLI through live inotify, not
+    `capture_snapshot` directly, because the eight-key fact this row overturns
+    was measured on the production path.
+    """
+
+    FIXTURES = TestTxHeldAndLiveConnections
+    # 0.540000 s -> ms, and the basename of the CI path, both pinned by Step 2a.
+    HOLD_SITE = "StatisticsManager.cpp:288"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_2d_")
+        self.log_path = os.path.join(self.test_dir, "mock_plex.log")
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("Aug 07, 2026 06:30:00.000 [100] INFO - Server starting up\n")
+        self.out_dir = os.path.join(self.test_dir, "diagnostics")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _capture_via_real_cli(self, trigger_line: str) -> dict:
+        """Drive the shipped CLI: live inotify, --dry-run, --max-triggers 1."""
+        cmd = [
+            sys.executable,
+            str(WATCHDOG_SCRIPT),
+            "--log-path", self.log_path,
+            "--output-dir", self.out_dir,
+            "--dry-run",
+            "--max-triggers", "1",
+        ]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.5)
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(trigger_line + "\n")
+            f.flush()
+        stdout, stderr = proc.communicate(timeout=15)
+        self.assertEqual(proc.returncode, 0, f"real CLI run failed: {stderr}\n{stdout}")
+
+        out_files = list(pathlib.Path(self.out_dir).glob("*.jsonl"))
+        self.assertEqual(len(out_files), 1, f"expected one JSONL file in {self.out_dir}")
+        with open(out_files[0], "r", encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, "one trigger must write exactly one JSONL line")
+        return json.loads(lines[0])
+
+    def test_a_real_holder_line_writes_hold_site_through_the_real_cli(self):
+        record = self._capture_via_real_cli(self.FIXTURES.HELD_STATISTICS_MANAGER)
+
+        self.assertEqual(record["trigger_event"], "TX_HELD")
+        self.assertEqual(record["delay_ms"], 540.0)
+        self.assertEqual(
+            record["hold_site"], self.HOLD_SITE,
+            "the capture Step 2a changes must name its code site in a FIELD, not "
+            "only inside trigger_line's 90-character CI path",
+        )
+        # The site must be the basename form, not the raw path the line carries.
+        self.assertIn(self.HOLD_SITE, record["trigger_line"].replace(
+            "/home/runner/_work/plex-media-server/plex-media-server/Statistics/", ""
+        ))
+        self.assertNotIn("/", record["hold_site"])
+
+    def test_a_real_slow_completed_line_with_a_count_writes_live_connections(self):
+        record = self._capture_via_real_cli(self.FIXTURES.COMPLETED_SLOW_4_LIVE)
+
+        self.assertEqual(record["trigger_event"], "SLOW_QUERY")
+        self.assertEqual(record["delay_ms"], 4977.0)
+        self.assertEqual(record["live_connections"], 4)
+        self.assertIsInstance(
+            record["live_connections"], int,
+            "the count must survive JSON as a number, not the matched text",
+        )
+
+    def test_the_absent_case_is_a_null_value_and_the_key_set_never_varies(self):
+        # A waiter line: no hold site (the holder is the other side of the same
+        # stall) and no "(N live)" count -- 0 of the corpus's 42 Held lines and
+        # neither waiter fixture carries one.
+        record = self._capture_via_real_cli(self.FIXTURES.STALL_STATISTICS_BANDWIDTH)
+
+        self.assertEqual(record["trigger_event"], "TX_STALL")
+        for key in ("hold_site", "live_connections"):
+            with self.subTest(key=key):
+                self.assertIn(
+                    key, record,
+                    f"{key} must be PRESENT and null on a trigger that does not carry "
+                    "it -- the 34 records on disk share one key set across three "
+                    "trigger_event values, and that homogeneity is the invariant",
+                )
+                self.assertIsNone(record[key])
+
+    def test_every_trigger_kind_writes_the_same_ten_top_level_keys(self):
+        # The homogeneity claim as a measurement rather than a sentence: one
+        # record per branch this row can reach, key sets compared as sets.
+        expected = TestSnapshotStructuredShape.TOP_LEVEL_KEYS
+        seen = {}
+        for name, line in (
+            ("TX_HELD", self.FIXTURES.HELD_STATISTICS_MANAGER),
+            ("SLOW_QUERY", self.FIXTURES.COMPLETED_SLOW_4_LIVE),
+            ("TX_STALL", self.FIXTURES.STALL_STATISTICS_BANDWIDTH),
+        ):
+            with self.subTest(trigger_event=name):
+                shutil.rmtree(self.out_dir, ignore_errors=True)
+                record = self._capture_via_real_cli(line)
+                self.assertEqual(record["trigger_event"], name)
+                self.assertEqual(set(record), expected)
+                seen[name] = set(record)
+        self.assertEqual(
+            len(set(frozenset(k) for k in seen.values())), 1,
+            f"the key set must not be a function of trigger_event: {seen}",
+        )
+
+    def test_hold_site_is_read_from_the_trigger_and_not_re_derived(self):
+        # A synthesised trigger carrying a site the LINE does not mention. If the
+        # record re-parses trigger_line instead of reading the dict Step 2a
+        # populates, the two spellings drift apart silently -- which is exactly
+        # how 2b/2c could end up reporting a different site than the snapshot.
+        engine = watchdog.WatchdogEngine(
+            log_path=self.log_path,
+            output_dir=self.out_dir,
+            db_pattern=os.path.join(self.test_dir, "nonexistent.db"),
+            dry_run=True,
+        )
+        out_path = engine.capture_snapshot({
+            "event_type": "TX_HELD",
+            "delay_ms": 1020.0,
+            "line": "Aug 07, 2026 06:39:06.340 [1] WARN - Held transaction for too long (X): 1.020000 seconds",
+            "hold_site": "MetadataItemSetting.cpp:459",
+            "live_connections": 7,
+        })
+        with open(out_path, "r", encoding="utf-8") as f:
+            record = json.loads(f.readline())
+        self.assertEqual(record["hold_site"], "MetadataItemSetting.cpp:459")
+        self.assertEqual(record["live_connections"], 7)
 
 
 if __name__ == "__main__":
