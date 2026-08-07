@@ -6,6 +6,7 @@ slow queries (>500ms), and network/relay collapses, 30s debounce rate-limiting,
 and structured JSONL diagnostic snapshots (fuser, lsof, pidstat).
 """
 
+import ast
 import inspect
 import json
 import os
@@ -439,6 +440,15 @@ class TestModuleLatencyBoundIsTrue(unittest.TestCase):
     while the header still advertises it as the bound. One file, one figure, two
     answers. These tests pin the header to the code instead of to a literal, so the
     next person to touch the default cannot leave the two disagreeing again.
+
+    Round 2 added the two halves the first pass missed. Sweeping the retired NUMBER
+    without sweeping the budget WORD only moves the contradiction: the header's new
+    "bounded, not instant" is what converts every surviving "instantaneous" in the
+    file from quietly stale into a live self-contradiction, so the word is censused
+    here too. And pinning the two INPUTS to a bound does not pin the BOUND -- with
+    only the timeout and the count asserted, deleting ", so 8.0s worst case" from
+    the header outright was GREEN 16/16 (logs/critic-5507-r2-header-bound-hole.py),
+    and that product is the one number an operator actually reads.
     """
 
     def _module_source(self):
@@ -471,6 +481,45 @@ class TestModuleLatencyBoundIsTrue(unittest.TestCase):
             "four probes serial", header,
             "module docstring must disclose that the probes run serially, since "
             f"that is what makes the delivered bound {probes} x {default}s",
+        )
+
+    def test_header_names_the_product_and_not_only_its_two_inputs(self):
+        # The timeout and the count are pinned above; their PRODUCT is what an
+        # operator quotes, and it was pinned by nothing. Derived, never 8000: a
+        # fifth probe or a changed default must move this sentence in the same
+        # commit, which is the whole point of the guard.
+        probes = self._module_source().count("_run_cmd([")
+        default = inspect.signature(watchdog._run_cmd).parameters["timeout"].default
+        worst_case = probes * default
+
+        header = inspect.getdoc(watchdog) or ""
+        self.assertIn(
+            f"{worst_case}s worst case", header,
+            f"module docstring must name the bound it delivers ({probes} probes x "
+            f"{default}s = {worst_case}s), not merely the two inputs to it",
+        )
+
+    def test_no_surviving_docstring_calls_the_bounded_snapshot_instantaneous(self):
+        # Census the budget WORD across the whole file, not just the retired
+        # number. The header owns the only licensed occurrence -- the one that
+        # denies it -- because a sentence saying "not instant" is precisely what
+        # arms every copy of the word that outlives it 358 lines below.
+        source = self._module_source()
+        tree = ast.parse(source)
+        self.assertIsInstance(
+            tree.body[0], ast.Expr, "module docstring must be the first statement"
+        )
+        header_lines = range(tree.body[0].lineno, tree.body[0].end_lineno + 1)
+
+        offenders = [
+            f":{lineno} {line.strip()}"
+            for lineno, line in enumerate(source.splitlines(), start=1)
+            if "instant" in line.lower() and lineno not in header_lines
+        ]
+        self.assertEqual(
+            offenders, [],
+            "the module header states the snapshot is bounded and NOT instant, so "
+            "no other line may still call it instantaneous: " + " | ".join(offenders),
         )
 
 

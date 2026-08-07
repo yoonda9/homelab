@@ -365,7 +365,14 @@ class WatchdogEngine:
         self.last_trigger_time = now
 
     def capture_snapshot(self, trigger: Dict[str, Any]) -> str:
-        """Execute instantaneous diagnostic probes and serialize to JSONL."""
+        """Execute the bounded diagnostic probes and serialize to JSONL.
+
+        Every probe is allowed to run to `_run_cmd`'s timeout rather than being cut
+        short, because a probe that blocks is itself the signal. The module header
+        names the resulting worst case; it is not repeated here, since a figure
+        quoted far from the code it describes is how the `<500ms` claim went stale
+        in the first place.
+        """
         now_ts = datetime.now()
         iso_ts = now_ts.isoformat(timespec="milliseconds")
 
