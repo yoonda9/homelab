@@ -33,6 +33,33 @@ class LogEvent:
     details: str
     raw_line: str
     source_file: str
+    # Appended, with defaults, and appended rather than interleaved: LogEvent
+    # carries no other default and is built POSITIONALLY at 28 sites (8 in this
+    # module, 20 in its test file). Inserting either field above raw_line stops
+    # the module importing outright ("non-default argument follows default
+    # argument"), and appending without a default breaks all 28 constructions.
+    # This is the placement that leaves every existing call site untouched.
+    hold_site: Optional[str] = None
+    live_connections: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        """Derives live_connections from the event's own raw line.
+
+        This is the analyzer's counterpart to the watchdog's `_event` helper,
+        which computes the count ONCE at the top of check_trigger and stamps it
+        onto whichever trigger fires. The count is a property of the LINE and
+        not of any one taxonomy, so deriving it at the single point where every
+        event is constructed is what keeps it from disagreeing with raw_line --
+        and what lets the eight existing positional constructions stay as they
+        are instead of each having to pass it.
+
+        An explicitly supplied value wins, so a caller that already knows the
+        count is never overruled. Unlike the watchdog's dict, where the key is
+        absent when it does not apply, a dataclass field is always present, so
+        "this line carries no count" is spelled None.
+        """
+        if self.live_connections is None:
+            self.live_connections = extract_live_connections(self.raw_line)
 
 
 PREFIX_RE = re.compile(
@@ -44,6 +71,50 @@ COMPLETED_RE = re.compile(
 REQUEST_RE = re.compile(
     r"Request:\s+\[[^\]]+\]\s+(GET|POST|PUT|DELETE)\s+(\S+)"
 )
+
+# The holder side of a lock contention: the only signal Plex emits that names
+# the offending code site in its own text. Unanchored on purpose -- a [Req#...]
+# token sits in front of the message on 40 of the corpus's 42 holder lines, so
+# anything anchored on the start of the message misses that whole world. The
+# site group cannot contain ")" (it is a POSIX path plus ":<line>"), so [^)]+
+# is exact rather than merely convenient.
+#
+# This and the two helpers below are deliberate verbatim mirrors of the
+# watchdog's (ansible/roles/plex/files/plex_blip_watchdog.py): the two tools
+# ship as separate units -- one deploys to CT 110 through Ansible, this one
+# runs offline from the repo -- so neither can import the other. What keeps
+# them from drifting into two spellings of one site is not this comment but
+# test_the_analyzer_and_the_watchdog_name_the_same_hold_site, which parses the
+# same line through both and asserts the results are equal.
+HELD_TRANSACTION_RE = re.compile(
+    r"Held transaction for too long \(([^)]+)\):\s*([0-9.]+)\s+seconds"
+)
+
+# The saturation counter that Request:/Completed: lines already carry.
+LIVE_CONNECTIONS_RE = re.compile(r"\((\d+)\s+live\)")
+
+
+def extract_live_connections(line: str) -> Optional[int]:
+    """Reads the "(N live)" concurrent-connection count off a log line.
+
+    Returns None when the line carries no count, which is the common case: the
+    counter rides on Request:/Completed: lines only, and never on the WARN
+    lines that carry the transaction signals.
+    """
+    m = LIVE_CONNECTIONS_RE.search(line)
+    return int(m.group(1)) if m else None
+
+
+def _basename_site(site: str) -> str:
+    """Reduces a build-time source path to the "<file>:<line>" form.
+
+    Plex compiles on a CI runner, so the site it prints is a 90-character
+    absolute path under /home/runner/_work/... The useful identity is the last
+    path component, and that is what every downstream report names. Idempotent
+    on an already-bare site.
+    """
+    return site.rsplit("/", 1)[-1]
+
 
 MONTH_MAP = {
     "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
@@ -68,6 +139,29 @@ def parse_log_line(line: str, source_file: str, threshold_ms: float = 500.0) -> 
         m_dur = re.search(r"Took too long \(([0-9.]+)\s+seconds\)", msg)
         duration = float(m_dur.group(1)) * 1000.0 if m_dur else None
         return LogEvent(iso_ts, time_only, "TX_STALL", thread_id, duration, msg, line, source_file)
+
+    # 1b. TX_HELD: the holder side of that same contention -- the only signal
+    # Plex emits that names the code site holding the lock. TX_STALL says a
+    # transaction gave up waiting; this says who it was waiting on.
+    #
+    # Lexically disjoint from TX_STALL rather than merely ordered after it:
+    # "Held transaction for too long" contains "too long" but never "Took too
+    # long", and no waiter line contains "Held transaction". If this branch
+    # ever needs a particular position to be correct, the matcher is wrong --
+    # asserted directly by the disjointness test, not left as an argument here.
+    m_held = HELD_TRANSACTION_RE.search(msg)
+    if m_held:
+        return LogEvent(
+            iso_ts,
+            time_only,
+            "TX_HELD",
+            thread_id,
+            float(m_held.group(2)) * 1000.0,
+            msg,
+            line,
+            source_file,
+            hold_site=_basename_site(m_held.group(1)),
+        )
 
     # 2. STREAM_DROP: Timeout of streaming resources or job termination
     if "Shutting down idle session" in msg:
