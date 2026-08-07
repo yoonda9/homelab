@@ -142,6 +142,27 @@ def _run_cmd(cmd: list[str], timeout: float = 2.0) -> Dict[str, Any]:
         }
 
 
+def _dry_run_fallback(result: Dict[str, Any], simulated: str) -> Dict[str, Any]:
+    """Substitute simulated probe text under --dry-run, keeping the measurement.
+
+    Fires on the same two arms the pre-dict code covered, tested against the
+    STATUS FIELD rather than a substring of the output:
+      - any status other than "ok" -- the no-`psmisc` `missing` case included;
+      - an "ok" probe that produced nothing, which is what real `fuser`/`lsof`
+        do (exit 1, no output) when no process holds the file.
+
+    Testing the substring is what broke: once `_run_cmd` returned a dict,
+    `"probe error" in <dict>` tested KEYS and was permanently False, so
+    `--dry-run` silently stopped simulating without failing anything.
+
+    `status`, `elapsed_ms` and `error` are left untouched, so a simulated line
+    can never pass itself off as a probe that actually ran.
+    """
+    if result.get("status") != "ok" or not result.get("output"):
+        return {**result, "output": simulated}
+    return result
+
+
 def get_plex_fd_count(proc_dir: str = "/proc", dry_run: bool = False) -> int:
     """Dynamically count open file descriptors for Plex Media Server processes."""
     total_fds = 0
@@ -385,16 +406,20 @@ class WatchdogEngine:
         lsof_out = _run_cmd(["lsof"] + targets)
 
         if self.dry_run:
-            if not fuser_out or "probe error" in fuser_out or fuser_out == "":
-                fuser_out = f"[dry-run] fuser simulated check OK for {self.db_pattern}"
-            if not lsof_out or "probe error" in lsof_out or lsof_out == "":
-                lsof_out = f"[dry-run] lsof simulated check OK for {self.db_pattern}"
+            fuser_out = _dry_run_fallback(
+                fuser_out, f"[dry-run] fuser simulated check OK for {self.db_pattern}"
+            )
+            lsof_out = _dry_run_fallback(
+                lsof_out, f"[dry-run] lsof simulated check OK for {self.db_pattern}"
+            )
 
         # 2. Thread State & CPU Metrics
         pidstat_out = _run_cmd(["pidstat", "-tl"])
         ps_out = _run_cmd(["ps", "-aux", "-T"])
-        if self.dry_run and ("probe error" in pidstat_out or not pidstat_out):
-            pidstat_out = "[dry-run] pidstat diagnostic snapshot OK"
+        if self.dry_run:
+            pidstat_out = _dry_run_fallback(
+                pidstat_out, "[dry-run] pidstat diagnostic snapshot OK"
+            )
 
         # 3. FD Count
         fd_count = get_plex_fd_count(proc_dir="/proc", dry_run=self.dry_run)
@@ -409,10 +434,13 @@ class WatchdogEngine:
                 "lsof": lsof_out,
             },
             "process_traces": {
+                # pidstat is a process trace, not a sysstat metric (design 5.1);
+                # sysstat_metrics keeps fd_count. Top-level keys are unchanged, so
+                # the captures already on disk stay parseable.
+                "pidstat": pidstat_out,
                 "ps_aux_t": ps_out,
             },
             "sysstat_metrics": {
-                "pidstat": pidstat_out,
                 "fd_count": fd_count,
             },
             "dry_run": self.dry_run

@@ -430,6 +430,193 @@ class TestRunCmdStructuredResult(unittest.TestCase):
         self.assertEqual(seen, {"ok", "timeout", "missing", "error"})
 
 
+class TestSnapshotStructuredShape(unittest.TestCase):
+    """Step 1b — the snapshot record carries `_run_cmd`'s structured result (design §5.1).
+
+    Step 1a changed `_run_cmd` to return a dict. `capture_snapshot`'s three
+    dry-run fallbacks still tested that return AS A STRING, and `"probe error"
+    in <dict>` tests KEYS, so it is permanently False. THE FAILURE IS SILENT:
+    not a crash, just `--dry-run` quietly ceasing to simulate while every test
+    stays green. `test_dry_run_fallbacks_fire_when_the_probe_binary_is_missing`
+    is the row that refuses to stay green through that, and it is written to be
+    unfakeable by a substring test: the probes are made genuinely absent by
+    setting `PATH` to a stub dir ALONE (prepending does not work -- `execvp`
+    skips a candidate it cannot run and keeps searching the rest of PATH).
+    """
+
+    TOP_LEVEL_KEYS = {
+        "timestamp",
+        "trigger_event",
+        "delay_ms",
+        "trigger_line",
+        "lock_holders",
+        "process_traces",
+        "sysstat_metrics",
+        "dry_run",
+    }
+    PROBE_KEYS = {"status", "elapsed_ms", "output", "error"}
+
+    TRIGGER = {
+        "event_type": "TX_STALL",
+        "delay_ms": 120.0,
+        "line": "Aug 04, 2026 06:58:11.899 [101] WARN - Took too long (0.120000 seconds) to start a transaction on StatisticsBandwidth.cpp:110",
+    }
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_snapshot_")
+        self.log_path = os.path.join(self.test_dir, "mock_plex.log")
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("Aug 04, 2026 06:57:00.000 [100] INFO - Server starting up\n")
+        self.out_dir = os.path.join(self.test_dir, "diagnostics")
+        self.db_path = os.path.join(self.test_dir, "com.plexapp.plugins.library.db")
+        with open(self.db_path, "wb") as f:
+            f.write(b"SQLite format 3\x00")
+        self.stub_dir = os.path.join(self.test_dir, "stub_path")
+        os.makedirs(self.stub_dir, exist_ok=True)
+        self._real_path = os.environ.get("PATH", "")
+
+    def tearDown(self):
+        os.environ["PATH"] = self._real_path
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _install_silent_stub(self, name: str):
+        """A probe that RUNS and says nothing -- real `fuser`/`lsof` exit 1 with
+        empty output when nothing holds the file. status is "ok"; output is ""."""
+        path = os.path.join(self.stub_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        os.chmod(path, 0o755)
+
+    def _capture(self, dry_run=True):
+        engine = watchdog.WatchdogEngine(
+            log_path=self.log_path,
+            output_dir=self.out_dir,
+            db_pattern=self.db_path,
+            dry_run=dry_run,
+        )
+        out_path = engine.capture_snapshot(self.TRIGGER)
+        with open(out_path, "r", encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, "one trigger must write exactly one JSONL line")
+        return json.loads(lines[0])
+
+    # (a) round-trip + the structured shape, at the three sites design §5.1 names
+    def test_snapshot_round_trips_with_the_structured_probe_shape(self):
+        record = self._capture()
+
+        reparsed = json.loads(json.dumps(record))
+        self.assertEqual(reparsed, record, "the record must survive a json round-trip")
+
+        for holder, probe in (
+            ("lock_holders", "fuser"),
+            ("lock_holders", "lsof"),
+            ("process_traces", "pidstat"),
+            ("process_traces", "ps_aux_t"),
+        ):
+            with self.subTest(site=f"{holder}.{probe}"):
+                value = reparsed[holder][probe]
+                self.assertIsInstance(
+                    value, dict,
+                    f"{holder}.{probe} must be the structured probe result, not a bare string",
+                )
+                self.assertEqual(set(value), self.PROBE_KEYS)
+                self.assertIn(value["status"], {"ok", "timeout", "missing", "error"})
+                self.assertIsInstance(
+                    value["elapsed_ms"], float,
+                    "elapsed_ms is the measurement the old contract discarded",
+                )
+
+    def test_probes_sit_where_the_design_puts_them(self):
+        # pidstat is a process trace, not a sysstat metric -- design §5.1 puts it
+        # under `process_traces` and leaves `sysstat_metrics` holding `fd_count`
+        # alone. Asserting both key SETS, so the move is a move and not a copy.
+        record = self._capture()
+        self.assertEqual(set(record["lock_holders"]), {"fuser", "lsof"})
+        self.assertEqual(set(record["process_traces"]), {"pidstat", "ps_aux_t"})
+        self.assertEqual(set(record["sysstat_metrics"]), {"fd_count"})
+        self.assertIsInstance(record["sysstat_metrics"]["fd_count"], int)
+
+    # (b) THE ANTI-VACUITY ROW: the casualty this task exists for
+    def test_dry_run_fallbacks_fire_when_the_probe_binary_is_missing(self):
+        # The production no-psmisc case, and the one a dict conversion breaks
+        # silently. PATH is the stub dir ALONE, so fuser/lsof/pidstat are
+        # genuinely absent and every probe comes back status="missing".
+        os.environ["PATH"] = self.stub_dir
+        record = self._capture(dry_run=True)
+
+        self.assertTrue(record["dry_run"])
+        for holder, probe, marker in (
+            ("lock_holders", "fuser", "[dry-run] fuser simulated check OK"),
+            ("lock_holders", "lsof", "[dry-run] lsof simulated check OK"),
+            ("process_traces", "pidstat", "[dry-run] pidstat diagnostic snapshot OK"),
+        ):
+            with self.subTest(site=f"{holder}.{probe}"):
+                value = record[holder][probe]
+                self.assertIsInstance(value, dict)
+                self.assertEqual(
+                    value["status"], "missing",
+                    "the real status must survive the fallback, not be overwritten by it",
+                )
+                self.assertIsNotNone(
+                    value["output"],
+                    f"--dry-run stopped simulating: {holder}.{probe} has no fallback text",
+                )
+                self.assertIn(
+                    marker, value["output"],
+                    f"the dry-run fallback for {probe} never fired",
+                )
+
+    def test_dry_run_fallback_fires_for_a_probe_that_ran_and_said_nothing(self):
+        # The arm the string test also covered (`fuser_out == ""`): the probe is
+        # PRESENT and exits 1 with empty output, which is what real fuser/lsof do
+        # when nothing holds the file. status is "ok", so a status-only rewrite
+        # drops this case -- it must not.
+        for name in ("fuser", "lsof", "pidstat", "ps"):
+            self._install_silent_stub(name)
+        os.environ["PATH"] = self.stub_dir
+        record = self._capture(dry_run=True)
+
+        for holder, probe, marker in (
+            ("lock_holders", "fuser", "[dry-run] fuser simulated check OK"),
+            ("lock_holders", "lsof", "[dry-run] lsof simulated check OK"),
+            ("process_traces", "pidstat", "[dry-run] pidstat diagnostic snapshot OK"),
+        ):
+            with self.subTest(site=f"{holder}.{probe}"):
+                value = record[holder][probe]
+                self.assertEqual(value["status"], "ok", "the stub ran, so the probe is ok")
+                self.assertIn(
+                    marker, value["output"] or "",
+                    f"an empty-output probe must still get {probe}'s dry-run fallback",
+                )
+
+    def test_no_fallback_text_leaks_into_a_live_capture(self):
+        # The fallback is dry-run ONLY. Without this, a rewrite that fires the
+        # fallback unconditionally would pass every row above.
+        os.environ["PATH"] = self.stub_dir
+        record = self._capture(dry_run=False)
+
+        self.assertFalse(record["dry_run"])
+        for holder, probe in (
+            ("lock_holders", "fuser"),
+            ("lock_holders", "lsof"),
+            ("process_traces", "pidstat"),
+        ):
+            with self.subTest(site=f"{holder}.{probe}"):
+                self.assertNotIn(
+                    "[dry-run]", json.dumps(record[holder][probe]),
+                    f"{holder}.{probe} fabricated probe output in a live capture",
+                )
+
+    # (c) additive-only at the top level: 448 KB of captures already on disk
+    def test_top_level_keys_are_exactly_the_eight_already_on_disk(self):
+        record = self._capture()
+        self.assertEqual(
+            set(record), self.TOP_LEVEL_KEYS,
+            "Steps 2-3 add sqlite/hold_site/live_connections -- an ADDITION here is "
+            "expected and a REMOVAL breaks the captures already written",
+        )
+
+
 class TestModuleLatencyBoundIsTrue(unittest.TestCase):
     """Raising a timeout retires a latency budget, and the module header is where
     that budget is written down.
