@@ -42,41 +42,109 @@ COMPLETED_RE = re.compile(
     r"Completed:\s+\[[^\]]+\]\s+\d+\s+(?:GET|POST|PUT|DELETE)\s+\S+.*?\b(\d+)(?:\.\d+)?ms\b"
 )
 
+# The holder side of a lock contention: the only signal Plex emits that names
+# the offending code site in its own text. Unanchored on purpose -- a [Req#...]
+# prefix sits between "WARN - " and the message on many of these lines, so
+# anything anchored on the level boundary misses that whole world. The site
+# group cannot contain ")" (it is a POSIX path plus ":<line>"), so [^)]+ is
+# exact rather than merely convenient.
+HELD_TRANSACTION_RE = re.compile(
+    r"Held transaction for too long \(([^)]+)\):\s*([0-9.]+)\s+seconds"
+)
+
+# The saturation counter that Request:/Completed: lines already carry.
+LIVE_CONNECTIONS_RE = re.compile(r"\((\d+)\s+live\)")
+
+
+def extract_live_connections(line: str) -> Optional[int]:
+    """Reads the "(N live)" concurrent-connection count off a log line.
+
+    Returns None when the line carries no count, which is the common case:
+    the counter rides on Request:/Completed: lines only, and never on the
+    WARN lines that carry the transaction signals.
+    """
+    m = LIVE_CONNECTIONS_RE.search(line)
+    return int(m.group(1)) if m else None
+
+
+def _basename_site(site: str) -> str:
+    """Reduces a build-time source path to the "<file>:<line>" form.
+
+    Plex compiles on a CI runner, so the site it prints is a 90-character
+    absolute path under /home/runner/_work/... The useful identity is the last
+    path component, and that is what every downstream report and acceptance
+    criterion names. Idempotent on an already-bare site.
+    """
+    return site.rsplit("/", 1)[-1]
+
 
 def check_trigger(line: str, threshold_ms: float = 500.0) -> Optional[Dict[str, Any]]:
-    """Evaluates a log line against known blip triggers."""
-    line_stripped = line.rstrip("\r\n")
+    """Evaluates a log line against known blip triggers.
 
-    # 1. DB Transaction Stall
+    Returns None, or a dict carrying at least event_type, delay_ms and line.
+    Two triggers add their own keys: TX_HELD adds `hold_site`, and any line
+    that carries a "(N live)" count adds `live_connections`. Both are absent
+    rather than None when they do not apply, so a consumer that asks for them
+    is asking about this line rather than about the schema.
+    """
+    line_stripped = line.rstrip("\r\n")
+    live = extract_live_connections(line_stripped)
+
+    def _event(event_type: str, delay_ms: Optional[float], **extra: Any) -> Dict[str, Any]:
+        event: Dict[str, Any] = {
+            "event_type": event_type,
+            "delay_ms": delay_ms,
+            "line": line_stripped,
+        }
+        event.update(extra)
+        if live is not None:
+            event["live_connections"] = live
+        return event
+
+    # 1. DB Transaction Stall (waiter side: where a transaction gave up waiting)
     if "Took too long" in line_stripped and "to start a transaction" in line_stripped:
         m = re.search(r"Took too long \(([0-9.]+)\s+seconds\)", line_stripped)
         delay_ms = float(m.group(1)) * 1000.0 if m else None
-        return {"event_type": "TX_STALL", "delay_ms": delay_ms, "line": line_stripped}
+        return _event("TX_STALL", delay_ms)
 
-    # 2. Slow Query Warn
+    # 2. DB Transaction Held (holder side: names the code site that held it)
+    #
+    # Lexically disjoint from TX_STALL rather than merely ordered after it:
+    # "Held transaction for too long" contains "too long" but never "Took too
+    # long", and no waiter line contains "Held transaction". If this branch
+    # ever needs a particular position to be correct, the matcher is wrong.
+    m = HELD_TRANSACTION_RE.search(line_stripped)
+    if m:
+        return _event(
+            "TX_HELD",
+            float(m.group(2)) * 1000.0,
+            hold_site=_basename_site(m.group(1)),
+        )
+
+    # 3. Slow Query Warn
     if "SLOW QUERY:" in line_stripped:
         m = re.search(r"It took ([0-9.]+)\s+ms", line_stripped)
         delay_ms = float(m.group(1)) if m else None
-        return {"event_type": "SLOW_QUERY", "delay_ms": delay_ms, "line": line_stripped}
+        return _event("SLOW_QUERY", delay_ms)
 
-    # 3. Completed Query >= threshold_ms
+    # 4. Completed Query >= threshold_ms
     if "Completed:" in line_stripped:
         m = COMPLETED_RE.search(line_stripped)
         if m:
             delay_ms = float(m.group(1))
             if delay_ms >= threshold_ms:
-                return {"event_type": "SLOW_QUERY", "delay_ms": delay_ms, "line": line_stripped}
+                return _event("SLOW_QUERY", delay_ms)
 
-    # 4. Connectivity / Relay Drop & Stream Collapse
+    # 5. Connectivity / Relay Drop & Stream Collapse
     if any(k in line_stripped for k in ("We appear to have lost Internet connectivity", "Failed to retrieve relay host key")):
-        return {"event_type": "CONNECTIVITY_DROP", "delay_ms": None, "line": line_stripped}
+        return _event("CONNECTIVITY_DROP", None)
 
     if "Shutting down idle session" in line_stripped:
         m = re.search(r"idle time is (\d+)\s+seconds", line_stripped)
         delay_ms = float(m.group(1)) * 1000.0 if m else None
-        return {"event_type": "STREAM_DROP", "delay_ms": delay_ms, "line": line_stripped}
+        return _event("STREAM_DROP", delay_ms)
     elif any(k in line_stripped for k in ("Terminated session", "Stopping transcode session", "Killing job", "signal: Killed")):
-        return {"event_type": "STREAM_DROP", "delay_ms": None, "line": line_stripped}
+        return _event("STREAM_DROP", None)
 
     return None
 

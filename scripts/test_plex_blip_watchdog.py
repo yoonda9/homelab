@@ -846,5 +846,181 @@ class TestModuleLatencyBoundIsTrue(unittest.TestCase):
         )
 
 
+class TestTxHeldAndLiveConnections(unittest.TestCase):
+    """The holder-side signal and the saturation counter, Step 2a.
+
+    Every fixture below is a VERBATIM line from
+    /tmp/plex-logs/2026-08-07/"Plex Media Server.log", copied in as an inline
+    literal. It is not read at test time on purpose: /tmp is outside the repo,
+    absent on CT 110 and in any fresh checkout, and this repo already carries
+    two tests that go vacuously green from exactly that mistake
+    (test_analyze_plex_blips.py:150 and :219 read a path that does not exist,
+    print SKIP, and assert nothing inside a passing gate).
+
+    Corpus counts, measured at this turn over that file: 42 lines match
+    "Held transaction", 32 match "Took too long", 2 match
+    "StatisticsManager.cpp:288", and 0 of the 42 Held lines carry a "(N live)"
+    count -- which is why the TX_HELD dict has no live_connections key.
+    """
+
+    # :3284 -- the genuine first holder of the 06:37 blip.
+    HELD_STATISTICS_MANAGER = (
+        "Aug 07, 2026 06:37:33.273 [132687902931768] WARN - Held transaction for "
+        "too long (/home/runner/_work/plex-media-server/plex-media-server/"
+        "Statistics/StatisticsManager.cpp:288): 0.540000 seconds"
+    )
+    # :3294 -- same message, but a [Req#...] prefix sits between "WARN - " and it.
+    HELD_METADATA_ITEM_SETTING = (
+        "Aug 07, 2026 06:37:36.346 [132687881837368] WARN - [Req#8ec76] Held "
+        "transaction for too long (/home/runner/_work/plex-media-server/"
+        "plex-media-server/Library/MetadataItemSetting.cpp:459): 0.310000 seconds"
+    )
+    # :3352 and :3358 -- the waiter side, which must stay TX_STALL untouched.
+    STALL_STATISTICS_BANDWIDTH = (
+        "Aug 07, 2026 06:38:22.285 [132687915588408] WARN - Took too long "
+        "(0.110000 seconds) to start a transaction on /home/runner/_work/"
+        "plex-media-server/plex-media-server/Statistics/StatisticsBandwidth.cpp:110"
+    )
+    STALL_STATISTICS_MEDIA = (
+        "Aug 07, 2026 06:38:27.179 [132687883946808] WARN - [Req#8ecac] Took too "
+        "long (0.160000 seconds) to start a transaction on /home/runner/_work/"
+        "plex-media-server/plex-media-server/Statistics/StatisticsMedia.cpp:99"
+    )
+    # :3553 and :3552 -- saturation at 06:40:46, one Request:, one Completed:.
+    REQUEST_13_LIVE = (
+        "Aug 07, 2026 06:40:46.096 [132687877618488] DEBUG - Request: "
+        "[192.168.1.111:41052 (Subnet)] GET /status/sessions (13 live) #8ecec "
+        "Signed-in Token (masyllis)"
+    )
+    COMPLETED_CLOSE_13_LIVE = (
+        "Aug 07, 2026 06:40:46.067 [132688108632888] DEBUG - Completed after "
+        "connection close: [192.168.1.208:43910] 200 GET /video/:/transcode/"
+        "universal/session/f0ccf4d2-7bf1-47fd-bf19-6d85f7ed4e27/base/03075.ts "
+        "(13 live) #8ece3 TLS 39727ms 2621440 bytes (pipelined: 1460)"
+    )
+    # :3236-ish -- a Completed: line that DOES trigger, and carries a count.
+    COMPLETED_SLOW_4_LIVE = (
+        "Aug 07, 2026 06:37:39.377 [132688110742328] DEBUG - Completed: "
+        "[192.168.1.208:43890] 200 GET /:/timeline?key=%2Flibrary%2Fmetadata%2F378"
+        "&ratingKey=378&playQueueItemID=15310&duration=5568563&time=3039038"
+        "&playbackTime=2001342&hasMDE=1&context=home%3AcontinueWatching&row=0"
+        "&col=0&state=playing (4 live) #8ec76 TLS GZIP 4977ms 820 bytes "
+        "(pipelined: 144)"
+    )
+
+    def test_the_genuine_holder_line_is_tx_held_with_the_measured_delay(self):
+        res = watchdog.check_trigger(self.HELD_STATISTICS_MANAGER, threshold_ms=500.0)
+        self.assertIsNotNone(res, "the 06:37:33.273 holder line must trigger")
+        self.assertEqual(res["event_type"], "TX_HELD")
+        # 0.540000 s x 1000, the same seconds->ms conversion TX_STALL uses at :53.
+        self.assertEqual(res["delay_ms"], 540.0)
+        self.assertEqual(res["line"], self.HELD_STATISTICS_MANAGER)
+
+    def test_hold_site_is_basenamed_not_the_ci_build_path(self):
+        # THE ONE THAT LOOKS RIGHT AND IS WRONG. The parenthesised group in the
+        # raw line is a 90-character CI build path from the Plex build runner.
+        # Capturing it verbatim yields a plausible-looking hold_site that fails
+        # the acceptance criterion, so this is asserted from both directions:
+        # the exact value, and the absence of the path that a verbatim capture
+        # would have left behind.
+        res = watchdog.check_trigger(self.HELD_STATISTICS_MANAGER, threshold_ms=500.0)
+        self.assertEqual(res["hold_site"], "StatisticsManager.cpp:288")
+        self.assertNotIn("/", res["hold_site"], "hold_site must carry no path separator")
+        self.assertNotIn("/home/runner", res["hold_site"])
+        self.assertNotIn("plex-media-server", res["hold_site"])
+
+    def test_a_req_prefixed_holder_line_still_yields_its_site(self):
+        # check_trigger receives the WHOLE line, and this world puts [Req#8ec76]
+        # between "WARN - " and the message -- anything anchored on the "WARN - "
+        # boundary misses all of it.
+        res = watchdog.check_trigger(self.HELD_METADATA_ITEM_SETTING, threshold_ms=500.0)
+        self.assertIsNotNone(res, "the [Req#...] prefixed holder line must trigger")
+        self.assertEqual(res["event_type"], "TX_HELD")
+        self.assertEqual(res["delay_ms"], 310.0)
+        self.assertEqual(res["hold_site"], "MetadataItemSetting.cpp:459")
+
+    def test_tx_held_carries_exactly_the_keys_step_2b_must_mirror(self):
+        # This row DEFINES the vocabulary that Step 2b mirrors into the analyzer
+        # and Step 2c reports on. Pinning the key SET is what stops two hats
+        # inventing two spellings with nothing going red. live_connections is
+        # absent by measurement, not by omission: 0 of the corpus's 42 Held
+        # lines carry a "(N live)" count.
+        res = watchdog.check_trigger(self.HELD_STATISTICS_MANAGER, threshold_ms=500.0)
+        self.assertEqual(
+            set(res), {"event_type", "delay_ms", "hold_site", "line"},
+            f"TX_HELD vocabulary drifted: {sorted(res)}",
+        )
+
+    def test_a_real_waiter_line_is_still_tx_stall_unchanged(self):
+        # REGRESSION. Both are real corpus lines, one bare and one [Req#...]
+        # prefixed, and neither may acquire a hold_site -- TX_STALL names where
+        # the waiter gave up, which is not the holder's site.
+        for label, line, delay in (
+            ("bare", self.STALL_STATISTICS_BANDWIDTH, 110.0),
+            ("[Req#8ecac]", self.STALL_STATISTICS_MEDIA, 160.0),
+        ):
+            with self.subTest(line=label):
+                res = watchdog.check_trigger(line, threshold_ms=500.0)
+                self.assertIsNotNone(res, f"{label} waiter line must still trigger")
+                self.assertEqual(res["event_type"], "TX_STALL")
+                self.assertEqual(res["delay_ms"], delay)
+                self.assertNotIn("hold_site", res)
+
+    def test_the_two_transaction_matchers_are_lexically_disjoint(self):
+        # The regression above is winnable WITHOUT reordering branches, and this
+        # is the reason: the holder text contains "too long" but never "Took too
+        # long", and the waiter text never contains "Held transaction". If a
+        # future edit needs the branches in a particular order to pass, the
+        # matcher is wrong -- so the disjointness is asserted directly rather
+        # than being left as an argument in a comment.
+        for held in (self.HELD_STATISTICS_MANAGER, self.HELD_METADATA_ITEM_SETTING):
+            self.assertIn("Held transaction for too long", held)
+            self.assertNotIn("Took too long", held)
+            self.assertNotIn("to start a transaction", held)
+        for stall in (self.STALL_STATISTICS_BANDWIDTH, self.STALL_STATISTICS_MEDIA):
+            self.assertIn("Took too long", stall)
+            self.assertNotIn("Held transaction", stall)
+
+    def test_live_connections_reads_the_count_off_a_real_request_line(self):
+        self.assertEqual(watchdog.extract_live_connections(self.REQUEST_13_LIVE), 13)
+
+    def test_live_connections_reads_the_count_off_a_real_completed_line(self):
+        self.assertEqual(
+            watchdog.extract_live_connections(self.COMPLETED_CLOSE_13_LIVE), 13
+        )
+
+    def test_live_connections_is_an_int_not_the_matched_text(self):
+        # "13" would satisfy an equality against 13 in no Python at all, but it
+        # would satisfy a truthiness or a str() comparison downstream in 2b/2c.
+        for line in (self.REQUEST_13_LIVE, self.COMPLETED_CLOSE_13_LIVE):
+            with self.subTest(line=line[:60]):
+                self.assertIsInstance(watchdog.extract_live_connections(line), int)
+
+    def test_live_connections_is_none_when_the_line_carries_no_count(self):
+        for line in (self.HELD_STATISTICS_MANAGER, self.STALL_STATISTICS_BANDWIDTH):
+            with self.subTest(line=line[:60]):
+                self.assertIsNone(watchdog.extract_live_connections(line))
+
+    def test_live_connections_rides_on_a_trigger_that_actually_fires(self):
+        # The two 06:40:46 lines above carry a count but trigger nothing --
+        # "Completed after connection close:" is not "Completed:", and a
+        # Request: line has no rule at all. This one is a real Completed: line
+        # over the 500 ms threshold that ALSO carries a count, which is the only
+        # world where the number reaches a consumer.
+        res = watchdog.check_trigger(self.COMPLETED_SLOW_4_LIVE, threshold_ms=500.0)
+        self.assertIsNotNone(res, "a 4977 ms Completed: line must trigger")
+        self.assertEqual(res["event_type"], "SLOW_QUERY")
+        self.assertEqual(res["delay_ms"], 4977.0)
+        self.assertEqual(res["live_connections"], 4)
+
+    def test_the_two_saturation_lines_do_not_themselves_trigger(self):
+        # Guards the claim the test above rests on. If either of these ever
+        # starts triggering, the "(N live)" extractor is no longer the only way
+        # to see the count on them and this class is testing the wrong seam.
+        for line in (self.REQUEST_13_LIVE, self.COMPLETED_CLOSE_13_LIVE):
+            with self.subTest(line=line[:60]):
+                self.assertIsNone(watchdog.check_trigger(line, threshold_ms=500.0))
+
+
 if __name__ == "__main__":
     unittest.main()
