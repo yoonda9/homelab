@@ -34,6 +34,7 @@ the standalone exit code.
 """
 
 import ast
+import inspect
 import pathlib
 import re
 import sys
@@ -4475,6 +4476,60 @@ def _defines_and_references(source: str, name: str) -> tuple[bool, bool]:
     return defined, referenced
 
 
+def _own_docstring() -> str:
+    """The CALLING function's own docstring, found through the running frame.
+
+    A clause cannot name its own docstring without writing its own name inside
+    itself, which would be one more literal of exactly the kind this pair of
+    helpers exists to relate — and a rename would then raise `NameError` out of
+    a guard instead of redding it. The frame's `co_name` follows a rename for
+    free. A caller that is not a module-level function returns "", which reds
+    the clause reading it rather than silently passing.
+
+    THE ONE INTERPRETER FLAG THAT WOULD BLIND THIS is `-OO`, which discards
+    docstrings: every clause reading its own prose would then red. `run_gate.py`
+    runs each shape test as `[sys.executable, <path>]` with no flags, so that is
+    a statement about reach rather than a live risk — and redding is the safe
+    direction for it to fail in.
+    """
+    frame = inspect.currentframe()
+    caller = frame.f_back if frame is not None else None
+    if caller is None:
+        return ""
+    return getattr(globals().get(caller.f_code.co_name), "__doc__", None) or ""
+
+
+def _prose_citations(doc: str, module: str) -> list:
+    """Every `module::<name>` spelling `doc` carries, in order.
+
+    ARMING A CITATION'S CONSTANT IS NOT ARMING THE CITATION. A `path::clause`
+    written into prose is a SECOND literal of the fact the constant holds, and
+    nothing relates the two: rename the cited clause, fix the constant the RED
+    names, and the sentence beside it goes on naming a function that exists in
+    no file while the suite is green. That was measured as the minimal repair a
+    future engineer makes, not as a contrived edit.
+
+    WHAT IS RETURNED IS EVERY SPELLING, NOT A YES/NO, so the caller can require
+    them all to agree. A `bool` here would fail open on the interesting case —
+    two prose copies of which only one was updated.
+
+    WHITESPACE IS REMOVED FROM `doc` BEFORE THE SEARCH, so re-wrapping a
+    93-character qualified name across two lines is not a RED. That tolerance
+    is deliberate and is the same one `_normalise_refs` gives a legal Jinja
+    reformat: round 1 of this row was rejected for a check that redded on a
+    spelling the subject was free to use, and a citation's line breaks are the
+    author's business.
+
+    A SUBSTRING IS THE RIGHT INSTRUMENT HERE AND IT IS NOT THE SECOND PARSER
+    THIS ROW DELETED: the subject IS prose, and this never opens the cited
+    module — `_defines_and_references` holds that end, and holds it with `ast`
+    precisely because a name in a comment is not a name anything runs.
+    """
+    return re.findall(
+        rf"{re.escape(module)}::([A-Za-z_]\w*)", re.sub(r"\s+", "", doc)
+    )
+
+
 def test_plex_node_exporter_scrape_job() -> bool:
     """Step-4d: CT 110's node-exporter is scraped, with its PORT read off the role.
 
@@ -4539,6 +4594,26 @@ def test_plex_node_exporter_scrape_job() -> bool:
       each file's `__main__` — a clause that drops out of that module's `TESTS`
       tuple stops being in the gate, and this docstring would then cite a fact
       nothing holds.
+    * `far_end_prose_agrees` — THE CITATION IS SPELLED TWICE AND BOTH COPIES
+      ARE NOW HELD. `PLEX_NODE_FAR_END_CLAUSE` is what the clause above reads;
+      the qualified name three paragraphs up is a SECOND literal of the same
+      fact, written where the reader is, and until this field nothing related
+      them. Measured as the minimal repair a future engineer makes rather than
+      as a contrived edit (`logs/builder-4d-r3-citation.py` R2): rename the
+      cited clause consistently — its `def` and its entry in that module's
+      `TESTS` tuple, which leaves the cited suite 9/9 GREEN by its own
+      registration census — then fix ONLY what the RED names, the constant, and
+      this suite came back GREEN with the sentence naming a function that
+      existed in NO file in the repo. `git grep -lF 'def <that name>'` returned
+      nothing while the gate passed.
+
+      `_prose_citations` reads THIS docstring — not this file, which would be
+      the file-wide substring this row was opened to delete — and requires
+      every `<suite>::<clause>` spelling in it to be the constant, so a stale
+      second copy cannot hide behind a fresh first one. It is deliberately
+      blind to line breaks: the qualified name is 93 characters and re-wrapping
+      it is the author's business, not a defect (round 1's rejection was a
+      check that redded on a legal reformat).
     * `no_multi_target_shape` — the job's OWN key column may hold only
       `PLEX_NODE_JOB_KEYS`, the allow-list shape `test_plex_scrape_job_is_single_target`
       established (an absence pin fails open one key past its edge, and
@@ -4606,6 +4681,10 @@ def test_plex_node_exporter_scrape_job() -> bool:
         _read(PLEX_NODE_FAR_END_SUITE), PLEX_NODE_FAR_END_CLAUSE
     )
     far_end_is_held = far_end_defined and far_end_referenced
+    far_end_prose = _prose_citations(_own_docstring(), PLEX_NODE_FAR_END_SUITE.name)
+    far_end_prose_agrees = bool(far_end_prose) and all(
+        cited == PLEX_NODE_FAR_END_CLAUSE for cited in far_end_prose
+    )
     host_block = _yaml_block_by_key(
         _yaml_block_by_key(_yaml_block_by_key(_read(INVENTORY), PLEX_INVENTORY_GROUP), "hosts"),
         PLEX_INVENTORY_HOST,
@@ -4635,8 +4714,9 @@ def test_plex_node_exporter_scrape_job() -> bool:
     timeout_fits = interval is not None and timeout <= interval
     ok = (
         present and single_target and host_is_inventory_ref and inventory_has_host
-        and port_follows_exporter and far_end_is_held and no_multi_target_shape
-        and interval_follows_refresh and interval_is_job_local and timeout_fits
+        and port_follows_exporter and far_end_is_held and far_end_prose_agrees
+        and no_multi_target_shape and interval_follows_refresh
+        and interval_is_job_local and timeout_fits
     )
     print(
         f"{'OK' if ok else 'FAIL'}: {PLEX_NODE_JOB} scrape job follows the plex role "
@@ -4648,7 +4728,9 @@ def test_plex_node_exporter_scrape_job() -> bool:
         f"(exporter_port={exporter_port}, job_ports={port_halves}), "
         f"far_end_is_held={far_end_is_held} ({PLEX_NODE_FAR_END_SUITE.name}::"
         f"{PLEX_NODE_FAR_END_CLAUSE} defined={far_end_defined} "
-        f"referenced={far_end_referenced}), no_multi_target_shape="
+        f"referenced={far_end_referenced}), "
+        f"far_end_prose_agrees={far_end_prose_agrees} "
+        f"(prose spellings={far_end_prose}), no_multi_target_shape="
         f"{no_multi_target_shape} (keys={job_keys}, unexpected={extra_keys}, "
         f"unreadable={unreadable_keys}), interval_follows_refresh="
         f"{interval_follows_refresh} (interval={interval}s, "
