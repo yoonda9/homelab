@@ -12,10 +12,10 @@ The Ansible role audits **both halves** on every deployment, and either one fail
 
 | Half | Where | What it asserts |
 | --- | --- | --- |
-| Journal mode | `ansible/roles/plex/tasks/main.yml:369-378` — the `sqlite3` CLI, `-readonly` | `PRAGMA journal_mode` returns `wal` |
-| WAL size | `ansible/roles/plex/tasks/main.yml:380-438` — `ansible.builtin.stat` plus an `assert` | the `-wal` file is under `plex_wal_max_bytes`, **8388608** bytes (`ansible/roles/plex/defaults/main.yml:54`) |
+| Journal mode | `ansible/roles/plex/tasks/main.yml:416-425` — the `sqlite3` CLI, `-readonly` | `PRAGMA journal_mode` returns `wal` |
+| WAL size | `ansible/roles/plex/tasks/main.yml:427-485` — `ansible.builtin.stat` plus an `assert` | the `-wal` file is under `plex_wal_max_bytes`, **8388608** bytes (`ansible/roles/plex/defaults/main.yml:54`) |
 
-The size half is deliberately not derived from the `sqlite3` output. It stands on a `stat` alone, so it can be watched going red without a deploy and without the CLI — see `scripts/test_plex_wal_guard_shape.py`. When it fires, the failure message carries the ordered manual remedy inline (`ansible/roles/plex/tasks/main.yml:425-435`): stop `plexmediaserver`, reclaim the log, start it again, in that order. Do not run the reclaim step while Plex is up — it comes back `busy`, moves nothing, and the CLI still exits `0`.
+The size half is deliberately not derived from the `sqlite3` output. It stands on a `stat` alone, so it can be watched going red without a deploy and without the CLI — see `scripts/test_plex_wal_guard_shape.py`. When it fires, the failure message carries the ordered manual remedy inline (`ansible/roles/plex/tasks/main.yml:472-482`): stop `plexmediaserver`, reclaim the log, start it again, in that order. Do not run the reclaim step while Plex is up — it comes back `busy`, moves nothing, and the CLI still exits `0`.
 
 To manually verify the journal mode (read-only), as the Plex service user:
 ```bash
@@ -34,6 +34,6 @@ If this returns anything other than `wal` (e.g., `delete`), Plex's internal migr
 
 Because WAL mode appends writes rather than modifying the main database file in-place, the database and its indexes can become fragmented over time, degrading query performance (`SLOW_QUERY`).
 
-**Nothing schedules maintenance on this database, and this runbook used to claim something did.** It said Plex Media Server *"has a scheduled task that performs `VACUUM` and `REINDEX` operations"*, *"configured to run at **03:30 AM**"*. Neither half survives measurement: `grep -rniE 'VACUUM|REINDEX|03:30' ansible/ --exclude-dir=galaxy_roles` returns **zero hits** and `ansible/roles/plex/templates/` holds exactly one file (the watchdog unit), so this repo ships no such timer — and it is not a stock Plex Media Server feature either. A 03:30 `VACUUM`/`REINDEX` timer was *proposed* in `.agents/planning/2026-08-04-debug-plex-blip/implementation/plan.md:116` and was never built.
+**Nothing schedules maintenance on this database, and this runbook used to claim something did.** It said Plex Media Server *"has a scheduled task that performs `VACUUM` and `REINDEX` operations"*, *"configured to run at **03:30 AM**"*. Neither half survives measurement: `grep -rniE 'VACUUM|REINDEX|03:30' ansible/ --exclude-dir=galaxy_roles` returns **zero hits**, and `ansible/` ships no systemd `.timer` unit and no `cron` task at all — so there is nothing here that could run such a job, whatever it was named. This repo ships no such timer, and it is not a stock Plex Media Server feature either. A 03:30 `VACUUM`/`REINDEX` timer was *proposed* in `.agents/planning/2026-08-04-debug-plex-blip/implementation/plan.md:116` and was never built.
 
 **What that means for triage:** there is no maintenance window, so a `SLOW_QUERY` event is never collateral from a maintenance lock and must **not** be ignored on those grounds. The advice this section used to give — ignore them near the window unless they persist outside it — was advice to ignore the fault. Fragmentation accumulates unattended; the only automated pressure on this database today is the WAL size half of §1's audit.

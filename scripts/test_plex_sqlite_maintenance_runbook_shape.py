@@ -73,6 +73,26 @@ SERVICE_USER_VAR = "plex_service_user"
 # runbook's "not shipped" goes stale and this suite says so.
 TIMER_RE = re.compile(r"VACUUM|REINDEX|03:30", re.IGNORECASE)
 
+# The MECHANISMS a scheduled job would have to arrive by, whatever it was named.
+# `task-1786154835-72f0`: §2's second piece of evidence used to be *"`ansible/
+# roles/plex/templates/` holds exactly one file (the watchdog unit)"* — a
+# measurement frozen into prose, re-run by nothing, and false the moment a second
+# template lands (Step 4c's node-exporter drop-in is exactly that). The repair is
+# not a corrected number; a corrected number decays the same way. It is to ask
+# the question the sentence was really evidence FOR — can this repo schedule
+# anything at all — and to ask it of the repo on every run.
+SCHEDULER_PATTERNS = (
+    ("cron module", re.compile(r"^\s*-?\s*(?:ansible\.builtin\.)?cron:", re.M)),
+    ("at module", re.compile(r"^\s*-?\s*(?:ansible\.builtin\.)?at:", re.M)),
+    ("systemd timer", re.compile(r"[\w.-]+\.timer\b")),
+)
+TIMER_UNIT_SUFFIXES = (".timer", ".timer.j2")
+
+# A directory file-count offered as evidence: the 72f0 SHAPE rather than the one
+# sentence. Nothing re-runs a count written into prose, so it is a measurement
+# that was true once and reads forever as though it still is.
+FROZEN_COUNT_RE = re.compile(r"holds\s+exactly\s+[\w-]+\s+files?", re.I)
+
 # A repo-relative path with an optional `:LINE` or `:LINE-LINE` suffix. Same
 # shape as `test_plex_wal_guard_shape.py:182`, extended with the line ref so a
 # citation is checked as a citation and not merely as a filename.
@@ -269,6 +289,67 @@ def _shipped_timer_hits():
         if TIMER_RE.search(text):
             hits.append(str(path.relative_to(REPO_ROOT)))
     return hits
+
+
+def _shipped_scheduler_hits():
+    """Every mechanism `ansible/` carries that could run a scheduled job.
+
+    The live half of §2's second evidence clause. Re-run rather than quoted, in
+    the same shape as `_shipped_timer_hits` above: the day someone lands a
+    `.timer` unit or a `cron` task, this goes non-empty and the runbook that
+    denies any scheduler goes red — which is precisely what the frozen
+    "holds exactly one file" clause could never do.
+
+    It censuses MECHANISMS, not names. A `VACUUM` timer called anything at all
+    still has to be a systemd timer or a cron entry to fire, so this is a wider
+    net than `TIMER_RE` and the two are complementary rather than redundant.
+    """
+    hits = []
+    for path in sorted(ANSIBLE_DIR.rglob("*")):
+        if not path.is_file() or VENDORED in path.parts:
+            continue
+        relative = str(path.relative_to(REPO_ROOT))
+        if path.name.endswith(TIMER_UNIT_SUFFIXES):
+            hits.append(f"{relative}: timer unit file")
+            continue
+        text = path.read_text(errors="ignore")
+        for label, pattern in SCHEDULER_PATTERNS:
+            if pattern.search(text):
+                hits.append(f"{relative}: {label}")
+    return hits
+
+
+def _scheduler_defects(body: str, shipped):
+    """§2's "nothing could run it" evidence, as an equality in both directions.
+
+    Two obligations, and the second is the one `72f0` is really about:
+
+    THE CLAIM MUST BE MADE, and it must name the mechanisms rather than gesture
+    at them — a sentence that says "no timer" without saying what a timer would
+    have to BE is not something a census can check.
+
+    NO CLAIM MAY BE A FROZEN COUNT. `FROZEN_COUNT_RE` reds any "this directory
+    holds exactly N files" offered anywhere in the document. That is the class
+    and not the instance: the shipped sentence was true when written, went false
+    when a second template landed, and no test in the repo noticed either event.
+    A guard that only forbade the old wording would let the next one through.
+    """
+    defects = []
+    flat = " ".join(body.split())
+    frozen = FROZEN_COUNT_RE.findall(flat)
+    if frozen:
+        defects.append(f"offers a frozen file count as evidence: {frozen}")
+    names_timer = re.search(r"no\s+systemd\s+`?\.timer`?\s+unit", flat, re.I)
+    names_cron = re.search(r"no\s+`?cron`?\s+(?:task|job|entry)", flat, re.I)
+    if shipped:
+        if names_timer or names_cron:
+            defects.append(f"denies a scheduler this repo ships: {shipped}")
+        return defects
+    if not names_timer:
+        defects.append("does not say ansible/ ships no systemd .timer unit")
+    if not names_cron:
+        defects.append("does not say ansible/ ships no cron task")
+    return defects
 
 
 NEGATION_RE = re.compile(
@@ -564,6 +645,61 @@ def test_the_maintenance_timer_claim_matches_what_the_repo_ships() -> bool:
     return ok
 
 
+def test_the_no_scheduler_evidence_is_a_census_and_not_a_frozen_count() -> bool:
+    """`task-1786154835-72f0` — half of §2's evidence was re-run by nothing.
+
+    The paragraph offered two facts. The `VACUUM`/`REINDEX`/`03:30` grep is a
+    LIVE equality, re-run by the row above. *"`ansible/roles/plex/templates/`
+    holds exactly one file (the watchdog unit)"* was a MEASUREMENT FROZEN INTO
+    PROSE: true the day it was written, false the day Step 4c landed the
+    node-exporter drop-in beside the watchdog unit, and nothing in the 42-step
+    gate would have said so — in a document this loop had already corrected, one
+    wave earlier, for carrying false sentences.
+
+    The fix is not a corrected number. A corrected number is the same defect with
+    a later expiry date, which is the lesson `mem-1786160126-1525` paid for when
+    a citation filing's own replacement line numbers died one commit after it was
+    filed. So the clause now claims what it was really evidence FOR — that this
+    repo has no mechanism by which any scheduled job could fire — and this row
+    re-runs that census over `ansible/` on every gate.
+
+    ARMED THREE WAYS, because the row has to catch more than the sentence it
+    replaced: the parent's frozen-count clause; the SHAPE of a frozen count in
+    any other wording, so the class cannot come back under a new spelling; and
+    the corrected paragraph scored against a repo that DOES ship a timer, which
+    is the direction a one-sided check would wave through.
+    """
+    body = _body()
+    shipped = _shipped_scheduler_hits()
+    defects = _scheduler_defects(body, shipped)
+    probes = {
+        "the parent's frozen-count clause": (
+            "`grep -rniE 'VACUUM|REINDEX|03:30' ansible/ --exclude-dir="
+            "galaxy_roles` returns zero hits and `ansible/roles/plex/templates/`"
+            " holds exactly one file (the watchdog unit), so this repo ships no"
+            " such timer."
+        ),
+        "the same shape in different words": (
+            body + " Note that `ansible/roles/plex/files/` holds exactly two"
+            " files today."
+        ),
+    }
+    caught = {
+        label: _scheduler_defects(probe, shipped) for label, probe in probes.items()
+    }
+    caught["a corrected §2 scored against a repo that DID ship a timer"] = (
+        _scheduler_defects(body, ["ansible/roles/plex/templates/vacuum.timer"])
+    )
+    armed = all(bool(found) for found in caught.values())
+    ok = not defects and armed
+    print(
+        f"{'OK' if ok else 'FAIL'}: §2's no-scheduler evidence is re-run against "
+        f"ansible/ rather than frozen (shipped={shipped} defects={defects} "
+        f"probes_caught={ {label: len(found) for label, found in caught.items()} })"
+    )
+    return ok
+
+
 def test_slow_query_events_are_not_dismissed_as_maintenance_collateral() -> bool:
     """`:27` told an operator to ignore the fault near a window that is not there.
 
@@ -711,6 +847,7 @@ TESTS = (
     test_the_audit_description_names_both_halves_at_the_shipped_threshold,
     test_the_manual_verification_matches_its_read_only_heading,
     test_the_maintenance_timer_claim_matches_what_the_repo_ships,
+    test_the_no_scheduler_evidence_is_a_census_and_not_a_frozen_count,
     test_slow_query_events_are_not_dismissed_as_maintenance_collateral,
     test_the_runbook_carries_what_the_role_s_fail_msg_promises,
     test_the_runbook_does_not_disarm_the_wal_guard_s_pointer_probe,

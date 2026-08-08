@@ -61,6 +61,58 @@ plex_wal_max_bytes: 8388608
 # there is nothing to agree.
 plex_watchdog_textfile_dir: /var/lib/node_exporter/textfile
 
+# node-exporter inside CT 110 (design §4.5, plan.md Step 4). It is the delivery
+# mechanism for the textfile metrics above, and independently it closes the
+# class-C blind spot — load average, D-state count, PSI, disk I/O latency — with
+# a time series and a baseline, rather than the watchdog's single instant at
+# trigger time.
+#
+# Debian ships the exporter with its own systemd unit, so the role installs the
+# package and overrides only what CT 110 needs through a drop-in. The package and
+# the unit are the SAME name upstream and are still two variables: the role
+# starts what it installed rather than a string that happens to match it.
+plex_node_exporter_package: prometheus-node-exporter
+plex_node_exporter_service: prometheus-node-exporter
+plex_node_exporter_bin: /usr/bin/prometheus-node-exporter
+
+# Where the exporter listens. Named here rather than left at the upstream default
+# because Step 4d's Prometheus scrape job must pin this port BY RELATION to what
+# the role ships — with nothing declared, that row would have to retype the
+# upstream default and the job and the exporter would agree by coincidence, which
+# is the defect this wave was cut to delete.
+#
+# 0.0.0.0 and not a literal CT address: Prometheus scrapes from CT 111 across the
+# bridge, and the CT's own address is inventory state, not a role default. The
+# endpoint is unauthenticated, exactly like the node-exporter the docker_host
+# role already runs; what keeps it off the WAN is the router, not this unit.
+plex_node_exporter_listen_address: 0.0.0.0:9100
+
+# Collectors disabled rather than fought (design §4.5, R17). None of these can
+# mean anything inside an unprivileged LXC:
+#   * host firmware and identity — dmi
+#   * host sensors, power and thermal — hwmon, thermal_zone, rapl,
+#     powersupplyclass, edac
+#   * host devices the CT has no view of — nvme, infiniband, cpufreq
+#   * host storage layers, which design §9.4 assigns to the PVE host (Step 6)
+#     rather than to a reader inside the container — zfs, btrfs, xfs, mdadm
+# Left ON deliberately, because they are the reason this exporter is here at all:
+# textfile (design §5.2's delivery mechanism), loadavg, stat, meminfo, pressure,
+# diskstats and filesystem.
+plex_node_exporter_disabled_collectors:
+  - btrfs
+  - cpufreq
+  - dmi
+  - edac
+  - hwmon
+  - infiniband
+  - mdadm
+  - nvme
+  - powersupplyclass
+  - rapl
+  - thermal_zone
+  - xfs
+  - zfs
+
 # The +100000 shift the state-dir ownership gate uses to print the exact
 # host-side chown to run. CT 110's UID map is a single offset tile
 # (`u 0 100000 65536`), so any in-CT uid N is host uid N + 100000. The GID map

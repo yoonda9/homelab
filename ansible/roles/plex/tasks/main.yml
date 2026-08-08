@@ -355,6 +355,53 @@
     state: started
     daemon_reload: true
 
+# --- node-exporter inside CT 110 (design §4.5, plan.md Step 4) -------------
+# The delivery mechanism for the watchdog's textfile metrics, and independently
+# the class-C blind spot (load average, D-state count, PSI, disk I/O latency) as
+# a time series instead of the watchdog's single instant at trigger time.
+#
+# Debian ships the exporter with its own unit, so this is an install plus a
+# drop-in rather than a unit of our own — the packaged unit keeps its ordering,
+# its user and its hardening, and the role overrides only the three things CT 110
+# needs: the scheduling restraint, the collector directory and the collectors an
+# unprivileged LXC cannot answer for.
+#
+# The collector directory is NOT created here. It is the one the watchdog writes
+# into and it already exists above, at "Ensure the Plex watchdog Prometheus
+# textfile directory exists" — a second task naming the same path would be two
+# literals that agree, which is task-1786153086-9f13 in a new container.
+- name: Install node-exporter for the Plex watchdog textfile collector
+  ansible.builtin.apt:
+    name: "{{ plex_node_exporter_package }}"
+    # No update_cache: the Plex Media Server install above stamped the apt cache
+    # in this same play, and this package comes from Debian main rather than from
+    # a repository this role just added.
+    state: present
+
+- name: Ensure the node-exporter systemd override directory exists
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ plex_node_exporter_service }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Restrain node-exporter and point it at the watchdog textfile directory
+  ansible.builtin.template:
+    src: prometheus_node_exporter_override.conf.j2
+    dest: "/etc/systemd/system/{{ plex_node_exporter_service }}.service.d/override.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node-exporter
+
+- name: Ensure node-exporter is enabled and running
+  ansible.builtin.systemd:
+    name: "{{ plex_node_exporter_service }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
 # --- SQLite WAL audit (design §4.3, plan.md Step 3) -----------------------
 # Journal mode and WAL SIZE are two separate questions and this audit used to
 # ask only the first. `PRAGMA journal_mode;` answered `wal` — correctly — while

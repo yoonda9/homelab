@@ -12,3 +12,13 @@
     name: plex-watchdog
     state: restarted
     daemon_reload: true
+
+# The drop-in only reaches the running process through a daemon_reload plus a
+# restart: the role's `state: started` task converges a unit that is already up
+# without re-reading its configuration, so an edited override.conf would sit on
+# disk unapplied until something else restarted it.
+- name: Restart node-exporter
+  ansible.builtin.systemd:
+    name: "{{ plex_node_exporter_service }}"
+    state: restarted
+    daemon_reload: true

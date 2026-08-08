@@ -1,0 +1,18 @@
+# Managed by Ansible (roles/plex) — design §4.5, plan.md Step 4. Do not edit on
+# the host; `just play` overwrites it.
+#
+# A DROP-IN, not a replacement unit: the prometheus-node-exporter package ships
+# its own unit and this file overrides only what CT 110 needs.
+#
+# The empty ExecStart= is load-bearing. systemd APPENDS ExecStart= from a drop-in
+# to the packaged unit's list, and a Type=simple unit with two of them refuses to
+# load at all, so the list is cleared before it is respelled.
+#
+# Nice/CPUSchedulingPolicy mirror the watchdog unit (R8 prices every addition by
+# the load it puts on Plex): this walks /proc and /sys on every scrape inside the
+# container whose stalls the project exists to remove.
+[Service]
+Nice=10
+CPUSchedulingPolicy=idle
+ExecStart=
+ExecStart={{ plex_node_exporter_bin }} --web.listen-address={{ plex_node_exporter_listen_address }} --collector.textfile.directory={{ plex_watchdog_textfile_dir }}{% for collector in plex_node_exporter_disabled_collectors %} --no-collector.{{ collector }}{% endfor %}
