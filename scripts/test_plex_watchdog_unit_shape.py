@@ -39,13 +39,24 @@ flag rows therefore assert the VALUE as an exact normalised reference, not
 membership — `--db-pattern "/var/lib/plexmediaserver/.../library.db*"` carries
 the flag perfectly well and is `9f13` unrepaired.
 
-FALSE CONTRACT, CLOSED FROM THE OTHER END. A unit that passes a flag `argparse`
+FALSE CONTRACT, CLOSED IN BOTH DIRECTIONS. A unit that passes a flag `argparse`
 does not define does not warn — it exits non-zero on the operator's box and
 `Restart=on-failure` retries it forever. The unit and the program are in
-different languages and no compiler joins them, so the last row reads
+different languages and no compiler joins them, so the last two rows read
 `files/plex_blip_watchdog.py`'s `add_argument` calls with `ast` (the module is
-not importable as a test dependency and must not be executed) and asserts every
-long flag the ExecStart passes is one the program accepts.
+not importable as a test dependency and must not be executed) and census the
+flags BOTH WAYS:
+
+    ExecStart -> argparse   every long flag the unit passes is one the
+                            program accepts
+    argparse -> ExecStart   every flag the program marks `required=True` is
+                            one the unit passes
+
+The second is not implied by the first, and leaving it out is what this file's
+round-1 review charged (DEC-265, `logs/critic-4b-mutants.log` C9/C10): with
+`--log-path` or `--output-dir` deleted from the ExecStart every other row here
+stayed GREEN while the real program exited 2 on `parse_args`. Same symptom,
+opposite cause — a permanent crash loop and a unit that has never once run.
 
 WHAT THIS READER DOES AND DOES NOT REACH, stated exactly so the sentence stays
 weaker than the guard. It reads the ONE `ExecStart=` line as text and splits it
@@ -100,7 +111,9 @@ STAT_TASK = "Stat the Plex SQLite write-ahead log"
 # `--db-pattern` is a glob and `plex_library_db` is the file, so the ExecStart
 # value is the reference plus SQLite's sibling-file wildcard. Pinned as a
 # constant because the suffix is the one character of the value that is NOT the
-# reference, and dropping it silently narrows the capture to the `.db` alone.
+# reference — and because dropping it narrows the LOCK-HOLDER probes off the
+# sidecars. See the `--db-pattern` row below for what it does and does not cost;
+# measured in both directions at `logs/builder-4b-r2-suffix.log`.
 DB_PATTERN_SUFFIX = "*"
 
 # block/rescue/always each carry a task list of their own. Armed by
@@ -241,28 +254,45 @@ def _flag_value(flag: str):
     return None
 
 
-def _argparse_long_flags():
-    """Every long option `plex_blip_watchdog.py` accepts, read with `ast`.
+def _argparse_flag_census():
+    """`(accepted, required)` — every long option the watchdog defines, and
+    which of them `argparse` will refuse to start without.
 
     Read and not imported: the module is a standalone script that this repo
     cannot take as a test dependency, and importing it to interrogate its parser
     would execute module-level code inside the gate.
+
+    `required=` counts only when it is the literal `True`. An expression-valued
+    `required=` reads here as NOT required — conservative in the direction of
+    missing a requirement, which is why the row that consumes this set asserts
+    it is non-empty rather than trusting it.
     """
+    accepted, required = set(), set()
     if not WATCHDOG_SOURCE.is_file():
-        return set()
+        return accepted, required
     tree = ast.parse(WATCHDOG_SOURCE.read_text())
-    flags = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
             continue
-        for arg in node.args:
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                if arg.value.startswith("--"):
-                    flags.add(arg.value)
-    return flags
+        longs = {
+            arg.value
+            for arg in node.args
+            if isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and arg.value.startswith("--")
+        }
+        accepted |= longs
+        if any(
+            keyword.arg == "required"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        ):
+            required |= longs
+    return accepted, required
 
 
 def _passed_long_flags():
@@ -361,11 +391,30 @@ def test_exec_start_passes_the_db_pattern_as_a_variable_reference() -> bool:
     flag, carries the glob, resolves to the same file today, and is precisely
     the defect. Membership could not tell the two apart.
 
-    The suffix is pinned too. `plex_library_db` is the `.db` file; dropping the
-    `*` narrows the capture off `-wal`/`-shm`, and `_wal_state` at
-    plex_blip_watchdog.py:766 is fed by this very glob — a Step 3 measurement
-    reading all-null because a Step 4 edit tightened a pattern would be
-    indistinguishable from "WAL mode is off".
+    THE SUFFIX IS PINNED TOO, AND FOR A REASON THAT WAS MEASURED RATHER THAN
+    REASONED — the first version of this sentence was neither, and was false.
+    It said dropping the `*` narrows the WAL FIGURES, on the grounds that
+    `_wal_state` is fed by this glob. It is not fed by the glob's match SET:
+    `capture_snapshot` hands it `_base_db(matched_dbs)`, the ONE match ending in
+    `.db`, and `_wal_state` then derives `-wal`/`-shm` by string CONCATENATION
+    (`_size(db_path + "-wal" ...)`, cited by ANCHOR rather than by line: this
+    repo has already measured a citation whose corrected line numbers died one
+    commit later, `task-1786157581-f7a7`). `glob.glob` on a metacharacter-free
+    path returns that path, so `db_bytes`/`wal_bytes`/`shm_bytes` come back
+    byte-identical with the suffix and without it — measured over one fixture,
+    two real runs, `--dry-run` not set (`logs/builder-4b-r2-suffix.log` R1).
+
+    What the suffix actually buys is the OTHER consumer of the same glob. The
+    match set is also `targets` for the lock-holder probes (`_run_cmd(["fuser",
+    "-v"] + targets)` in `capture_snapshot`), so without the `*` `fuser -v` and
+    `lsof` are asked about the `.db` alone: in
+    the same measurement (R2) a live writer holding the `-wal` open is REPORTED
+    by the probes with the suffix and INVISIBLE without it — and a WAL holder is
+    precisely what a lock-contention capture exists to name.
+
+    Both halves are worth keeping in mind for `task-1786152669-ffe0`: the `*` is
+    also what lets a SECOND `.db`-ending neighbour into `base_dbs`, so this
+    character is the entry point to that filing rather than a defence against it.
     """
     value = _flag_value("--db-pattern")
     expected = _ref(LIBRARY_DB_VAR) + DB_PATTERN_SUFFIX
@@ -503,7 +552,7 @@ def test_the_collector_directory_is_created_by_reference_and_ungated() -> bool:
 
 
 def test_every_flag_the_unit_passes_is_one_argparse_accepts() -> bool:
-    """THE FALSE CONTRACT, closed from the program's end.
+    """THE FALSE CONTRACT, first of the two directions: ExecStart -> argparse.
 
     The unit and the watchdog are different languages and nothing joins them. A
     flag `argparse` does not define is not a warning: `parse_args` exits 2, and
@@ -511,6 +560,10 @@ def test_every_flag_the_unit_passes_is_one_argparse_accepts() -> bool:
     a unit that has never once run. That is why this row exists and why it is
     not "`--textfile-dir` is in the source somewhere" — it censuses EVERY long
     flag on the ExecStart against every `add_argument` in the module.
+
+    The converse — a REQUIRED flag the ExecStart stops passing — has the same
+    symptom from the opposite cause and is a row of its own, immediately below.
+    Neither direction implies the other, which is the whole of DEC-265.
 
     Read with `ast` rather than imported: the module is a standalone script this
     repo cannot depend on, and importing it would run module-level code inside
@@ -520,7 +573,7 @@ def test_every_flag_the_unit_passes_is_one_argparse_accepts() -> bool:
     parser defines none, and the ExecStart passes none — named so the sentence
     stays weaker than the guard rather than stronger.
     """
-    accepted = _argparse_long_flags()
+    accepted, _ = _argparse_flag_census()
     passed = _passed_long_flags()
     unknown = sorted(passed - accepted)
     # Anti-vacuity: an `ast` walk that found nothing would make `unknown` empty
@@ -536,6 +589,51 @@ def test_every_flag_the_unit_passes_is_one_argparse_accepts() -> bool:
     return ok
 
 
+def test_every_flag_argparse_requires_is_one_the_unit_passes() -> bool:
+    """THE FALSE CONTRACT, second direction: argparse -> ExecStart.
+
+    A flag the program REQUIRES and the unit stops passing produces the
+    identical failure to the row above, from the opposite end: `parse_args`
+    prints `error: the following arguments are required: --log-path`, exits 2
+    before the watchdog opens anything, and `Restart=on-failure` (unit line 10,
+    `RestartSec=5`) makes that a permanent crash loop — a unit that has never
+    once run.
+
+    MEASURED, not predicted (DEC-265, `logs/critic-4b-mutants.log` C9/C10, and
+    re-run at `logs/builder-4b-r2-mutants.log`): deleting `--log-path` or
+    `--output-dir` from the ExecStart left the other rows in this file GREEN.
+    The census above is directional, and the module docstring claimed a closed
+    contract on the strength of it.
+
+    WHY IT IS WORTH A ROW RATHER THAN A NOTE: `task-1786159639-39db` measured
+    that an ABSENT Prometheus series cannot match design §5.3's
+    `plex_watchdog_probe_status == 0`. A watchdog that never starts publishes no
+    `.prom` at all, so the one alert written to catch a silently dead diagnostic
+    is exactly the alert a crash loop is invisible to. The two defects compose
+    into a telemetry path with no observer.
+
+    `required_read` is a hard anti-vacuity clause, and its cost is stated rather
+    than hidden: if a later change legitimately gives every flag a default, this
+    row REDS and the next hat must revisit it. That is the intended prompt —
+    without it, a census that stopped recognising `required=` would empty the
+    set and pass over nothing at all, which is the failure mode this whole file
+    exists to refuse.
+    """
+    accepted, required = _argparse_flag_census()
+    passed = _passed_long_flags()
+    missing = sorted(required - passed)
+    parser_read = bool(accepted)
+    required_read = bool(required)
+    ok = parser_read and required_read and not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: every long flag plex_blip_watchdog.py's "
+        f"argparse REQUIRES is one the ExecStart passes "
+        f"(parser_read={parser_read} required_read={required_read} "
+        f"missing={missing} required={sorted(required)} passed={sorted(passed)})"
+    )
+    return ok
+
+
 def main() -> int:
     results = [
         test_the_unit_has_one_exec_start_this_reader_can_read(),
@@ -544,6 +642,7 @@ def main() -> int:
         test_the_two_halves_follow_one_variable_rather_than_two_literals(),
         test_the_collector_directory_is_created_by_reference_and_ungated(),
         test_every_flag_the_unit_passes_is_one_argparse_accepts(),
+        test_every_flag_argparse_requires_is_one_the_unit_passes(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
