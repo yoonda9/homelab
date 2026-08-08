@@ -155,6 +155,32 @@ services:
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
+      # 90 days, because the fault this stack instruments is sporadic and is read
+      # by correlating weeks. UNSET is not "no limit": this list REPLACES the
+      # image CMD, so with no flag the binary takes its own default and the
+      # process logs `TSDB retention updated duration=15d` with no warning
+      # (logs/builder-5d-premises.log, row K).
+      #
+      # The flag is [DEPRECATED] in v3.12.0 in favour of the config-file field
+      # `storage.tsdb.retention.time`, and it still works — the running process
+      # logs nothing about it. It stays a flag on purpose: the successor lives in
+      # prometheus.yml, which is a :ro mount delivered by `notify: Restart
+      # prometheus`, and a `command:` entry is the service SPEC, so `up -d`
+      # recreates the container and this needs no handler. `docker compose
+      # restart` would NOT deliver it — same container, old argv.
+      #
+      # No `--storage.tsdb.retention.size` either, and its ABSENCE is pinned:
+      # set beside this flag it is rc=0 and the process logs `duration=90d
+      # size=1MiB`, a healthy container pruned to a megabyte in minutes while
+      # the 90d above still reads true (logs/builder-5d-r2-premises.log row S2).
+      # Every other knob that could bound the same TSDB refuses to start.
+      #
+      # No `--storage.tsdb.path`: the image WORKDIR is /prometheus and the
+      # built-in default is the relative "data/", so the TSDB is already inside
+      # the prometheus-data volume at /prometheus/data. Setting it to
+      # /prometheus — the value the image CMD used — silently starts the server
+      # on an empty directory beside the existing blocks.
+      - --storage.tsdb.retention.time=90d
     volumes:
       - {{ docker_host_project_dir }}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus

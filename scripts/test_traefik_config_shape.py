@@ -2299,6 +2299,87 @@ BLACKBOX_JOB_KEYS = (
 # COULD carry one — a `params:` entry, a `?X-Plex-Token=` suffix on a target —
 # so the sentence stops being background and becomes a thing to hold.
 PROM_NO_CREDENTIAL_PROSE = "carries no credential"
+
+# --- plex-blip-manual-triage Step 5d: how long the TSDB keeps a blip ----------
+PROMETHEUS_SERVICE = "prometheus"
+PROMETHEUS_RETENTION_FLAG = "--storage.tsdb.retention.time"
+# 90 DAYS, AND THE NUMBER IS THIS OBJECTIVE'S OWN UNIT OF EVIDENCE. The fault
+# every other row here instruments is sporadic and is read by CORRELATING WEEKS
+# (research/live-blip-2026-08-07-case-study.md), so the window has to be longer
+# than the interval between two occurrences, not longer than one of them.
+PROMETHEUS_RETENTION = "90d"
+# WHAT THE STACK RUNS TODAY — measured on the process, not read off the docs.
+# The compose `command:` REPLACES the image's CMD (that sentence belongs to
+# `no_command` in `test_plex_exporter_service_block` and is cited, not
+# re-spelled), and today that list is one `--config.file` entry, so no retention
+# is set anywhere and the binary takes its built-in default: row K of
+# `PROMETHEUS_RETENTION_EVIDENCE` logs `msg="TSDB retention updated"
+# duration=15d`. Nothing warns, and `=15d` written out EXPLICITLY is a document
+# the binary loads at rc=0 (row N of the same log) — which is why the clause
+# below reads the VALUE and would be the `658f`/`9cb9` presence-only class if it
+# read anything less.
+PROMETHEUS_RETENTION_DEFAULT = "15d"
+# `--storage.tsdb.path` IS NOT SET AND MUST NOT BE SET TO `/prometheus`, and the
+# whole of that is a measurement. `docker image inspect prom/prometheus:v3.12.0`
+# gives `WorkingDir=/prometheus`, `User=nobody` and a `Cmd` carrying
+# `--storage.tsdb.path=/prometheus`; the binary's own `--help` gives
+# `--storage.tsdb.path="data/"`, RELATIVE. Driven both ways against a host
+# directory bind-mounted at `/prometheus` rather than left as that inference
+# (rows K and L of `PROMETHEUS_RETENTION_EVIDENCE`):
+#
+#     K  no path flag (TODAY)                 -> /prometheus/data/{wal,queries.active}
+#     L  CONTROL, the image's own CMD value   -> /prometheus/{wal,queries.active}
+#
+# So the TSDB already lives inside the `prometheus-data` volume, one level down,
+# and survives the recreate this row's change causes. Restoring the flag the
+# image CMD had is therefore the SILENT trap and not the repair: run L starts the
+# server on an empty directory while every existing block sits at
+# `/prometheus/data`, still on the volume and invisible to the process — no
+# error, no crash loop, and the retention this row sets would be applied to
+# nothing. Hence the clause admits every spelling that RESOLVES to the directory
+# absence resolves to, and reds on the trap.
+#
+# RESOLVES, not equals — round 2, and the first spelling of this pin was a
+# false-RED on a correct tree. `data/` is the flag's OWN DOCUMENTED DEFAULT
+# written out, and an explicit value equal to the default cannot be a defect;
+# the equality against `PROMETHEUS_TSDB_DIR` reddened on it anyway. So the reader
+# below does what the binary does — join the value onto the image WORKDIR — and
+# every row of that join is measured, not inferred (`logs/builder-5d-r2-
+# premises.log`, one live container per row, `wal` located on the bind mount):
+#
+#     P0  no path flag (TODAY)                  -> /prometheus/data/wal   ADMIT
+#     P1  --storage.tsdb.path=data/             -> /prometheus/data/wal   ADMIT
+#     P1b --storage.tsdb.path=data              -> /prometheus/data/wal   ADMIT
+#     P1c --storage.tsdb.path=/prometheus/data  -> /prometheus/data/wal   ADMIT
+#     P2  --storage.tsdb.path=/prometheus       -> /prometheus/wal        RED
+PROMETHEUS_TSDB_PATH_FLAG = "--storage.tsdb.path"
+PROMETHEUS_TSDB_PATH_DEFAULT = "data/"
+PROMETHEUS_WORKDIR = "/prometheus"
+PROMETHEUS_TSDB_DIR = "/prometheus/data"
+# THE SIBLING KNOB, AND IT IS THE ONLY SILENT ONE. A value-pin on the time flag
+# is undone by the OTHER flag that bounds the same TSDB, not only by another
+# spelling of the same flag: `--storage.tsdb.retention.size=1MB` beside a green
+# `=90d` is rc=0, and the process logs `duration=90d size=1MiB` and prunes in
+# minutes (row S2). The binary's own `--help` relates the two in ONE sentence —
+# "If neither this flag nor \"storage.tsdb.retention.size\" is set, the retention
+# time defaults to 15d". Every OTHER knob that could bound the same thing was
+# driven and every one of them REFUSES TO START, which is why exactly one is
+# pinned here and the rest are named instead of guarded (same log):
+#
+#     X1  --storage.tsdb.retention=90d            rc=1  unknown long flag
+#     X2  --storage.tsdb.retention.percentage=50  rc=1  unknown long flag
+#                                                 (the log line prints the field;
+#                                                  no flag sets it)
+#     X3  --storage.agent.retention.max-time=4h   rc=3  "can only be used in
+#                                                  agent mode"
+#     X4  --storage.tsdb.retention.size=1MB       rc=0  STARTS  <-- the hole
+#
+# Under `restart: unless-stopped` X1-X3 are a crash loop an operator sees. X4 is
+# a healthy container that keeps a day of data while the clause prints 90d.
+PROMETHEUS_SIZE_CAP_FLAG = "--storage.tsdb.retention.size"
+PROMETHEUS_RETENTION_EVIDENCE = "logs/builder-5d-premises.log"
+PROMETHEUS_SIBLING_EVIDENCE = "logs/builder-5d-r2-premises.log"
+
 # --- the field census, and it is LOAD-BEARING rather than prose ---------------
 # `prom/blackbox-exporter:v0.28.0` unmarshals its config STRICTLY: a field it
 # does not know is `Error loading config` and exit 1, which `restart:
@@ -7211,6 +7292,155 @@ def test_blackbox_scrape_cadence_is_what_prometheus_runs() -> bool:
     return ok
 
 
+def test_prometheus_retention_outlives_the_blip_window() -> bool:
+    """Step-5d: the prometheus `command:` keeps the TSDB for 90 days.
+
+    Every measurement named here was driven at this row's own hands against the
+    pinned `prom/prometheus:v3.12.0`: round 1 in `PROMETHEUS_RETENTION_EVIDENCE`,
+    the sibling-knob census and the path-spelling rows in
+    `PROMETHEUS_SIBLING_EVIDENCE`. The WORKDIR / `--storage.tsdb.path` half is
+    written up on `PROMETHEUS_TSDB_DIR` and the knob census on
+    `PROMETHEUS_SIZE_CAP_FLAG`, rather than twice.
+
+    FIVE conjuncts, and the two this file did not have at round 1 are `no_size_cap`
+    and the resolving form of `tsdb_path_ok`.
+
+    * `retention_pinned` — `--storage.tsdb.retention.time=90d` is read out of the
+      RENDERED `command:` list by `_service_command_args`, which decomments the
+      block before it splits it. That is what makes "not out of a comment" true
+      BY CONSTRUCTION rather than by assertion, and it is not a hypothetical
+      here: the entry this row adds is documented by a comment directly above it
+      that names the flag and both numbers.
+
+      READ BY VALUE, NEVER BY PRESENCE. `--storage.tsdb.retention.time=15d` is a
+      document `prom/prometheus` LOADS — rc=0, `duration=15d`, no warning, no
+      crash loop (row N) — so a presence-only clause would be green over a stack
+      that had silently gone back to `PROMETHEUS_RETENTION_DEFAULT`, which is the
+      exact regression this row exists to prevent and the class filed twice
+      already as `task-1786128505-658f`.
+
+      `_last_flag_value` takes the LAST occurrence, for the reason given there.
+      Its inherited sentence needs inverting for THIS flag and the inversion is
+      measured rather than assumed: a repeated
+      `--storage.tsdb.retention.time` is `flag
+      'storage.tsdb.retention.time' cannot be repeated`, rc=2 (row 3 of the same
+      log) — kingpin refuses rather than picks. So first-vs-last is LOUD here,
+      an instant failure to start, and no clause below claims to be closing a
+      silence that the runtime already closes.
+
+    * `no_size_cap` — `--storage.tsdb.retention.size` is ABSENT from the same
+      list. This is the conjunct round 1 did not have, and it is the sibling-knob
+      hole rather than another spelling of the pinned flag: `=90d` and
+      `--storage.tsdb.retention.size=1MB` sit side by side at rc=0, the process
+      logs `duration=90d size=1MiB`, and a TSDB capped at a megabyte is pruned in
+      minutes while `retention_pinned` above still reads `90d` and this line
+      still prints "keeps its TSDB for 90d". Silent-healthy, no crash loop —
+      exactly the failure class this row exists to prevent, one arm over.
+
+      ABSENCE, not a value, because there is no disk cap this stack wants and a
+      later row that wants one pays by moving this pin rather than by editing a
+      number. The census that says ONE conjunct closes the axis is on
+      `PROMETHEUS_SIZE_CAP_FLAG`: the three other knobs that could bound the same
+      TSDB all refuse to start. The config-file side of BOTH flags is closed by
+      `no_config_side_retention` below, so this is the flag side of the same axis
+      and not a second door.
+
+    * `tsdb_path_ok` — the path flag is absent today, and the clause admits every
+      spelling that RESOLVES to `PROMETHEUS_TSDB_DIR` rather than the one that
+      equals it. It reds on `/prometheus`, which is the obvious edit and the
+      silent one.
+
+      RESOLVING IS THE REPAIR, AND THE EQUALITY IT REPLACES WAS A FALSE-RED ON A
+      CORRECT TREE: `--storage.tsdb.path=data/` is the flag's own documented
+      default written out, it lands the TSDB in the same place as no flag at all
+      (rows P0/P1), and round 1's clause reddened on it. The reader here does
+      what the binary does — join the value onto the image WORKDIR — so the four
+      admitted spellings on `PROMETHEUS_TSDB_DIR` are one rule and not a list.
+      Its boundary, stated because `PurePosixPath` sets it: `.` components and
+      trailing slashes collapse, `..` does NOT, so `data/../data` would RED. That
+      is the conservative direction on a spelling no tree carries, and this file
+      already calls false-RED-on-a-correct-tree a defect class in
+      `_service_command_args`.
+
+    * `no_config_side_retention` — `prometheus.yml` declares no `storage:` key.
+      This is an ABSENCE pin and it is deliberate, because the precedence runs
+      the opposite way from the intuition: with the FLAG at 30d and the config
+      field `storage: {tsdb: {retention: {time: 90d}}}` at 90d, the process logs
+      `duration=90d` (row H of the planner's own premises log,
+      logs/planner-step05d-premises.log). THE CONFIG FILE WINS. A retention field
+      added there would therefore override this row's flag while every clause
+      above stayed green — the flag would still read `90d` and would mean
+      nothing. Priced at zero on the delivered tree: `prometheus.yml.j2`'s
+      top-level keys are `global` and `scrape_configs`. It fails CLOSED, and a
+      later row that wants the successor spelling pays by moving the pin here.
+
+    WHICH IS THE OTHER THING THIS ROW OWES: THE FLAG IS DEPRECATED AND SAYS SO
+    NOWHERE THE OPERATOR WOULD SEE. `--help` on the pinned binary prints
+    "[DEPRECATED] … This flag has been deprecated, use the
+    storage.tsdb.retention.time field in the config file instead", and the
+    successor is live in v3.12.0 (`promtool` rc=0, `duration=90d`). But the
+    running process logs ZERO lines matching /deprecat/ across every row of the
+    evidence log, so nothing at runtime would ever have told us. 5d ships the
+    FLAG anyway, and the reason is the delivery relation rather than taste: the
+    successor lives in `prometheus.yml`, a `:ro` mount whose delivery path is
+    `notify: Restart prometheus` — the opposite path — and it would put retention
+    back inside the file 5c has just fenced.
+
+    AND THE DELIVERY RELATION IS THE INVERSE OF EVERY OTHER RENDER IN THIS ROLE,
+    so it is stated with the rows that decide it and not by analogy. Four rows of
+    real `docker compose`, one service, changing only `command:`
+    (logs/planner-step05d-premises.log): A create, id `ea064a88`; B CONTROL, `up
+    -d` over an UNCHANGED file, SAME id — so `up -d` really is a no-op over an
+    unchanged spec, which is what makes C readable; C `command:` changed, `up
+    -d`, compose prints `Recreated`, id `4ce73c98`. A `command:` entry IS the
+    service spec, so `just play` delivers this change with NO handler. Row D is
+    why a handler must not be added anyway: `command:` changed then `docker
+    compose restart` leaves the SAME id and the running process still carrying
+    the OLD argv while the file on disk says otherwise. A `notify: Restart
+    prometheus` copied off the `prometheus.yml` task would not be merely
+    redundant — it would deliver NOTHING while looking like delivery.
+    """
+    block = _strip_comments(_compose_service_block(_read(COMPOSE), PROMETHEUS_SERVICE))
+    present = bool(block.strip())
+    args = _service_command_args(block)
+    retention = _last_flag_value(args, PROMETHEUS_RETENTION_FLAG)
+    retention_pinned = retention == PROMETHEUS_RETENTION
+    size_cap = _last_flag_value(args, PROMETHEUS_SIZE_CAP_FLAG)
+    no_size_cap = size_cap is None
+    tsdb_path = _last_flag_value(args, PROMETHEUS_TSDB_PATH_FLAG)
+    tsdb_dir = str(
+        pathlib.PurePosixPath(PROMETHEUS_WORKDIR)
+        / (tsdb_path if tsdb_path is not None else PROMETHEUS_TSDB_PATH_DEFAULT)
+    )
+    tsdb_path_ok = tsdb_dir == PROMETHEUS_TSDB_DIR
+    prom_keys, prom_unreadable = _service_key_lines(_strip_comments(_read(PROM_SCRAPE)))
+    no_config_side_retention = "storage" not in prom_keys and not prom_unreadable
+    ok = (
+        present
+        and retention_pinned
+        and no_size_cap
+        and tsdb_path_ok
+        and no_config_side_retention
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: {PROMETHEUS_SERVICE} keeps its TSDB for "
+        f"{PROMETHEUS_RETENTION} (present={present}, "
+        f"retention_pinned={retention_pinned} (value={retention!r}, want="
+        f"{PROMETHEUS_RETENTION!r}, and UNSET means {PROMETHEUS_RETENTION_DEFAULT} "
+        f"silently — {PROMETHEUS_RETENTION_EVIDENCE} row K), "
+        f"no_size_cap={no_size_cap} ({PROMETHEUS_SIZE_CAP_FLAG}={size_cap!r}, want "
+        f"absent — set beside a green 90d the process logs size=1MiB and prunes "
+        f"in minutes, {PROMETHEUS_SIBLING_EVIDENCE} row S2), "
+        f"tsdb_path_ok={tsdb_path_ok} (value={tsdb_path!r} resolves against "
+        f"WORKDIR {PROMETHEUS_WORKDIR!r} to {tsdb_dir!r}, want "
+        f"{PROMETHEUS_TSDB_DIR!r}), "
+        f"no_config_side_retention={no_config_side_retention} "
+        f"({PROM_SCRAPE.name} top-level keys={sorted(prom_keys)}, "
+        f"unreadable={prom_unreadable}))"
+    )
+    return ok
+
+
 def test_prometheus_render_is_world_read_only_unpaid() -> bool:
     """Step-5c: `prometheus.yml`'s 0644 is LICENSED, not merely written down.
 
@@ -8424,6 +8654,7 @@ def main() -> int:
         test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses(),
         test_blackbox_scrape_jobs_probe_plex(),
         test_blackbox_scrape_cadence_is_what_prometheus_runs(),
+        test_prometheus_retention_outlives_the_blip_window(),
         test_prometheus_render_is_world_read_only_unpaid(),
         test_homepage_allowed_hosts(),
         test_internal_services_lists_all_internal(),
