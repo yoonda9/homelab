@@ -82,3 +82,59 @@ scrape_configs:
     static_configs:
       - targets:
           - plex-exporter:9594
+
+  # CT 110's node-exporter (plex-blip Step 4d). The ONLY job in this file whose
+  # target is not on the compose network — CT 110 is a separate LXC, so this
+  # scrape crosses the LAN — and the only one whose two ends live in two
+  # different Ansible roles. It collects the host telemetry the blip
+  # investigation had no timeline for (load, D-state, PSI) AND, through
+  # node-exporter's textfile collector, the watchdog's own `plex_*` series.
+  #
+  # THE NAME IS NOT `node-exporter`: that job is fifteen lines up and is the
+  # DOCKER HOST's exporter on the compose network. Both emit `node_*` families;
+  # they are told apart by `job` and by `instance`, which is why neither needs a
+  # relabel and why this one cannot borrow the name.
+  #
+  # THE TARGET IS THE INVENTORY'S ADDRESS, NOT A SECOND COPY OF IT.
+  # `docker_host_plex_url` in this role's defaults already spells CT 110's IP
+  # once, for Traefik's public Plex router; a second spelling is two literals
+  # that agree until one moves. `hostvars['plex']` is a BARE reference on
+  # purpose: scripts/test_traefik_config_shape.py reads this template
+  # LINE-structurally, so its `_LINE_BOUNDED_EXPR` refuses the rename-robust
+  # `hostvars[groups['plex'] | first]` form (measured against the compiled
+  # regex). The host name is therefore a literal that came from tofu's
+  # `plex_name` output via gen_inventory.py, and the guard discharges it by
+  # asserting inventory/hosts.yml really carries that host under that group.
+  #
+  # THE PORT IS 9100 HERE AND `plex_node_exporter_listen_address` THERE. That
+  # default is a `plex` role variable and site.yml runs `docker_host` and `plex`
+  # as separate plays, so this template CANNOT render it — the relation lives in
+  # the guard, which reads the port half out of the role and requires this
+  # literal to equal it. (Only the port half: `0.0.0.0` is a bind wildcard, not
+  # a host anything dials.)
+  #
+  # NO `metrics_path`, and that is the pve-exporter comment above read in
+  # reverse: node-exporter serves its metrics on the plain default path, so a
+  # path copied off that job is a 404 — the target reads DOWN and the series
+  # exist nowhere. Nothing here is multi-target either; the target IS the
+  # exporter.
+  #
+  # The 15s interval is job-local rather than inherited so that this job's
+  # cadence is a property of this job: it pairs with the watchdog's own
+  # `textfile_refresh_sec` (15.0 s, design §4.5), because a textfile collector
+  # re-serves whatever is on disk and the slower of the two decides the graph's
+  # resolution. The guard pins that pair; a change to the global interval must
+  # not coarsen it silently.
+  #
+  # The target is QUOTED and its neighbours are not, because it is the only one
+  # that CONCATENATES an expression with a literal `:9100` suffix. Measured
+  # unquoted, that shape makes this file fail YAML parsing as a ParserError
+  # HERE, where at a0915e9 it failed as a ConstructorError on the pve target at
+  # :49. Nothing parses this template as YAML — Jinja renders it first — but
+  # moving the file's first failure onto this line for nothing is a property
+  # worth not spending. The render is a plain `"192.168.1.110:9100"` either way.
+  - job_name: plex-node-exporter
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "{{ hostvars['plex'].ansible_host }}:9100"

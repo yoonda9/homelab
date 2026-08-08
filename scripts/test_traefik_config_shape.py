@@ -33,12 +33,15 @@ section opener, so an empty stub could not satisfy the check. The real gate is
 the standalone exit code.
 """
 
+import ast
 import pathlib
 import re
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ANSIBLE = REPO_ROOT / "ansible"
+INVENTORY = ANSIBLE / "inventory" / "hosts.yml"
+PLEX_ROLE = ANSIBLE / "roles" / "plex"
 ROLE = ANSIBLE / "roles" / "docker_host"
 TASKS = ROLE / "tasks" / "main.yml"
 HANDLERS = ROLE / "handlers" / "main.yml"
@@ -1641,6 +1644,71 @@ PLEX_EXPORTER_ENV = {
 # from Traefik's own default: without that clause the pair is satisfiable by
 # writing out the numbers that were already in force.
 PROM_DEFAULT_SCRAPE_TIMEOUT = 10.0
+
+# --- plex-blip Step 4d: CT 110's node-exporter --------------------------------
+# The one job in this file whose target is NOT on the compose network. CT 110 is
+# a separate LXC, so the scrape crosses the LAN and every coordinate it needs
+# lives in a role this file may READ and must not edit.
+#
+# THE JOB NAME IS NOT `node-exporter`: that name is taken at the top of the
+# template by the docker host's OWN exporter, and `_scrape_job_block` returns ""
+# for a name that resolves twice, so a collision reddens rather than picks. Two
+# jobs emitting the same `node_*` families are told apart downstream by `job` and
+# by `instance`, which is why neither needs a relabel.
+PLEX_NODE_JOB = "plex-node-exporter"
+# The inventory coordinates, named ONCE and consumed twice — the expression the
+# template must carry is built from them, and the census below looks the same
+# names up in `inventory/hosts.yml`. Renaming the constant alone therefore
+# cannot pass: the template stops matching, and pointing the template back at
+# the new name reddens the census unless the inventory really carries it.
+PLEX_INVENTORY_GROUP = "plex"
+PLEX_INVENTORY_HOST = "plex"
+# THE ONE SPELLING THIS FILE'S OWN LINE READER ACCEPTS, and it is a constraint
+# rather than a preference. `PROM_SCRAPE` is a member of `LINE_READ_TEMPLATES`,
+# so every `{{ }}` it carries must `fullmatch` `_LINE_BOUNDED_EXPR` — a bare
+# reference with at most `| default(<literal>)`. Measured against the compiled
+# regex rather than read off it: `hostvars['plex'].ansible_host` and
+# `hostvars['plex']['ansible_host']` pass; the rename-robust
+# `hostvars[groups['plex'] | first].ansible_host` is REFUSED ("not a bare
+# reference — its output is computed, not shown"), as is the `[0]` form.
+#
+# So the accepted spelling names the host as a LITERAL, and `gen_inventory.py`
+# takes that name from tofu's `plex_name` output (:76) while the GROUP name is
+# structural (:74) — a literal agreeing with generated data. The discharge is the
+# `inventory_has_host` census below: a tofu rename reds this gate instead of
+# silently pointing the job at a host `hostvars` does not have.
+PLEX_NODE_TARGET_EXPR = f"{{{{ hostvars['{PLEX_INVENTORY_HOST}'].ansible_host }}}}"
+# The far end of the port relation. `plex_node_exporter_listen_address` is what
+# the plex role's drop-in passes to `--web.listen-address`, so the port the
+# exporter BINDS and the port this job DIALS are one decision — and this file
+# must not make it twice. `0.0.0.0` is a bind wildcard and not a scrape host, so
+# only the PORT half relates; comparing the addresses whole can only ever be red.
+PLEX_ROLE_DEFAULTS = PLEX_ROLE / "defaults" / "main.yml"
+PLEX_NODE_EXPORTER_DROPIN = (
+    PLEX_ROLE / "templates" / "prometheus_node_exporter_override.conf.j2"
+)
+PLEX_NODE_LISTEN_VAR = "plex_node_exporter_listen_address"
+# `task-1786167365-e571` is why the drop-in is read at all. A guard that compares
+# a render against the variable it rendered FROM is a tautology — that row left
+# its suite 9/9 GREEN over a 203/EXEC crash loop — so the second end here is this
+# template's own literal port, never a second read of the plex default. What the
+# drop-in supplies instead is the REFERENCE: the variable is only worth following
+# if something still passes it to the exporter, and a `--web.listen-address` that
+# stopped dereferencing it would leave the port relation nominal.
+PLEX_NODE_LISTEN_REF = f"{{{{ {PLEX_NODE_LISTEN_VAR} }}}}"
+# The watchdog writes the `.prom` this job exists to collect, and its refresh
+# cadence is a plain keyword default with no CLI flag in the shipped unit — so
+# 15.0 s is what actually runs. Design §4.5 sets the scrape at 15 s: one decision
+# with an end in each role, which is `task-1786159059-184b`'s subject. Pinned as
+# an EQUALITY, because the relation that survives the mutation that row measured
+# (the default moved to 86400.0) is equality and not `<=`.
+PLEX_WATCHDOG_SOURCE = PLEX_ROLE / "files" / "plex_blip_watchdog.py"
+PLEX_WATCHDOG_REFRESH_PARAM = "textfile_refresh_sec"
+# Same allow-list shape as `PLEX_JOB_KEYS`, and for the same reason: an absence
+# pin fails open one key past its edge. `metrics_path` is the key that matters —
+# node-exporter serves the plain default path, so a `/pve`-style path copied off
+# the neighbouring job is a 404 whose target reads DOWN with the series nowhere.
+PLEX_NODE_JOB_KEYS = ("scrape_interval", "scrape_timeout", "static_configs")
 
 
 def _indented_key_lines(body: str, key: str) -> list:
@@ -4275,6 +4343,232 @@ def test_plex_token_sourced_from_vault() -> bool:
     return ok
 
 
+def _yaml_block_by_key(body: str, key: str) -> str:
+    """`_key_bounded_block` at whatever column `key` happens to sit on.
+
+    Every other caller of that helper knows its column because the document is
+    one this repo writes. `ansible/inventory/hosts.yml` is GENERATED by
+    `scripts/gen_inventory.py`, so its nesting is the generator's to move, and a
+    column pinned here would turn a reformat into a false RED on a job that still
+    points at the right host. The key is located first and its own indent handed
+    back to the slicer, which keeps the boundary rule in one place.
+
+    Fails CLOSED in the direction that matters: a key that opens no block (an
+    inline `plex: something`) is skipped, and a key that is nowhere returns "",
+    so every clause built on this reddens rather than quantifying over nothing.
+    """
+    for line in _strip_comments(body).splitlines():
+        parsed = _yaml_key(line) if _line_class(line) == "key" else None
+        if parsed and parsed[1] == key and not parsed[2]:
+            return _key_bounded_block(body, key, parsed[0])
+    return ""
+
+
+def _address_port(address: str | None) -> str | None:
+    """The PORT half of a `host:port` listen address, or None.
+
+    `0.0.0.0:9100` is a bind address: the host half is a wildcard meaning "every
+    interface", not a name anything dials. Only the port crosses to the scrape
+    side, so only the port is returned and the caller cannot accidentally compare
+    the halves that do not relate.
+
+    Refuses what it does not understand — no colon, or a port that is not
+    decimal — because the alternative is inventing a port for a job that then
+    scrapes it. The bare `:9100` form node-exporter also accepts comes back as
+    `9100`, since `rpartition` gives it an empty host and a real port.
+    """
+    if not address:
+        return None
+    _, sep, port = _yaml_unquote(address).rpartition(":")
+    return port if sep and re.fullmatch(r'\d+', port) else None
+
+
+def _signature_default_number(source: str, param: str) -> float | None:
+    """A numeric keyword DEFAULT in a Python signature, read with `ast`.
+
+    Reading a value out of `plex_blip_watchdog.py` by regex would match the
+    docstring that describes it as readily as the signature that sets it, and
+    importing the module to ask it directly would execute a program this guard
+    has no business running. `ast` reads the artifact the interpreter reads.
+
+    REFUSES rather than guesses, three ways, because a default this cannot see is
+    a relation that silently stops being pinned: a file that does not parse, a
+    parameter that appears in more than one signature (nothing here can say which
+    one the unit reaches), and a default that is not a literal number — a
+    computed or variable default has no value at read time, and `True` is not a
+    duration however well `bool` subclasses `int`.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args
+        positional = args.posonlyargs + args.args
+        pairs = list(zip(positional[len(positional) - len(args.defaults):], args.defaults))
+        pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None]
+        for arg, default in pairs:
+            if arg.arg != param:
+                continue
+            if not isinstance(default, ast.Constant):
+                return None
+            if isinstance(default.value, bool) or not isinstance(default.value, (int, float)):
+                return None
+            found.append(float(default.value))
+    return found[0] if len(found) == 1 else None
+
+
+def test_plex_node_exporter_scrape_job() -> bool:
+    """Step-4d: CT 110's node-exporter is scraped, with its PORT read off the role.
+
+    The first job in this file whose target is not a compose service name, and
+    the first whose two ends live in two different Ansible roles. `ansible/site.yml`
+    runs `docker_host` and `plex` as SEPARATE plays, so this template cannot
+    render a `plex` role default even though that default is what decides the
+    port — the relation therefore lives HERE, in the guard, and that is the
+    design rather than a compromise.
+
+    * `present` — the job resolves exactly ONCE inside `scrape_configs:`
+      (`_scrape_job_block`), which also settles the name collision: `node-exporter`
+      is already taken at the top of the file by the docker host's own exporter,
+      and a duplicate name returns "" rather than picking a block.
+    * `single_target` / `host_is_inventory_ref` — exactly one target entry,
+      quantified over every `targets:` list under `static_configs:`
+      (`_indented_blocks`, plural, for the reason round 9 established one job
+      over: `static_configs` is a LIST and Prometheus scrapes every entry of it).
+      Its host half is the Jinja reference `PLEX_NODE_TARGET_EXPR`, NOT a second
+      copy of the address — `docker_host_plex_url` in this role's defaults
+      already holds one spelling of CT 110's IP, and a second one is the defect
+      this clause exists to refuse.
+    * `inventory_has_host` — what discharges the literal inside that expression.
+      `hostvars['plex']` names the host as a bare string because this file's own
+      `_LINE_BOUNDED_EXPR` refuses the rename-robust `groups['plex'] | first`
+      form (measured against the compiled regex), and that name comes from
+      tofu's `plex_name` output through `gen_inventory.py`. So the census asks
+      `inventory/hosts.yml` whether a host of that name really sits under that
+      group WITH an `ansible_host`: a tofu rename reds the gate here instead of
+      rendering a target Ansible cannot resolve.
+    * `port_follows_exporter` / `reference_chain_live` — LOAD-BEARING, and the
+      whole reason this row exists. The target's port is compared against the
+      port half of `plex_node_exporter_listen_address` read out of the plex
+      role's defaults, so the port the exporter BINDS and the port this job DIALS
+      cannot move apart. `reference_chain_live` is the other half of that: the
+      role's drop-in must still pass `{{ plex_node_exporter_listen_address }}` to
+      `--web.listen-address`, or the default is a value nothing reads and the
+      relation is nominal.
+
+      THE SECOND END IS THIS TEMPLATE'S OWN LITERAL, NEVER THE SAME VARIABLE
+      TWICE. `task-1786167365-e571` is that mistake one file over — `runs_exporter`
+      compared a rendered argv against the variable it rendered FROM, which is a
+      tautology, and retargeting the variable left the suite 9/9 GREEN over a
+      203/EXEC crash loop.
+    * `no_multi_target_shape` — the job's OWN key column may hold only
+      `PLEX_NODE_JOB_KEYS`, the allow-list shape `test_plex_scrape_job_is_single_target`
+      established (an absence pin fails open one key past its edge, and
+      `_service_key_lines` reddens on any line at that column it cannot read).
+      What it keeps out is `metrics_path`: the pve-exporter job ten lines up NEEDS
+      one and node-exporter serves the plain default path, so a path copied off
+      the neighbour is a 404, the target reads DOWN, and the failure is invisible
+      until a dashboard is empty. `params` and a `__param_target` relabel are the
+      same copy, and there is nothing here to interrogate on another host's behalf.
+    * `interval_follows_refresh` — the scrape cadence is pinned BY RELATION to the
+      watchdog's own `textfile_refresh_sec` default, which is `task-1786159059-184b`:
+      design §4.5 sets both at 15 s, that row measured the default moving to
+      86400.0 with the watchdog suite still 92/92 GREEN, and nothing related the
+      two. A textfile collector re-serves whatever is on disk, so the cadence that
+      decides the graph's resolution is the SLOWER of the pair; scraping fifteen
+      seconds apart a file rewritten once a day is 5760 identical samples and one
+      real one.
+
+      EQUALITY AND NOT `<=`, stated as a claim about what this catches: `<=` reads
+      as the honest inequality (over-scraping only wastes samples) and leaves
+      184b's own mutation GREEN, since 15 <= 86400. The interval is read
+      EFFECTIVELY — the job's own `scrape_interval` if it sets one, otherwise the
+      file's `global` — so the pin does not legislate which of the two spellings
+      the template uses.
+    * `timeout_fits` — the effective timeout does not exceed the effective
+      interval. Prometheus REFUSES to load a config that gets this backwards, so
+      the whole file stops scraping rather than this job alone, and nothing in
+      this repo's gate loads a Prometheus config (`test_plex_scrape_job_is_single_target`
+      measured that at length). The default this job leaves in force is
+      `PROM_DEFAULT_SCRAPE_TIMEOUT`, read here rather than assumed absent.
+    """
+    body = _read(PROM_SCRAPE)
+    block = _scrape_job_block(body, PLEX_NODE_JOB)
+    present = bool(block.strip())
+    targets = [
+        _yaml_unquote(t) for t in re.findall(
+            r'(?m)^[^\S\n]*-[^\S\n]*(\S.*?)[^\S\n]*$',
+            "\n".join(_indented_blocks(_indented_block(block, "static_configs"), "targets")),
+        )
+    ]
+    single_target = len(targets) == 1
+    host_halves = [t.rpartition(":")[0] for t in targets]
+    port_halves = [t.rpartition(":")[2] for t in targets]
+    host_is_inventory_ref = bool(targets) and all(
+        h == PLEX_NODE_TARGET_EXPR for h in host_halves
+    )
+    exporter_port = _address_port(
+        _block_scalar(_read(PLEX_ROLE_DEFAULTS), PLEX_NODE_LISTEN_VAR)
+    )
+    port_follows_exporter = (
+        bool(targets) and exporter_port is not None
+        and all(p == exporter_port for p in port_halves)
+    )
+    reference_chain_live = PLEX_NODE_LISTEN_REF in _read(PLEX_NODE_EXPORTER_DROPIN)
+    host_block = _yaml_block_by_key(
+        _yaml_block_by_key(_yaml_block_by_key(_read(INVENTORY), PLEX_INVENTORY_GROUP), "hosts"),
+        PLEX_INVENTORY_HOST,
+    )
+    inventory_has_host = bool(_block_scalar(host_block, "ansible_host"))
+    job_keys, unreadable_keys = _service_key_lines(block)
+    extra_keys = [k for k in job_keys if k not in PLEX_NODE_JOB_KEYS]
+    no_multi_target_shape = present and not extra_keys and not unreadable_keys
+    global_block = _key_bounded_block(body, "global", 0)
+    job_interval = _duration_seconds(_block_scalar(block, "scrape_interval"))
+    global_interval = _duration_seconds(_block_scalar(global_block, "scrape_interval"))
+    interval = job_interval if job_interval is not None else global_interval
+    job_timeout = _duration_seconds(_block_scalar(block, "scrape_timeout"))
+    global_timeout = _duration_seconds(_block_scalar(global_block, "scrape_timeout"))
+    timeout = (
+        job_timeout if job_timeout is not None
+        else global_timeout if global_timeout is not None
+        else PROM_DEFAULT_SCRAPE_TIMEOUT
+    )
+    refresh = _signature_default_number(
+        _read(PLEX_WATCHDOG_SOURCE), PLEX_WATCHDOG_REFRESH_PARAM
+    )
+    interval_follows_refresh = (
+        interval is not None and refresh is not None and interval == refresh
+    )
+    timeout_fits = interval is not None and timeout <= interval
+    ok = (
+        present and single_target and host_is_inventory_ref and inventory_has_host
+        and port_follows_exporter and reference_chain_live and no_multi_target_shape
+        and interval_follows_refresh and timeout_fits
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: {PLEX_NODE_JOB} scrape job follows the plex role "
+        f"(present={present}, single_target={single_target} (targets={targets}), "
+        f"host_is_inventory_ref={host_is_inventory_ref} "
+        f"(want={PLEX_NODE_TARGET_EXPR!r}), inventory_has_host={inventory_has_host} "
+        f"({PLEX_INVENTORY_GROUP}/{PLEX_INVENTORY_HOST} in {INVENTORY.name}), "
+        f"port_follows_exporter={port_follows_exporter} "
+        f"(exporter_port={exporter_port}, job_ports={port_halves}), "
+        f"reference_chain_live={reference_chain_live} ({PLEX_NODE_LISTEN_REF!r} in "
+        f"{PLEX_NODE_EXPORTER_DROPIN.name}), no_multi_target_shape="
+        f"{no_multi_target_shape} (keys={job_keys}, unexpected={extra_keys}, "
+        f"unreadable={unreadable_keys}), interval_follows_refresh="
+        f"{interval_follows_refresh} (interval={interval}s, "
+        f"{PLEX_WATCHDOG_REFRESH_PARAM}={refresh}s), timeout_fits={timeout_fits} "
+        f"(timeout={timeout}s))"
+    )
+    return ok
+
+
 def test_homepage_allowed_hosts() -> bool:
     """Step-10: homepage sets HOMEPAGE_ALLOWED_HOSTS=home.{{ domain }}.
 
@@ -5412,6 +5706,7 @@ def main() -> int:
         test_plex_scrape_job_is_single_target(),
         test_plex_exporter_service_block(),
         test_plex_token_sourced_from_vault(),
+        test_plex_node_exporter_scrape_job(),
         test_homepage_allowed_hosts(),
         test_internal_services_lists_all_internal(),
         test_homepage_monitors_target_internal_urls(),
