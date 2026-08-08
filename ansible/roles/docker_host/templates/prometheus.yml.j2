@@ -138,3 +138,112 @@ scrape_configs:
     static_configs:
       - targets:
           - "{{ hostvars['plex'].ansible_host }}:9100"
+
+  # Synthetic HTTP probes of Plex (plex-blip-manual-triage Step 5c), design §4.6.
+  # THE MULTI-TARGET SHAPE AGAIN, and it is the pve-exporter job read once more
+  # rather than a new idea: the TARGET is the URL to probe, the exporter is only
+  # the address the request is sent to. Three jobs and not one because the
+  # DIFFERENTIAL is the diagnosis — /identity fast + /status/sessions slow is the
+  # database/lock signature, both slow is host or thread-pool saturation, and
+  # direct fast + proxied slow is Traefik/TLS/the tunnel. One job cannot say
+  # which; and on 2026-08-07 /identity answered HTTP 200 through the entire
+  # five-minute outage while /status/sessions reached 101,394 ms, so a
+  # probe_success check on the cheap endpoint alone would have stayed green
+  # throughout (research/live-blip-2026-08-07-case-study.md).
+  #
+  # THE JOB NAMES ARE A CROSS-STEP RELATION. Design §5.3 writes Step 7's alerts
+  # as probe_duration_seconds{job="blackbox-plex-identity"},
+  # {job="blackbox-plex-sessions"} and probe_success{job=~"blackbox-plex.*"}. A
+  # rename here leaves those rules matching nothing and firing never — an alert
+  # with no series to match looks exactly like an alert with nothing to say.
+  # Step 7 does not exist yet, so the guard pins the shared blackbox-plex prefix
+  # and says so; the exact-match half arrives with the rules.
+  #
+  # metrics_path IS /probe ON ALL THREE, which is the pve-exporter comment above
+  # for a third time: blackbox also serves /metrics, its OWN process metrics, so
+  # a job left on Prometheus' default path reads UP in Status -> Targets and
+  # produces ZERO probe_* series. And `module=` is a JOIN NOTHING CHECKS — a
+  # module blackbox.yml does not define answers HTTP 400 from /probe, the target
+  # reads DOWN, and neither config is invalid. Both ends are held against one
+  # tuple in scripts/test_traefik_config_shape.py.
+  #
+  # NO URL IS SPELLED TWICE. docker_host_plex_url is this role's existing default
+  # for CT 110 (Traefik's public Plex router already uses it) and the public
+  # hostname is dynamic.yml.j2's own router rule; re-typing either is two
+  # literals that agree until one moves. The guard reads the proxied host OUT of
+  # that rule, so the probe follows the route it is measuring.
+  #
+  # THE FIRST TWO TARGETS ARE QUOTED BECAUSE OF THE GUARD, NOT BECAUSE OF THE
+  # CONCATENATION, and the comment on plex-node-exporter above generalises its
+  # own case wrongly. The guard parses this template with every reference
+  # replaced by a single-quoted placeholder, so what breaks the document is a
+  # value that BEGINS with a reference: '<REF>'/identity is a ParserError, while
+  # https://plex.'<REF>'/identity parses clean. Measured at Step 5c against the
+  # shipped reader (logs/builder-5c-target-spellings.log), with the pve target as
+  # the control. The proxied target is quoted for symmetry with its two
+  # neighbours and would parse bare.
+  #
+  # THE INTERVAL/TIMEOUT PAIR IS TWO DECISIONS AND THE SECOND ONE IS NOT ABOUT
+  # THIS FILE. Prometheus refuses a config whose scrape_timeout EXCEEDS its
+  # scrape_interval (equality loads — measured, 61s vs 60s is rc=1 and 60s vs 60s
+  # is rc=0 on prom/prometheus:v3.12.0). Separately, blackbox clamps every probe
+  # to Prometheus' own scrape-timeout header MINUS --timeout-offset (0.5s), so
+  # each module's `timeout:` in blackbox.yml.j2 is a ceiling and the value below
+  # is what actually binds. That is why plex-sessions carries an explicit 35s: on
+  # Prometheus' 10s default its module's 30s — chosen to sit well above the 5s
+  # that design §4.6 alerts on — would be unreachable, and every stall would be
+  # recorded as a 9.5s failure with no config invalid anywhere.
+  - job_name: blackbox-plex-identity
+    metrics_path: /probe
+    params:
+      module: [plex_identity_direct]
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "{{ docker_host_plex_url }}/identity"
+    relabel_configs:
+      # The probed URL becomes the ?target= query parameter …
+      - source_labels: [__address__]
+        target_label: __param_target
+      # … and is kept as the instance label. WITHOUT THIS HOP THE PROBES STILL
+      # RUN: every series would be attributed to blackbox-exporter:9115, all
+      # three jobs would land on one instance, and the differential above could
+      # not be read off a graph at all.
+      - source_labels: [__param_target]
+        target_label: instance
+      # … while the request itself is dialed at the exporter.
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-plex-sessions
+    metrics_path: /probe
+    params:
+      module: [plex_sessions]
+    scrape_interval: 60s
+    scrape_timeout: 35s
+    static_configs:
+      - targets:
+          - "{{ docker_host_plex_url }}/status/sessions"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-plex-proxied
+    metrics_path: /probe
+    params:
+      module: [plex_identity_proxied]
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "https://plex.{{ domain }}/identity"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

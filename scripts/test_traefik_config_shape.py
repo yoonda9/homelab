@@ -1317,6 +1317,135 @@ def _scrape_job_block(body: str, job: str) -> str:
     return tail[:nxt.start()] if nxt else tail
 
 
+def _static_targets(block: str) -> list:
+    """Every `targets:` entry under one scrape job's `static_configs:`, RAW.
+
+    Row 5c is the FOURTH caller — pve's, plex-exporter's and
+    plex-node-exporter's clauses each carried their own copy of this expression,
+    and three more copies would be seven. One reader, so the rule cannot drift
+    between them.
+
+    The rule it carries is `_indented_blocks`, PLURAL, and Step-2a F1 round 9 is
+    why: Prometheus takes `static_configs` as a LIST and scrapes every entry in
+    it, so the singular read left `target_is_pve_host=True` over a config that
+    loads `['192.168.1.50', '203.0.113.9']` — the exporter interrogating a
+    caller-chosen host with the homelab's PVE credential
+    (logs/calibration-step02a-f1-round9.log, leg A, R5).
+
+    RAW, quotes included, and that is the seam rather than an oversight:
+    `_yaml_unquote` is the CALLER's to apply because the callers compare
+    different things. Two of them compare a whole `host:port` token, 5c's
+    compares a URL whose authority half is a Jinja reference, and
+    `test_pve_scrape_job_is_multi_target` PRINTS the raw list in its diagnostic.
+    Unquoting here would silently change what that clause reports.
+    """
+    return re.findall(
+        r'(?m)^[^\S\n]*-[^\S\n]*(\S.*?)[^\S\n]*$',
+        "\n".join(_indented_blocks(_indented_block(block, "static_configs"), "targets")),
+    )
+
+
+def _relabel_triplet(block: str, exporter: str) -> tuple:
+    """`(defects, hops)` for one multi-target job's `__param_target` walk.
+
+    THE FOURTH SPELLING WAS THE PRESCRIPTION, and this is the reuse row 5c's
+    record asked for: `pve-exporter` carried this walk inline, 5c adds three more
+    jobs of the same shape, and four unrelated copies is where they start to
+    differ. The rows behind the read live at
+    `test_pve_scrape_job_is_multi_target`, which won them; what is repeated here
+    is only the rule they establish.
+
+    `relabel_configs` is a LIST, so every half of every hop is asked of ONE
+    ENTRY (`_list_entries`). Step-2a F1 round 10: until then each half was a
+    `(?ms) … .*? …` span over the whole block, and `.*?` does not care which
+    entry the halves came from — three deployable rows printed a field
+    BYTE-IDENTICAL to the honest tree's at guard PASS 36/36 with `promtool check
+    config` rc=0. The `(?:-\\s*)?` prefix is because an entry's first key shares
+    its line with the `-`; the trailing `\\s*$` is so `__param_target` cannot be
+    answered by a longer label that merely starts with it.
+
+    THE THREE HOPS, and each defect NAMES the one that is missing because they
+    fail differently — row 5c's acceptance 4 is exactly that the reds are
+    distinguishable:
+
+    * `carry` — `__param_target` taken from `__address__`. Missing, the
+      multi-target exporter is asked about its DEFAULT target: pve-exporter's
+      `target` defaults to `localhost`, so it interrogates its own container, and
+      blackbox's `/probe` answers HTTP 400 with no `probe_*` series at all.
+    * `keep` — `instance` taken from `__param_target`. THE SILENT ONE, which is
+      why it is a hop here and was not pinned at all before this row: the probe
+      still runs and every series is correct except its identity — all of them
+      are attributed to the exporter's own address, so 5c's three jobs collapse
+      onto one `instance` and design §4.6's differential cannot be read.
+    * `dial` — `__address__` replaced by the exporter. Missing, Prometheus dials
+      the PROBED host directly on the wrong port and path.
+
+    ORDER IS PART OF TWO HOPS AND NOT OF THE THIRD, stated rather than applied
+    uniformly: relabel rules run in written order, so `carry` must precede
+    `dial` (or `__param_target` is taken from an `__address__` already overwritten
+    — the exporter asked about ITSELF, measured as `?target=pve-exporter%3A9221`)
+    and must precede `keep` (or `instance` is taken from a label not yet set).
+    `keep` against `dial` is UNORDERED: `keep` reads `__param_target`, which
+    `dial` does not touch, so either sequence produces the same label set and a
+    guard demanding one of them would be forbidding a config that works.
+
+    What is NOT modelled, carried over from the clause that won these rows:
+    which WRITE WINS. A later entry overwriting `__param_target` with a literal
+    is green here, and it fails loudly at deploy.
+    """
+    entries = _list_entries(_indented_block(block, "relabel_configs"))
+
+    def _entry(*patterns):
+        return next(
+            (i for i, e in enumerate(entries)
+             if all(re.search(p, e) for p in patterns)),
+            None,
+        )
+
+    hops = {
+        "carry": _entry(
+            r'(?m)^\s*(?:-\s*)?source_labels:[^\n]*__address__',
+            r'(?m)^\s*(?:-\s*)?target_label:[^\S\n]*__param_target\s*$',
+        ),
+        "keep": _entry(
+            r'(?m)^\s*(?:-\s*)?source_labels:[^\n]*__param_target',
+            r'(?m)^\s*(?:-\s*)?target_label:[^\S\n]*instance\s*$',
+        ),
+        "dial": _entry(
+            r'(?m)^\s*(?:-\s*)?target_label:[^\S\n]*__address__\s*$',
+            rf'(?m)^\s*(?:-\s*)?replacement:[^\S\n]*"?{re.escape(exporter)}"?\s*$',
+        ),
+    }
+    defects = []
+    if hops["carry"] is None:
+        defects.append(
+            "no entry carries __address__ into __param_target — the exporter is "
+            "asked about its own default target, not about the configured one"
+        )
+    if hops["keep"] is None:
+        defects.append(
+            "no entry keeps __param_target as `instance` — SILENT: the probe "
+            f"still runs and every series is attributed to {exporter}"
+        )
+    if hops["dial"] is None:
+        defects.append(
+            f"no entry replaces __address__ with {exporter!r} — Prometheus dials "
+            "the probed host itself instead of the exporter"
+        )
+    for later, why in (
+        ("dial", "__param_target would be taken from an __address__ already "
+                 "overwritten — the exporter asked about ITSELF"),
+        ("keep", "`instance` would be taken from a __param_target not yet set"),
+    ):
+        if hops["carry"] is not None and hops[later] is not None \
+                and not hops["carry"] < hops[later]:
+            defects.append(
+                f"the carry hop is entry {hops['carry']} but {later} is entry "
+                f"{hops[later]}: {why}"
+            )
+    return defects, hops
+
+
 def _scrape_target_port(body: str, job: str, host: str) -> str | None:
     """Port of `<host>:<port>` in prometheus.yml.j2's `<job>` static target."""
     block = _scrape_job_block(body, job)
@@ -1356,6 +1485,43 @@ def _duration_seconds(value: str | None) -> float | None:
         int(num) * _DURATION_UNITS[unit]
         for num, unit in re.findall(r'(\d+)(ms|[smhdwy])', v)
     )
+
+
+def _effective_scrape_pair(body: str, block: str) -> dict:
+    """What Prometheus ACTUALLY scrapes one job at — interval and timeout, seconds.
+
+    Step 4d shipped this read inline; row 5c is the fourth and fifth job to need
+    it and the row that says so — three copies of a resolution rule is where the
+    copies start disagreeing. `PROM_DEFAULT_SCRAPE_TIMEOUT` is here rather than
+    at each call site for the same reason: a job that sets NEITHER key is not a
+    job with no timeout, it is a job on Prometheus' own 10 s, and a clause that
+    read `None` there would be comparing a pair that is not the pair the process
+    uses.
+
+    The dict keeps the raw halves as well as the resolved ones because both are
+    claims a caller may need to make, and they are DIFFERENT claims:
+    `timeout_fits` is about the EFFECTIVE pair (it is the relation Prometheus
+    refuses a config over), while `interval_is_job_local` is about
+    `job_interval` alone — 4d's own rows, where `global` is 15 s too, so deleting
+    the job's key leaves the effective read unchanged and GREEN.
+    """
+    global_block = _key_bounded_block(body, "global", 0)
+    job_interval = _duration_seconds(_block_scalar(block, "scrape_interval"))
+    job_timeout = _duration_seconds(_block_scalar(block, "scrape_timeout"))
+    global_interval = _duration_seconds(_block_scalar(global_block, "scrape_interval"))
+    global_timeout = _duration_seconds(_block_scalar(global_block, "scrape_timeout"))
+    return {
+        "interval": job_interval if job_interval is not None else global_interval,
+        "timeout": (
+            job_timeout if job_timeout is not None
+            else global_timeout if global_timeout is not None
+            else PROM_DEFAULT_SCRAPE_TIMEOUT
+        ),
+        "job_interval": job_interval,
+        "job_timeout": job_timeout,
+        "global_interval": global_interval,
+        "global_timeout": global_timeout,
+    }
 
 
 def _bucket_values(block: str) -> list | None:
@@ -1825,6 +1991,102 @@ BLACKBOX_MODE = "0640"
 # than carried from the routing's log.
 BLACKBOX_UID = 0
 BLACKBOX_UID_EVIDENCE = "logs/builder-5b-headers-probe.log"
+
+# --- plex-blip-manual-triage Step 5c: the three blackbox scrape jobs ----------
+# THE JOB NAMES ARE A CROSS-STEP RELATION AND NOT A CHOICE, and this row can pin
+# only half of it. Design §5.3 writes Step 7's alert rules as
+# `probe_duration_seconds{job="blackbox-plex-identity"}`,
+# `{job="blackbox-plex-sessions"}` and `probe_success{job=~"blackbox-plex.*"}`, so
+# a rename here leaves three rules matching nothing and firing never — the
+# absent-series class this objective has measured twice already
+# (`task-1786159639-39db`, `task-1786167833-1152`), and the one that is invisible
+# because an alert that never fires looks exactly like an alert with nothing to
+# say. STEP 7 DOES NOT EXIST YET, so there is no live far end to cite the way
+# `PLEX_NODE_FAR_END_CLAUSE` cites one: what is pinned is the PREFIX that regex
+# needs, shared by all three names, and the clause says plainly that the other
+# end arrives later rather than pretending to a citation.
+BLACKBOX_JOB_PREFIX = "blackbox-plex"
+# `blackbox-exporter:9115` — the service name is the constant compose is already
+# held to, and the port is the image's own EXPOSE, measured here rather than read
+# off a README: `docker inspect prom/blackbox-exporter:v0.28.0` gives
+# `ExposedPorts {"9115/tcp":{}}` with `Cmd` = `--config.file=…` and `User` empty
+# (logs/builder-5c-image-port.log). compose declares no `ports:` for this service
+# precisely because nothing outside the compose network may reach it.
+BLACKBOX_PORT = "9115"
+BLACKBOX_ADDRESS = f"{BLACKBOX_SERVICE}:{BLACKBOX_PORT}"
+# The probe endpoint, and it is the `metrics_path: /pve` lesson in a third
+# variant. blackbox serves `/metrics` too — its OWN process metrics — so a job
+# that leaves `metrics_path` at Prometheus' default reads UP, produces zero
+# `probe_*` series, and errors nowhere. There is no "write out the default
+# explicitly" no-op for this clause to be satisfied by (the two paths are
+# different endpoints, not a value and its default), which is why this pin has no
+# `path_is_not_default` twin the way the pve row does.
+BLACKBOX_PROBE_PATH = "/probe"
+BLACKBOX_PARAM_MODULE = "module"
+# blackbox clamps every probe to `Prometheus' scrape-timeout header minus
+# --timeout-offset`, whose default is 0.5 s — the fact blackbox.yml.j2 states at
+# :56-59 and again at :144-147, where it calls each module's own `timeout:` "a
+# ceiling, not a floor" and says 5c's `scrape_timeout` is what will actually bind.
+# That sentence is a claim about THIS row's numbers, so this row holds it: a
+# module timeout the effective scrape timeout cannot reach is a value nothing
+# reads. `plex_sessions` is where it bites — its 30 s is argued at length against
+# the 5 s alert threshold of design §4.6, and Prometheus' own 10 s default would
+# clip every measurement at 9.5 s with nothing anywhere reporting a defect.
+BLACKBOX_TIMEOUT_OFFSET = 0.5
+# The variable that already holds CT 110's address (this role's defaults, for
+# Traefik's public Plex router) and the file-provider router whose rule already
+# holds the public hostname. NEITHER IS RE-TYPED HERE: a second spelling is "two
+# literals that agree until one moves", the c6c4/e627 class this objective
+# charged three times in Step 4 alone. The direct probes carry the variable as a
+# bare reference; the proxied probe's host is READ OUT of dynamic.yml.j2's router
+# rule at check time, so retargeting either end moves the guard with it.
+PLEX_URL_REF = f"{{{{ {PLEX_URL_VAR} }}}}"
+DYNAMIC_PLEX_ROUTER = "plex"
+PROXIED_SCHEME = "https://"
+# (module, effective scrape interval in seconds, path, whether the origin is the
+# LAN address or the public route). Design §4.6's table, and the modules come
+# from `BLACKBOX_MODULES` rather than from three literals of their own — the
+# `module=` query parameter is a JOIN NO PROCESS CHECKS: a job naming a module
+# `blackbox.yml` does not define gets HTTP 400 from `/probe`, so the target reads
+# DOWN with no series and neither config is invalid.
+BLACKBOX_JOBS = {
+    f"{BLACKBOX_JOB_PREFIX}-identity": {
+        "module": BLACKBOX_DIRECT_MODULE,
+        "interval": 15.0,
+        "path": "/identity",
+        "proxied": False,
+    },
+    f"{BLACKBOX_JOB_PREFIX}-sessions": {
+        "module": BLACKBOX_SESSIONS_MODULE,
+        "interval": 60.0,
+        "path": "/status/sessions",
+        "proxied": False,
+    },
+    f"{BLACKBOX_JOB_PREFIX}-proxied": {
+        "module": BLACKBOX_PROXIED_MODULE,
+        "interval": 15.0,
+        "path": "/identity",
+        "proxied": True,
+    },
+}
+# The allow-list shape `PLEX_JOB_KEYS` established, for the reason stated there:
+# an absence pin is bounded by the enumeration behind it and fails OPEN one key
+# past its edge. What it keeps out here is a credential — `basic_auth:`,
+# `authorization:` and `bearer_token_file:` are all legal scrape-config keys and
+# all of them would put a secret in the 0644 render this row's fence forbids —
+# and `scheme:`/`file_sd_configs:`, the two `promtool` accepts at rc=0 that the
+# Step-3 row measured on the neighbouring job.
+BLACKBOX_JOB_KEYS = (
+    "metrics_path", "params", "scrape_interval", "scrape_timeout",
+    "static_configs", "relabel_configs",
+)
+# The prometheus render's own comment, and the sentence that LICENSES its 0644.
+# `ansible/roles/docker_host/tasks/main.yml` says the scrape config "carries no
+# credential (the PVE token is an env var from the 0600 .env)" and therefore that
+# world-read costs nothing. Row 5c is the first row to write scrape jobs that
+# COULD carry one — a `params:` entry, a `?X-Plex-Token=` suffix on a target —
+# so the sentence stops being background and becomes a thing to hold.
+PROM_NO_CREDENTIAL_PROSE = "carries no credential"
 # --- the field census, and it is LOAD-BEARING rather than prose ---------------
 # `prom/blackbox-exporter:v0.28.0` unmarshals its config STRICTLY: a field it
 # does not know is `Error loading config` and exit 1, which `restart:
@@ -4087,8 +4349,17 @@ def test_pve_scrape_job_is_multi_target() -> bool:
       so a missing `__param_target` makes it interrogate its own container rather
       than fail loudly.
 
-      Both halves are asked of ONE list ENTRY, and the "and then" is a comparison
-      of the two entries' indices — Step-2a F1, round 10. Until then each half was
+      THREE HOPS SINCE ROW 5c, NOT TWO, and the third is the reason that row
+      extracted `_relabel_triplet` rather than copying this one. The
+      `__param_target -> instance` entry has been in this template since Step 2
+      with a comment explaining it and NOTHING pinning it: deleting it left this
+      clause printing `address_rewritten=True` over a scrape that still works and
+      attributes every `pve_*` series to the exporter container instead of to the
+      PVE host. Which hop is missing is now named in the defect list rather than
+      inferred from three booleans.
+
+      Every half is asked of ONE list ENTRY, and the "and then" is a comparison
+      of the entries' indices — Step-2a F1, round 10. Until then each half was
       a `(?ms) … .*? …` span over the whole block, and `.*?` does not care which
       entry the halves came from, so three deployable rows printed
       `address_rewritten=True (param_target=True, replacement=True)` —
@@ -4146,49 +4417,24 @@ def test_pve_scrape_job_is_multi_target() -> bool:
     }
     params_ok = not missing_params
     # The target is the PVE host — literal, or the role-defaults var holding it.
-    # `(\S.*?)` and not `(\S+)`: the target is a Jinja expression whose braces
-    # sit either side of a space (`{{ docker_host_pve_api_host }}`), so a
-    # non-whitespace run captures `{{` and nothing else.
-    #
-    # `_indented_blocks`, plural, and Step-2a F1 round 9 is why: `static_configs`
-    # is a LIST and Prometheus scrapes every entry in it, so reading the first
-    # `- targets:` left this printing `target_is_pve_host=True` over an artifact
-    # that promtool accepts and that loads `['192.168.1.50', '203.0.113.9']` —
-    # the exporter interrogating a caller-chosen host with the homelab's PVE
-    # credential. The claim below quantifies over ALL of them (`all(...)`), so
-    # the read has to as well.
-    targets = re.findall(
-        r'(?m)^[^\S\n]*-[^\S\n]*(\S.*?)[^\S\n]*$',
-        "\n".join(_indented_blocks(_indented_block(block, "static_configs"), "targets")),
-    )
+    # The read is PLURAL and the round-9 rows behind that live at
+    # `_static_targets`, which row 5c extracted from this call site and two
+    # others; the claim below quantifies over ALL of them (`all(...)`), which is
+    # what that helper exists to make possible.
+    targets = _static_targets(block)
     target_is_pve_host = bool(targets) and all(
         PVE_API_HOST in t or "docker_host_pve_api_host" in t for t in targets
     )
-    # `relabel_configs` is a LIST, so each half of each pin is asked of ONE ENTRY —
-    # a per-entry claim matched across entries is answered by a NEIGHBOUR. The
-    # `(?:-\s*)?` prefix is because the entry's first key shares its line with the
-    # `-`, and the trailing `\s*$` is so `__param_target` cannot be answered by a
-    # longer label that merely starts with it.
-    entries = _list_entries(_indented_block(block, "relabel_configs"))
-    src = next(
-        (i for i, e in enumerate(entries)
-         if re.search(r'(?m)^\s*(?:-\s*)?source_labels:[^\n]*__address__', e)
-         and re.search(r'(?m)^\s*(?:-\s*)?target_label:[^\S\n]*__param_target\s*$', e)),
-        None,
-    )
-    dst = next(
-        (i for i, e in enumerate(entries)
-         if re.search(r'(?m)^\s*(?:-\s*)?target_label:[^\S\n]*__address__\s*$', e)
-         and re.search(
-             rf'(?m)^\s*(?:-\s*)?replacement:[^\S\n]*"?{re.escape(PVE_EXPORTER_ADDRESS)}"?\s*$', e)),
-        None,
-    )
-    param_target = src is not None
-    replaced = dst is not None
-    # The docstring's own "and THEN": Prometheus applies the rules in order, so
-    # `__param_target` must be taken from `__address__` BEFORE it is overwritten.
-    ordered = param_target and replaced and src < dst
-    address_rewritten = param_target and replaced and ordered
+    # `_relabel_triplet` — row 5c's extraction of the read this clause won, now
+    # shared with the three blackbox jobs. It is STRICTER here than the inline
+    # version was, by exactly one hop: the `instance` entry this template has
+    # carried since Step 2 was described in its own comment and pinned by
+    # nothing, so `__param_target -> instance` could be deleted with this clause
+    # still printing `address_rewritten=True`. That is the silent hop — the
+    # scrape still works and every `pve_*` series is attributed to the exporter
+    # container instead of to the PVE host.
+    triplet_defects, hops = _relabel_triplet(block, PVE_EXPORTER_ADDRESS)
+    address_rewritten = not triplet_defects
     ok = (
         present and path_pinned and path_is_not_default and params_ok
         and target_is_pve_host and address_rewritten
@@ -4199,8 +4445,7 @@ def test_pve_scrape_job_is_multi_target() -> bool:
         f"path_is_not_default={path_is_not_default}, params_ok={params_ok} "
         f"(missing={missing_params}), target_is_pve_host={target_is_pve_host} "
         f"(targets={targets}), address_rewritten={address_rewritten} "
-        f"(param_target={param_target}, replacement={replaced}, ordered={ordered}, "
-        f"entries={len(entries)}, src_entry={src}, dst_entry={dst}))"
+        f"(hops={hops}, defects={triplet_defects}))"
     )
     return ok
 
@@ -4579,21 +4824,19 @@ def test_plex_scrape_job_is_single_target() -> bool:
     body = _read(PROM_SCRAPE)
     block = _scrape_job_block(body, PLEX_EXPORTER_SERVICE)
     present = bool(block.strip())
-    targets = re.findall(
-        r'(?m)^[^\S\n]*-[^\S\n]*(\S.*?)[^\S\n]*$',
-        "\n".join(_indented_blocks(_indented_block(block, "static_configs"), "targets")),
-    )
+    targets = _static_targets(block)
     target_is_exporter = bool(targets) and all(
         _yaml_unquote(t) == PLEX_EXPORTER_ADDRESS for t in targets
     )
     job_keys, unreadable_keys = _service_key_lines(block)
     extra_keys = [k for k in job_keys if k not in PLEX_JOB_KEYS]
     no_multi_target_shape = present and not extra_keys and not unreadable_keys
-    interval = _duration_seconds(_block_scalar(block, "scrape_interval"))
-    timeout = _duration_seconds(_block_scalar(block, "scrape_timeout"))
-    global_interval = _duration_seconds(
-        _block_scalar(_key_bounded_block(body, "global", 0), "scrape_interval")
-    )
+    # The RAW halves, not the effective ones: this clause's `pair_present`
+    # requires the job to set BOTH keys itself, which is a different claim from
+    # the one `_effective_scrape_pair` resolves for its callers.
+    pair = _effective_scrape_pair(body, block)
+    interval, timeout = pair["job_interval"], pair["job_timeout"]
+    global_interval = pair["global_interval"]
     pair_present = interval is not None and timeout is not None
     timeout_fits = pair_present and timeout <= interval
     budget_raised = (
@@ -5139,12 +5382,7 @@ def test_plex_node_exporter_scrape_job() -> bool:
     body = _read(PROM_SCRAPE)
     block = _scrape_job_block(body, PLEX_NODE_JOB)
     present = bool(block.strip())
-    targets = [
-        _yaml_unquote(t) for t in re.findall(
-            r'(?m)^[^\S\n]*-[^\S\n]*(\S.*?)[^\S\n]*$',
-            "\n".join(_indented_blocks(_indented_block(block, "static_configs"), "targets")),
-        )
-    ]
+    targets = [_yaml_unquote(t) for t in _static_targets(block)]
     single_target = len(targets) == 1
     host_halves = [t.rpartition(":")[0] for t in targets]
     port_halves = [t.rpartition(":")[2] for t in targets]
@@ -5174,17 +5412,9 @@ def test_plex_node_exporter_scrape_job() -> bool:
     job_keys, unreadable_keys = _service_key_lines(block)
     extra_keys = [k for k in job_keys if k not in PLEX_NODE_JOB_KEYS]
     no_multi_target_shape = present and not extra_keys and not unreadable_keys
-    global_block = _key_bounded_block(body, "global", 0)
-    job_interval = _duration_seconds(_block_scalar(block, "scrape_interval"))
-    global_interval = _duration_seconds(_block_scalar(global_block, "scrape_interval"))
-    interval = job_interval if job_interval is not None else global_interval
-    job_timeout = _duration_seconds(_block_scalar(block, "scrape_timeout"))
-    global_timeout = _duration_seconds(_block_scalar(global_block, "scrape_timeout"))
-    timeout = (
-        job_timeout if job_timeout is not None
-        else global_timeout if global_timeout is not None
-        else PROM_DEFAULT_SCRAPE_TIMEOUT
-    )
+    pair = _effective_scrape_pair(body, block)
+    interval, timeout = pair["interval"], pair["timeout"]
+    job_interval, global_interval = pair["job_interval"], pair["global_interval"]
     refresh = _signature_default_number(
         _read(PLEX_WATCHDOG_SOURCE), PLEX_WATCHDOG_REFRESH_PARAM
     )
@@ -5492,6 +5722,34 @@ def _leading_comment_block(text: str) -> tuple:
         stopped_at = line
         break
     return "\n".join(kept), stopped_at
+
+
+def _credential_spellings(text: str) -> list:
+    """Every spelling of a live credential a template of this role can carry.
+
+    Step 5b named this scan inline while `prometheus.yml.j2` was a file no row
+    was editing; row 5c edits it, and the fence that says the token must not
+    enter it is now read by TWO clauses — 5b's, which asserts the fact, and
+    5c's, which asserts that the render's world-read bit is LICENSED by it. Two
+    regexes over one question is the drift this file spent Step-2a rounds 13-15
+    closing, so there is one.
+
+    Three spellings and each is a real hop rather than a synonym: `vault_*` is
+    the ansible-vault variable itself, `X-Plex-Token` (any casing — Go's
+    `Header.Set` canonicalises, logs/builder-5b-r2-wire.log) is the header a
+    `params:` block or a `?X-Plex-Token=` target suffix would name, and
+    `PLEX_TOKEN` is the env var `env.j2` assigns. A scrape config that smuggles
+    the credential has to write one of them.
+
+    WHAT IT DOES NOT SEE, named so it is not mistaken for a proof: a token
+    LITERAL, pasted with none of these names around it. That is
+    `test_no_plaintext_secrets`' subject and it is a different reader.
+    """
+    return sorted(set(
+        re.findall(r'\bvault_\w+', text)
+        + re.findall(rf'(?i){re.escape(BLACKBOX_TOKEN_HEADER)}', text)
+        + re.findall(rf'\b{re.escape(PLEX_TOKEN_ENV)}\b', text)
+    ))
 
 
 def _credential_modules(modules) -> list:
@@ -6111,12 +6369,7 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         world_bit_withheld = not int(mode_digits, 8) & 0o004
     except ValueError:
         world_bit_withheld = False
-    prom_text = _read(PROM_SCRAPE)
-    prom_leaks = sorted(set(
-        re.findall(r'\bvault_\w+', prom_text)
-        + re.findall(rf'(?i){re.escape(BLACKBOX_TOKEN_HEADER)}', prom_text)
-        + re.findall(rf'\b{re.escape(PLEX_TOKEN_ENV)}\b', prom_text)
-    ))
+    prom_leaks = _credential_spellings(_read(PROM_SCRAPE))
     prom_carries_no_credential = not prom_leaks
 
     # THE FILE'S OWN HEADER IS THE THIRD READER OF THIS FACT, and prose is where
@@ -6383,6 +6636,354 @@ def test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses() -> bool
         f"refuses exactly what the pinned exporter refuses "
         f"(rows={len(BLACKBOX_READER_ROWS)}, offenders={offenders}, "
         f"merge_resolves={merge_resolves} (resolved={merged_module}))"
+    )
+    return ok
+
+
+def test_blackbox_scrape_jobs_probe_plex() -> bool:
+    """Step-5c: three `/probe` jobs, each a REFERENCE to something that exists.
+
+    Design §4.6's probes, and the row's whole difficulty is that almost every
+    coordinate here is already spelled somewhere else in the repo — the module
+    names in `blackbox.yml.j2`, the LAN address in this role's defaults, the
+    public hostname in `dynamic.yml.j2`'s router rule, the exporter's port in the
+    image. A job that re-types any of them is "two literals that agree until one
+    moves", which is the class this objective charged three times in Step 4
+    alone. So every pin below is a RELATION, and the constants it reads are the
+    ones the OTHER end is already held to.
+
+    * `parses` — `prometheus.yml.j2` loads as YAML through `_neutralise_refs`,
+      the same `_StrictLoader` the blackbox reader uses. It is here because this
+      row is the one that makes it interesting: two of the three targets START
+      with a Jinja reference, and the placeholder is a single-quoted scalar, so
+      an UNQUOTED `{{ docker_host_plex_url }}/identity` is a `ParserError` while
+      an unquoted `https://plex.{{ domain }}/identity` is fine — measured at this
+      row's hands (logs/builder-5c-target-spellings.log) with the pve target as
+      the control. THE DISCRIMINATOR IS THE VALUE'S FIRST CHARACTER, NOT THE
+      CONCATENATION, and that matters because the comment at :129-135 of the
+      template generalises its own case the other way ("it is the only one that
+      CONCATENATES") — true of that line, false as a rule, and the proxied target
+      is the counterexample. Nothing renders this template as YAML in production
+      (Jinja runs first), so what this arm buys is that the guard's own readers
+      are looking at the document they think they are.
+    * `route_is_one_host` — the proxied target's host is READ OUT of
+      `dynamic.yml.j2`'s `plex` router rule (`_rule_hosts`), not typed here. That
+      rule is the definition of the public path this probe exists to measure, so
+      a `Host()` change moves the probe with it; a rule this guard cannot read
+      fails CLOSED to the empty set and reddens rather than comparing nothing.
+    * `names_share_prefix` — HALF A RELATION, AND SAYING WHICH HALF IS THE POINT.
+      Design §5.3 writes Step 7's rules against `job="blackbox-plex-identity"`,
+      `job="blackbox-plex-sessions"` and `job=~"blackbox-plex.*"`. Step 7 DOES
+      NOT EXIST, so unlike `far_end_is_held` one clause up there is no live
+      module to parse and no citation to keep current: what is pinned is that all
+      three names carry the prefix that regex needs. The far end lands in Step 7
+      and this clause does not pretend otherwise. A rename that keeps the prefix
+      still breaks the two exact-match rules, and nothing here can see it.
+    * `modules_exhaust_the_config` — the `module=` values the three jobs carry,
+      taken together, are exactly `BLACKBOX_MODULES`. THE JOIN NOTHING AT RUNTIME
+      CHECKS: a job naming a module `blackbox.yml` does not define gets HTTP 400
+      from `/probe` — the target reads DOWN, no `probe_*` series exist, and
+      NEITHER config is invalid. Set equality rather than three memberships,
+      because the other direction is a module `5a`/`5b` defined and nothing
+      probes: a probe configured, deployed, and never taken.
+    * per-job `module` — and this one is about PAIRING rather than existence. All
+      three names could be present with `/status/sessions` probed by
+      `plex_identity_direct`, which sends no token: Plex answers 401, blackbox
+      reports HTTP 200 with `probe_success 0`, and the target reads UP the whole
+      time. So each job's module is pinned against its own row of the table.
+    * per-job `metrics_path` — `/probe`. blackbox also serves `/metrics`, its own
+      process metrics, so the DEFAULT path answers 200 with a page full of
+      `blackbox_*` and zero `probe_*`: the target reads UP and the dashboard is
+      empty. That is the `pve-exporter` lesson (`path_pinned`) in its third
+      variant, and it has no `path_is_not_default` twin because the two paths are
+      different ENDPOINTS rather than a value and its default — there is no
+      "write the default out explicitly" no-op for this pin to be satisfied by.
+    * per-job `target` — exactly one, and it is a reference. The two direct
+      probes carry `{{ docker_host_plex_url }}` with a path suffix, so
+      retargeting that variable moves both; the proxied one is
+      `https://` + the router's own host + `/identity`. The list is compared
+      whole (`== [want]`), not searched, because a SECOND entry under
+      `static_configs` is scraped too — Step-2a F1 round 9 measured that exact
+      shape loading a caller-chosen host into a multi-target exporter, and
+      `/probe` is a multi-target exporter that will dial anything it is given.
+    * per-job `relabel_configs` — the triplet, per hop, via `_relabel_triplet`;
+      which hop is missing is in the defect text. The `keep` hop is the silent
+      one and the reason that helper exists: without it the probes still run and
+      all three land on one `instance` label — the exporter's — so design §4.6's
+      whole differential reads as one line.
+    * per-job `keys_allowed` — `BLACKBOX_JOB_KEYS`. What it keeps out is a
+      credential: `basic_auth:`, `authorization:` and `bearer_token_file:` are
+      ordinary scrape-config keys and every one of them would put a secret into
+      the 0644 render that `test_prometheus_render_is_world_read_only_unpaid`
+      forbids. An allow-list rather than an absence pin, for the reason
+      `PLEX_JOB_KEYS` gives: an absence pin fails OPEN one key past its edge.
+    """
+    body = _read(PROM_SCRAPE)
+    try:
+        doc = yaml.load(_neutralise_refs(body), Loader=_StrictLoader)
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
+    parses = isinstance(doc, dict)
+    proxied_hosts = sorted(_rule_hosts(
+        _router_rule(_router_block(_read(DYNAMIC), DYNAMIC_PLEX_ROUTER))
+    ))
+    route_is_one_host = len(proxied_hosts) == 1
+    names_share_prefix = all(
+        job.startswith(BLACKBOX_JOB_PREFIX) for job in BLACKBOX_JOBS
+    )
+    defects, found_modules, hops_by_job = {}, [], {}
+    for job, spec in BLACKBOX_JOBS.items():
+        block = _scrape_job_block(body, job)
+        if not block.strip():
+            defects[job] = ["does not resolve exactly once inside scrape_configs:"]
+            continue
+        bad = []
+        path = _block_scalar(block, "metrics_path")
+        if path != BLACKBOX_PROBE_PATH:
+            bad.append(
+                f"metrics_path={path!r}, want {BLACKBOX_PROBE_PATH!r} — the "
+                "default serves the exporter's OWN metrics, so the target reads "
+                "UP with zero probe_* series"
+            )
+        modules = _param_values(
+            _indented_block(block, "params"), BLACKBOX_PARAM_MODULE
+        )
+        found_modules += modules
+        if modules != [spec["module"]]:
+            bad.append(
+                f"params.{BLACKBOX_PARAM_MODULE}={modules}, want "
+                f"[{spec['module']!r}] — /probe answers HTTP 400 for a module "
+                f"{BLACKBOX_CONFIG.name} does not define, and the WRONG defined "
+                "module probes the right URL with the wrong method or credential"
+            )
+        targets = [_yaml_unquote(t) for t in _static_targets(block)]
+        if spec["proxied"] and not route_is_one_host:
+            bad.append(
+                f"{DYNAMIC.name}'s {DYNAMIC_PLEX_ROUTER} router pins "
+                f"{proxied_hosts} — this target has no single far end to follow"
+            )
+        else:
+            want = (
+                f"{PROXIED_SCHEME}{proxied_hosts[0]}{spec['path']}"
+                if spec["proxied"] else f"{PLEX_URL_REF}{spec['path']}"
+            )
+            if targets != [want]:
+                bad.append(f"targets={targets}, want [{want!r}]")
+        triplet_defects, hops = _relabel_triplet(block, BLACKBOX_ADDRESS)
+        hops_by_job[job] = hops
+        bad += triplet_defects
+        keys, unreadable = _service_key_lines(block)
+        extra = [k for k in keys if k not in BLACKBOX_JOB_KEYS]
+        if extra or unreadable:
+            bad.append(f"keys outside the allow-list: {extra}, unreadable: {unreadable}")
+        if bad:
+            defects[job] = bad
+    modules_exhaust_the_config = sorted(found_modules) == sorted(BLACKBOX_MODULES)
+    ok = (
+        parses and route_is_one_host and names_share_prefix
+        and modules_exhaust_the_config and not defects
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: the {len(BLACKBOX_JOBS)} {BLACKBOX_SERVICE} "
+        f"jobs probe Plex by reference (parses={parses} (error={parse_error!r}), "
+        f"route_is_one_host={route_is_one_host} ({DYNAMIC.name} "
+        f"{DYNAMIC_PLEX_ROUTER} router hosts={proxied_hosts}), "
+        f"names_share_prefix={names_share_prefix} "
+        f"(want prefix={BLACKBOX_JOB_PREFIX!r} — design 5.3's "
+        f'job=~"blackbox-plex.*"; the exact-match far end lands in Step 7 and is '
+        f"NOT held here), modules_exhaust_the_config="
+        f"{modules_exhaust_the_config} (jobs name={sorted(found_modules)}, "
+        f"{BLACKBOX_CONFIG.name} defines={sorted(BLACKBOX_MODULES)}), "
+        f"dialled_at={BLACKBOX_ADDRESS!r}, hops={hops_by_job}, defects={defects})"
+    )
+    return ok
+
+
+def test_blackbox_scrape_cadence_is_what_prometheus_runs() -> bool:
+    """Step-5c: the interval/timeout pair of each probe job, read EFFECTIVELY.
+
+    Step 4d built this instrument (`_effective_scrape_pair`, `_duration_seconds`,
+    `PROM_DEFAULT_SCRAPE_TIMEOUT`) and this row is its second user rather than a
+    second spelling of it. Four fields, and they close four different doors:
+
+    * `interval_is_job_local` — each job sets its OWN `scrape_interval`. SEPARATE
+      from the cadence pin below and neither can do the other's job: `global` is
+      15 s, so DELETING the key on the two 15 s jobs leaves the effective read at
+      15.0 and every other field here GREEN, while a later change to the global
+      interval silently coarsens two probes whose whole purpose is resolution.
+      That is `task-1786170786-3fb1`, met one job over at 4d.
+    * `cadence_matches_design` — 15 s / 60 s / 15 s, design §4.6. `/identity` is
+      unauthenticated and does no database work, so 15 s costs Plex essentially
+      nothing (R8); `/status/sessions` touches session state and is deliberately
+      the rare one. THIS FIELD SHADOWS THE NEXT ONE and saying so is part of the
+      claim: it is a DIGIT contract, so the obvious mutant for `timeout_fits` —
+      dropping an interval below its timeout — reds here too, and a criterion
+      driven only that way would not tell the two apart. The arm that isolates
+      `timeout_fits` moves the TIMEOUT instead (sessions to 90 s, interval
+      untouched); both rows are at logs/builder-5c-arms.log.
+    * `timeout_fits` — the EFFECTIVE timeout does not exceed the EFFECTIVE
+      interval. `<=` AND NOT THE `<` plan.md:348 ASKS FOR, and this row measured
+      the boundary rather than citing the template comment that already says so:
+      `promtool check config` on prom/prometheus:v3.12.0, one job at a 60 s
+      interval — 59 s rc=0, 60 s rc=0, 61 s rc=1 "scrape timeout greater than
+      scrape interval" (logs/builder-5c-timeout-boundary.log). Equality LOADS, so
+      a `<` here would be a guard forbidding a config the runtime accepts. When
+      it is violated Prometheus refuses the WHOLE file, so every job in it stops
+      — including the four this row did not touch.
+    * `module_timeout_binds` — THE FIELD THAT IS NOT ABOUT THIS FILE. blackbox
+      clamps each probe to Prometheus' own scrape-timeout header minus
+      `--timeout-offset` (0.5 s), so the module's `timeout:` is a ceiling and the
+      SCRAPE timeout is what actually binds — `blackbox.yml.j2` says exactly that
+      at :56-59 and :144-147, and both sentences are claims about numbers that
+      live HERE. `plex_sessions` is where it bites: its 30 s is argued at length
+      against the 5 s `probe_duration_seconds` alert of design §4.6, because "a
+      timeout AT the alert threshold clips the measurement exactly where it
+      becomes interesting". Left on Prometheus' 10 s default, that 30 s is a
+      value nothing can reach — every stall recorded as a 9.5 s failure, no
+      config invalid, nothing to read anywhere. The two 15 s jobs are the other
+      direction and they are why the read must be EFFECTIVE: they set no
+      `scrape_timeout` at all, so the pair being compared is 10.0 s from
+      `PROM_DEFAULT_SCRAPE_TIMEOUT` against a 5 s module, and a clause reading
+      `None` there would be comparing a pair the process does not use.
+
+      It is a ONE-DIRECTION relation on purpose. A scrape timeout far ABOVE the
+      module's is not a defect — the module still stops itself at its own value —
+      so the pin is that the module's number is REACHABLE, not that the two agree.
+    """
+    body = _read(PROM_SCRAPE)
+    try:
+        modules = (yaml.load(
+            _neutralise_refs(_read(BLACKBOX_CONFIG)), Loader=_StrictLoader
+        ) or {}).get("modules")
+    except yaml.YAMLError:
+        modules = None
+    defects, measured = {}, {}
+    for job, spec in BLACKBOX_JOBS.items():
+        block = _scrape_job_block(body, job)
+        if not block.strip():
+            defects[job] = ["does not resolve exactly once inside scrape_configs:"]
+            continue
+        pair = _effective_scrape_pair(body, block)
+        module = (modules or {}).get(spec["module"]) if isinstance(modules, dict) else None
+        module_timeout = _duration_seconds(
+            module.get("timeout") if isinstance(module, dict) else None
+        )
+        measured[job] = {
+            "interval": pair["interval"], "timeout": pair["timeout"],
+            "job_interval": pair["job_interval"], "job_timeout": pair["job_timeout"],
+            f"{spec['module']}.timeout": module_timeout,
+        }
+        bad = []
+        if pair["job_interval"] is None:
+            bad.append(
+                "no job-local scrape_interval — the effective read follows "
+                f"global ({pair['global_interval']}s) and a change there "
+                "coarsens this probe silently"
+            )
+        if pair["interval"] != spec["interval"]:
+            bad.append(
+                f"effective interval {pair['interval']}s, design 4.6 gives this "
+                f"probe {spec['interval']}s"
+            )
+        if pair["interval"] is None or pair["timeout"] > pair["interval"]:
+            bad.append(
+                f"scrape_timeout {pair['timeout']}s EXCEEDS scrape_interval "
+                f"{pair['interval']}s — Prometheus refuses the whole file, so "
+                "every job in it stops (measured: 61s vs 60s is rc=1, 60s vs 60s "
+                "is rc=0, logs/builder-5c-timeout-boundary.log)"
+            )
+        if module_timeout is None:
+            bad.append(
+                f"{BLACKBOX_CONFIG.name}'s {spec['module']} declares no timeout "
+                "this reader can resolve, so nothing here can be compared to it"
+            )
+        elif pair["timeout"] - BLACKBOX_TIMEOUT_OFFSET < module_timeout:
+            bad.append(
+                f"the effective scrape timeout {pair['timeout']}s minus "
+                f"blackbox's --timeout-offset {BLACKBOX_TIMEOUT_OFFSET}s is "
+                f"below {spec['module']}'s own {module_timeout}s — that module "
+                "timeout is a value nothing can reach, and every stall past "
+                f"{pair['timeout'] - BLACKBOX_TIMEOUT_OFFSET}s is recorded as a "
+                "failure at that number rather than as its real duration"
+            )
+        if bad:
+            defects[job] = bad
+    ok = not defects
+    print(
+        f"{'OK' if ok else 'FAIL'}: the {len(BLACKBOX_JOBS)} probe jobs run at "
+        f"design 4.6's cadence with a timeout their module can reach "
+        f"(default_timeout={PROM_DEFAULT_SCRAPE_TIMEOUT}s, "
+        f"timeout_offset={BLACKBOX_TIMEOUT_OFFSET}s, measured={measured}, "
+        f"defects={defects})"
+    )
+    return ok
+
+
+def test_prometheus_render_is_world_read_only_unpaid() -> bool:
+    """Step-5c: `prometheus.yml`'s 0644 is LICENSED, not merely written down.
+
+    THE FENCE, and this row is the first one that could breach it. Every other
+    job in this file scrapes an exporter that needs no credential; 5c's three
+    take a URL from a `params:`/`__param_target` shape that would carry a token
+    just as happily — `?X-Plex-Token=` on a target, an `X-Plex-Token` params
+    entry, a `bearer_token_file:` on the job. And this render is delivered
+    **0644**, world-readable, on the reasoning written into the render task
+    itself: the scrape config "carries no credential (the PVE token is an env var
+    from the 0600 .env)", so publishing it costs nothing.
+
+    THAT SENTENCE IS THE LICENCE AND NOTHING HELD IT. `RELOAD_CONTRACT` pins the
+    0644 digits and `test_blackbox_sessions_probe_carries_the_vault_token` pins
+    that this template carries no credential spelling — two true facts with
+    nothing relating them, so a future row could add a token to the scrape config
+    and leave both green while the mode that published it stayed pinned. What is
+    NEW here is the implication, and only that: the digits stay
+    `RELOAD_CONTRACT`'s to own and the leak scan is one reader
+    (`_credential_spellings`) that both clauses call, so this is not a second
+    spelling of either fact.
+
+    * `world_read_is_licensed` — an implication and not a conjunction. If the
+      render withholds the world bit this clause has no claim to make (0640 is
+      the mode `blackbox.yml` legitimately uses one task down, and forbidding it
+      here would forbid the safer state). If the render PUBLISHES the file, then
+      the template must carry no credential AND the task's own comment must still
+      say so.
+    * `rationale_agrees` — the biconditional, in the shape
+      `header_prose_current` took at 5b, because a load-bearing sentence rots in
+      exactly two directions. The comment claims the file is credential-free: it
+      must say so while that is true, and must NOT say so once it is false. A
+      credential arriving alongside a quietly deleted sentence is the state this
+      arm exists for — the mode would then be unlicensed with nothing in the
+      diff reading as a lie.
+    """
+    tasks = _read(TASKS)
+    task = _render_task_block(tasks, PROM_SCRAPE.name)
+    mode_text = _render_task_scalar(task, "mode")
+    mode_digits = (mode_text or "").strip('"\'')
+    try:
+        # Fails CLOSED, `world_bit_withheld`'s rule one file over: a mode this
+        # cannot read octally is treated as PUBLISHING, so an unreadable mode
+        # demands the licence rather than being waved through.
+        world_readable = bool(int(mode_digits, 8) & 0o004)
+    except ValueError:
+        world_readable = True
+    leaks = _credential_spellings(_read(PROM_SCRAPE))
+    claims_no_credential = PROM_NO_CREDENTIAL_PROSE in task
+    world_read_is_licensed = (
+        not world_readable or (not leaks and claims_no_credential)
+    )
+    rationale_agrees = claims_no_credential == (not leaks)
+    ok = world_read_is_licensed and rationale_agrees
+    print(
+        f"{'OK' if ok else 'FAIL'}: {PROM_SCRAPE.name}'s render mode is paid for "
+        f"(mode={mode_text!r}, world_readable={world_readable}, "
+        f"credential_spellings={leaks}, "
+        f"claims_no_credential={claims_no_credential} "
+        f"({TASKS.name}'s render task, {PROM_NO_CREDENTIAL_PROSE!r}), "
+        f"world_read_is_licensed={world_read_is_licensed}, "
+        f"rationale_agrees={rationale_agrees} — 0644 publishes this file to "
+        f"every user on the docker host, and the only thing that makes that free "
+        f"is the sentence the render task writes above the mode)"
     )
     return ok
 
@@ -7529,6 +8130,9 @@ def main() -> int:
         test_blackbox_modules_are_the_three_plex_probes(),
         test_blackbox_sessions_probe_carries_the_vault_token(),
         test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses(),
+        test_blackbox_scrape_jobs_probe_plex(),
+        test_blackbox_scrape_cadence_is_what_prometheus_runs(),
+        test_prometheus_render_is_world_read_only_unpaid(),
         test_homepage_allowed_hosts(),
         test_internal_services_lists_all_internal(),
         test_homepage_monitors_target_internal_urls(),
