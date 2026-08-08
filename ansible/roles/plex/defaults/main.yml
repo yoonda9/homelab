@@ -40,6 +40,19 @@ plex_gid: 991
 plex_state_dir: /var/lib/plexmediaserver
 plex_state_host_path: /tank/Server/AppData/plex
 
+# The Plex library database, named ONCE so the journal-mode audit and the
+# WAL-size guard below can never drift onto different files. Both read this;
+# the guard stats "{{ plex_library_db }}-wal", SQLite's own suffix.
+plex_library_db: "{{ plex_state_dir }}/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+
+# WAL-size ceiling for the read-only audit (plan.md Step 3). SQLite's own
+# wal_autocheckpoint is 1000 pages — ~4 MiB at Plex's 4 KiB page size — so this
+# is one doubling of headroom over the checkpoint the engine already attempts.
+# The fault this exists to catch measured 43,735,168 bytes (41.71 MiB) against a
+# 40.9 MiB database, 43x the engine's own threshold, byte-identical for 42.5
+# hours while `PRAGMA journal_mode;` answered `wal` and the audit stayed green.
+plex_wal_max_bytes: 8388608
+
 # The +100000 shift the state-dir ownership gate uses to print the exact
 # host-side chown to run. CT 110's UID map is a single offset tile
 # (`u 0 100000 65536`), so any in-CT uid N is host uid N + 100000. The GID map

@@ -341,15 +341,86 @@
     state: started
     daemon_reload: true
 
+# --- SQLite WAL audit (design §4.3, plan.md Step 3) -----------------------
+# Journal mode and WAL SIZE are two separate questions and this audit used to
+# ask only the first. `PRAGMA journal_mode;` answered `wal` — correctly — while
+# CT 110 carried a 41.71 MiB write-ahead log against a 40.9 MiB database, 43x
+# SQLite's own checkpoint threshold and byte-identical for 42.5 hours. So the
+# guard was green over the open root cause it was written to catch.
+#
+# The size half is deliberately NOT hung off the sqlite3 task's output. Standing
+# it on ansible.builtin.stat alone is what lets the guard be watched going red
+# without sqlite3, without a deploy and without CT 110 —
+# scripts/test_plex_wal_guard_shape.py runs these two tasks verbatim.
 - name: Verify Plex SQLite DB is in WAL mode (read-only audit)
   ansible.builtin.command:
     argv:
       - sqlite3
-      - "{{ plex_state_dir }}/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+      - -readonly
+      - "{{ plex_library_db }}"
       - "PRAGMA journal_mode;"
   register: plex_sqlite_wal
   changed_when: false
   failed_when: plex_sqlite_wal.stdout != 'wal'
+
+- name: Stat the Plex SQLite write-ahead log
+  ansible.builtin.stat:
+    path: "{{ plex_library_db }}-wal"
+    # `get_checksum` defaults to TRUE. Every other stat in this repo stats a
+    # directory (site.yml:19, :102, :199 below), where that is free; this is the
+    # first stat of a large regular file, so the default would sha1 a ~42 MiB
+    # write-ahead log that Plex is actively appending to, on every play. Same
+    # class as the -readonly above: the diagnostic must not take part in the
+    # fault it measures. The guard reads .exists and .size only.
+    get_checksum: false
+  register: plex_wal
+
+- name: Assert the Plex SQLite WAL is below the checkpoint threshold
+  ansible.builtin.assert:
+    that:
+      - not plex_wal.stat.exists or plex_wal.stat.size < plex_wal_max_bytes | int
+    # `default('absent')` is load-bearing, not defensive: fail_msg is templated
+    # during task-arg finalization, BEFORE the assertion is evaluated and
+    # whatever its verdict, so a bare plex_wal.stat.size reds a fresh install
+    # that has no -wal at all ("object of type 'dict' has no attribute 'size'").
+    # The remedy is named INLINE, not pointed at, and it is THREE ORDERED STEPS
+    # rather than the one statement this message used to carry. Round 1 ordered
+    # "Run the checkpoint in docs/runbooks/plex-sqlite-maintenance.md" — a file
+    # with no checkpoint in it. Round 2 named the statement inline, which fixed
+    # the pointer and left the command inert: this guard is red only while the
+    # WAL is large, the WAL is large only while Plex holds a read transaction,
+    # and that is exactly when wal_checkpoint(TRUNCATE) returns `busy` and moves
+    # nothing. Measured against libsqlite3 3.51.2 with a reader attached —
+    # PASSIVE busy=0 ckpt=806/806, TRUNCATE busy=1, WAL 3320752 bytes both times.
+    # `busy` is a RESULT ROW, not an error: the CLI prints `1|806|806` and exits
+    # 0, so an operator gets three numbers, no diagnostic, and a still-red guard.
+    #
+    # So the stop is the precondition, not a nicety, and the unit named here is
+    # the one this role manages at :330. TRUNCATE still, for the opposite reason
+    # to the one round 2 gave: with the reader gone PASSIVE and FULL checkpoint
+    # every frame and leave the file at its high-water mark (WAL 3320752 -> 3320752)
+    # while TRUNCATE takes it to 0, and stat.size is the only number this guard
+    # reads. `;` and not `&&` between the steps — a failed checkpoint must still
+    # reach the start, because the guard is cheap to re-run and a media server
+    # left down at 03:00 is not. No -readonly: a checkpoint writes.
+    #
+    # The runbook is still named, for the journal_mode half it really does
+    # document; scripts/test_plex_wal_guard_shape.py reads that path back out of
+    # this message and holds the file to the claim, and pins the three steps in
+    # order against the unit it reads out of the role.
+    fail_msg: >-
+      Plex SQLite WAL is {{ plex_wal.stat.size | default('absent') }} bytes,
+      over the {{ plex_wal_max_bytes }} byte threshold. WAL mode is necessary
+      but NOT sufficient — an unchecked WAL is itself a stall mechanism.
+      See the journal_mode audit in docs/runbooks/plex-sqlite-maintenance.md.
+      A live checkpoint comes back busy and moves nothing while Plex holds the
+      database open, and busy is a result row the CLI exits 0 on, so the service
+      must be stopped around it. On the Plex host, in this order:
+      systemctl stop plexmediaserver;
+      sqlite3 "{{ plex_library_db }}" 'PRAGMA wal_checkpoint(TRUNCATE);';
+      systemctl start plexmediaserver
+    success_msg: >-
+      Plex SQLite WAL is within the {{ plex_wal_max_bytes }} byte threshold.
 
 # --- Hardware-transcode acceptance gate (design §4.3/§6) -------------------
 # Probe the VA-API driver on the render node and FAIL the play unless the modern
