@@ -183,6 +183,16 @@ services:
       - --storage.tsdb.retention.time=90d
     volumes:
       - {{ docker_host_project_dir }}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Design §5.3's alert rules (Step 7a). The container side is the path
+      # prometheus.yml's `rule_files:` names — one relation, not two literals
+      # that agree — and a FILE mount rather than the rules DIRECTORY, matching
+      # the literal path that key ships. `:ro` like its neighbour: nothing in
+      # this stack writes rules, and the delivery path is the render task's
+      # `notify: Restart prometheus`, measured (a single-file bind holds the old
+      # inode across ansible's atomic replace, so without that restart the new
+      # rules are not merely unread — they are invisible inside the container;
+      # logs/builder-7a-handler-question.log row D3).
+      - {{ docker_host_project_dir }}/prometheus/rules/plex-blip-rules.yml:/etc/prometheus/rules/plex-blip-rules.yml:ro
       - prometheus-data:/prometheus
     labels:
       - traefik.enable=true

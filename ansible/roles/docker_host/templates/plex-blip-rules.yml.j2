@@ -1,0 +1,97 @@
+# {{ ansible_managed }}
+# Prometheus alert rules for the Plex blip (plex-blip-manual-triage Step 7a),
+# design §5.3 verbatim. THE FIRST RULE FILE THIS STACK HAS EVER HAD: `rule_files`
+# was zero hits across ansible/ before this render, so Prometheus has been
+# evaluating nothing since it was provisioned and every detection in this
+# objective has depended on a human noticing a paused stream.
+#
+# ALERTMANAGER IS DEFERRED BY OPERATOR DECISION. There is no `alerting:` block in
+# prometheus.yml.j2 and no receiver anywhere, so these rules evaluate and appear
+# in Prometheus -> Alerts and in Grafana's alert list, and NOTHING IS PUSHED. An
+# operator has to look. The runbook says so rather than implying a notification
+# path exists.
+#
+# HOW THIS FILE REACHES THE PROCESS, measured on the pinned prom/prometheus:v3.12.0
+# (logs/builder-7a-handler-question.log) rather than assumed from the four renders
+# that already carry a handler:
+#
+#   POST /-/reload                     403 "Lifecycle API is not enabled." — the
+#                                      compose command: passes no --web.enable-lifecycle
+#   edit IN PLACE, same inode, +40s    the container SEES the new bytes and the
+#                                      process serves the OLD rule set
+#   ATOMIC REPLACE, new inode, +40s    the container cannot even SEE the new bytes:
+#                                      a single-FILE bind holds the old inode, and
+#                                      os.replace is what ansible.builtin.template does
+#   docker compose restart prometheus  same container id, new inode visible, new
+#                                      rule set served
+#
+# So `notify: Restart prometheus` on the render task is the whole delivery path,
+# and it is required for TWO reasons where the neighbouring renders each have one.
+#
+# THE PATH IS NAMED ONCE. prometheus.yml.j2's `rule_files:` carries the
+# container-side path as a LITERAL and not a glob, because a glob matching zero
+# files is `promtool check config` rc=0 with the "N rule files found" line simply
+# absent while a missing literal is rc=1 (logs/builder-7a-literal-vs-glob.log,
+# each direction with its own control). The loudness is promtool's and not the
+# running process's — a literal naming a missing file starts clean and serves
+# `{"groups":[]}` — which is why Step 7c runs the validator before the handler.
+#
+# NO `labels:` AND NO `annotations:` HERE. Design §5.3 carries neither; plan.md's
+# "every alert has severity and a summary annotation" is an obligation on Step 7d,
+# which owns them together with the `promtool test rules` unit test. Adding them
+# here would be this step writing 7d's row.
+#
+# FOUR OF THESE SEVEN CANNOT MATCH AN ABSENT SERIES, which is Step 7b's row and is
+# named here so the file does not read as a complete alarm. `plex_watchdog_probe_status
+# == 0` returns an EMPTY vector exactly when the watchdog has stopped producing —
+# the one moment the meta-guard exists for — while `absent(plex_watchdog_probe_status)`
+# returns 1. Measured at the Step 5 -> Step 7 wave cut with a positive control
+# (logs/planner-step07-live.log). 7b adds the absence companions.
+groups:
+  - name: plex-blip
+    rules:
+      # Catches what probe_success misses (design R10): on 2026-08-07 /identity
+      # answered HTTP 200 through the entire five-minute outage, so a success
+      # check on the cheap endpoint alone stays green throughout the fault this
+      # whole objective exists for (research/live-blip-2026-08-07-case-study.md).
+      - alert: PlexProbeSlow
+        expr: probe_duration_seconds{job="blackbox-plex-identity"} > 0.5
+        for: 1m
+      # The other half of the differential: /identity fast + /status/sessions slow
+      # is the database/lock signature, both slow is host or thread-pool
+      # saturation. The same run reached 101,394 ms on this endpoint.
+      - alert: PlexSessionsProbeStalled
+        expr: probe_duration_seconds{job="blackbox-plex-sessions"} > 5
+        for: 1m
+      # The regex fans in to all three blackbox-plex jobs, which is a relation
+      # prometheus.yml.j2's own 5c comment deferred to this step in writing. The
+      # guard now holds it as an exact set rather than a shared prefix.
+      - alert: PlexUnreachable
+        expr: probe_success{job=~"blackbox-plex.*"} == 0
+        for: 30s
+      # EXPLICITLY NOT "PLEX IS DOWN" (design R5). This fires when the metrics
+      # EXPORTER stops answering, which the current single-panel dashboard invites
+      # an operator to read as the server being down; those are different faults
+      # with different first moves, and conflating them is what this alert's name
+      # is chosen to prevent.
+      - alert: PlexExporterScrapeFailing
+        expr: up{job="plex-exporter"} == 0
+        for: 2m
+      # The leading indicator (design R12): the WAL grows before the stalls start,
+      # so this is the only rule here that can fire BEFORE a user notices. 8 MiB,
+      # against the 41.71 MiB observed during the live blip.
+      - alert: PlexSqliteWalOversized
+        expr: plex_sqlite_wal_bytes > 8388608
+        for: 15m
+      # No `for:` and that is the design's: increase(...[5m]) already carries its
+      # own window, so a second one would only delay the same claim.
+      - alert: PlexTransactionHoldStorm
+        expr: increase(plex_watchdog_events_total{event_type="TX_HELD"}[5m]) > 3
+      # THE META-GUARD (design P5). The whole reason this project exists in its
+      # current shape is that a diagnostic tool failed silently for days — `fuser`
+      # was missing from CT 110 and 34 consecutive probes recorded nothing. The
+      # monitoring must monitor itself. See the note above: this rule cannot match
+      # an absent series, and its absence companion is Step 7b's.
+      - alert: PlexWatchdogProbeBroken
+        expr: plex_watchdog_probe_status == 0
+        for: 10m

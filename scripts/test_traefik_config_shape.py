@@ -1317,6 +1317,92 @@ def _scrape_job_block(body: str, job: str) -> str:
     return tail[:nxt.start()] if nxt else tail
 
 
+def _scrape_job_names(body: str) -> list:
+    """EVERY `job_name:` under `scrape_configs:`, unquoted, in document order.
+
+    Step-7a. The sibling of `_scrape_job_block` and deliberately not built out of
+    it: that helper answers "give me THIS job", which presupposes a name, and the
+    alert rules ask the opposite question — "is the name this expr cites a job
+    this stack actually scrapes?". An expr naming a job that does not exist is
+    the silent half of `params.module`'s class one file over: nothing is invalid
+    anywhere, the rule loads at `promtool` rc=0, and it matches no series and
+    fires never.
+
+    Anchored at `_scrape_configs_block` for the reason that helper gives — a
+    `global.external_labels` block scalar may be shaped exactly like a job, and
+    none of it is one.
+    """
+    return [_yaml_unquote(m.group(1)) for m in re.finditer(
+        r'(?m)^[^\S\n]*-[^\S\n]*job_name:[^\S\n]*(\S.*?)[^\S\n]*$',
+        _scrape_configs_block(body),
+    )]
+
+
+def _rule_files_entries(body: str) -> list:
+    """A Prometheus config's `rule_files:` entries, unquoted, or [] when absent.
+
+    Step-7a, and ONE reader because two claims consume it: the row this template
+    adds to `RELOAD_CONTRACT` derives its container-side path from here (there is
+    no `--rule.file` flag and no image default — the path is named by ANOTHER
+    rendered file, which is what makes `rule_files:` the third carrier that walk
+    has to know about), and `test_prometheus_rule_files_names_the_render`
+    quantifies over the same list for the glob refusal. Two regexes over one
+    question is the drift this file spent Step-2a rounds 13-15 closing.
+
+    Top-level, at column 0 (`_key_bounded_block(..., 0)`), the same anchor
+    `_scrape_configs_block` takes: `rule_files` is a document-root key, and a
+    `rule_files:` nested inside some other mapping is not the one Prometheus
+    loads.
+
+    Entries that are not scalars — a flow collection, a block mapping — come back
+    as `None` rather than being dropped, so a caller cannot mistake an unreadable
+    list for an empty one.
+    """
+    return [
+        None if (s := _scalar_entry(entry)) is None else _yaml_unquote(s)
+        for entry in _list_entries(_key_bounded_block(body, PROM_RULES_KEY, 0))
+    ]
+
+
+def _watchdog_emitted(source: str) -> tuple:
+    """(metric family names, `_event` type names) the watchdog SOURCE emits.
+
+    Step-7a. `ast` and not a text scan, for the reason `far_end_is_held` gives
+    about citations: the watchdog's own comments name `TX_STALL`, `TX_HELD` and
+    `SLOW_QUERY` in prose three lines above the code that emits them, and design
+    §5.2's metric names are quoted in a header block there too — so a `grep` for
+    either would be answered by the file's DOCUMENTATION and would stay green
+    over a program that emits nothing at all. Comments are not in the tree.
+
+    Families are every `plex_*` string CONSTANT in the module (both carriers: the
+    `family(...)` calls and the `_SQLITE_GAUGES` tuple literal). Event types are
+    the first argument of each `_event(...)` call, which is exact — the trigger
+    classifier has one such call per branch.
+
+    Returns two EMPTY sets on a source that will not parse, which fails the
+    clauses closed: a citation check whose far end is unreadable must not read as
+    agreement.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return frozenset(), frozenset()
+    families = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and re.fullmatch(r'plex_[a-z0-9_]+', node.value)
+    }
+    events = {
+        node.args[0].value for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == PLEX_WATCHDOG_EVENT_FN
+        and node.args and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+    return frozenset(families), frozenset(events)
+
+
 def _static_targets(block: str) -> list:
     """Every `targets:` entry under one scrape job's `static_configs:`, RAW.
 
@@ -2380,6 +2466,133 @@ PROMETHEUS_SIZE_CAP_FLAG = "--storage.tsdb.retention.size"
 PROMETHEUS_RETENTION_EVIDENCE = "logs/builder-5d-premises.log"
 PROMETHEUS_SIBLING_EVIDENCE = "logs/builder-5d-r2-premises.log"
 
+# --- plex-blip-manual-triage Step 7a: design 5.3's alert rules ----------------
+# The FIRST rule file this stack has ever had: `rule_files:` is zero hits across
+# `ansible/` at `2e8280c`, so Prometheus has been evaluating nothing since it was
+# provisioned and every detection in this objective has depended on a human
+# noticing a paused stream.
+PROM_RULES = TEMPLATES / "plex-blip-rules.yml.j2"
+PROM_RULES_KEY = "rule_files"
+PROM_RULES_GROUP = "plex-blip"
+# THE SPELLING IS A LITERAL PATH AND A GLOB IS REFUSED, and both halves are
+# measured on the pinned `prom/prometheus:v3.12.0` rather than argued
+# (`PROM_RULES_LITERAL_EVIDENCE`, five `promtool` legs with a positive control in
+# each direction):
+#
+#     B   rule_files: [<literal>], file present      rc=0  "SUCCESS: 1 rule files
+#                                                          found" + "SUCCESS: 7
+#                                                          rules found"
+#     C   rule_files: [<literal>], file ABSENT       rc=1  "… does not point to an
+#                                                          existing file"
+#     C2  rule_files: ["…/rules/*.yml"], dir EMPTY   rc=0  "… is valid prometheus
+#                                                          config file syntax",
+#                                                          and the "N rule files
+#                                                          found" line is simply
+#                                                          ABSENT
+#     C3  the same GLOB with the file present        rc=0  both SUCCESS lines
+#
+# C2 against its own control C3 is the whole argument: a render that fails to
+# land is INVISIBLE under the glob and rc=1 under the literal, on one character.
+#
+# WHERE THE LOUDNESS LIVES IS PROMTOOL, NOT THE PROCESS, and saying so is what
+# keeps this clause from being stronger than what it measured. Driven live
+# (`PROM_RULES_DELIVERY_EVIDENCE`, rows D5/D5b/D6): a LITERAL path that does not
+# exist is `running restarts=0`, `Completed loading of configuration file`, and
+# `/api/v1/rules` -> `{"groups":[]}` — byte-for-byte the glob-over-an-empty-dir
+# leg. So the literal buys nothing at runtime and everything at `promtool check
+# config`, which is exactly why `7c` (validate-before-restart) is the row that
+# converts it into a guard an operator ever sees.
+PROM_RULES_GLOB_CHARS = "*?["
+PROM_RULES_LITERAL_EVIDENCE = "logs/builder-7a-literal-vs-glob.log"
+# `notify: Restart prometheus`, MEASURED and not taken by analogy with the four
+# rows already in `RELOAD_CONTRACT` (`PROM_RULES_DELIVERY_EVIDENCE`, one live
+# container per row, `evaluation_interval: 15s` so +40s is two-plus cycles):
+#
+#     D1  POST /-/reload                        403 "Lifecycle API is not enabled."
+#     D2  EDIT IN PLACE, same inode, +40s       the container SEES the new bytes and
+#                                               the process serves the OLD rule set
+#     D3  ATOMIC REPLACE, new inode, +40s       the container cannot even SEE the new
+#                                               bytes — a single-FILE bind holds the
+#                                               old inode, and `os.replace` is what
+#                                               `ansible.builtin.template` does
+#     D4  CONTROL, docker restart               same container id, new inode visible,
+#                                               new rule set served
+#
+# So the handler is required TWICE OVER here, which is one more reason than
+# `prometheus.yml`'s row has: the process does not re-read rule files, AND the
+# mount does not follow ansible's write. D3 is the interesting one — it means a
+# rules edit is not merely undelivered but INVISIBLE inside the container until
+# something re-establishes the mount.
+PROM_RULES_DELIVERY_EVIDENCE = "logs/builder-7a-handler-question.log"
+# 0644, the same digits `prometheus.yml.j2` carries and NOT copied from it: the
+# mode was driven on this file, root:root, against the pinned image
+# (`PROM_RULES_MODE_EVIDENCE`, `docker run --entrypoint id` -> uid 65534(nobody)):
+#
+#     0640  `state=restarting restarts=7`, `Error loading rule file patterns from
+#           config … open /etc/prometheus/rules/plex-blip-rules.yml: permission
+#           denied` — verbatim the crash loop that left this stack's TSDB empty
+#           from 2026-05-28 to 2026-07-29
+#     0644  `running restarts=0`, `/api/v1/rules` -> groups=['plex-blip']
+#
+# And note the asymmetry against the two legs above: an UNREADABLE rules file is
+# LOUD while a MISSING one is silent. `world_read_is_licensed` is what pays for
+# the world bit; these rules carry no credential and the render task says so.
+PROM_RULES_MODE = "0644"
+PROM_RULES_MODE_EVIDENCE = "logs/builder-7a-rules-mode.log"
+# Design §5.3 (`design/detailed-design.md:583-605`), in the document's own order,
+# with each alert's `for:` — `None` where the design writes none, which
+# `PlexTransactionHoldStorm` does because `increase(...[5m])` already carries its
+# own window. NO `labels:` and NO `annotations:` are pinned here and none are
+# shipped: the source carries neither, plan.md's severity+summary bullet is an
+# obligation on `7d`, and a clause asserting them at `7a` would be a sentence
+# stronger than the file it guards.
+PLEX_BLIP_ALERTS = (
+    ("PlexProbeSlow", "1m"),
+    ("PlexSessionsProbeStalled", "1m"),
+    ("PlexUnreachable", "30s"),
+    ("PlexExporterScrapeFailing", "2m"),
+    ("PlexSqliteWalOversized", "15m"),
+    ("PlexTransactionHoldStorm", None),
+    ("PlexWatchdogProbeBroken", "10m"),
+)
+# THE SEVEN EXPRS' COORDINATES ARE JOINS NOTHING AT RUNTIME CHECKS, which is the
+# `params.module` argument one file over said in full: an alert whose `job=` names
+# a job this stack does not scrape matches no series and fires never, and an
+# alert with no series to match looks exactly like an alert with nothing to say.
+# `prometheus.yml.j2`'s own 5c comment deferred the exact-match half in writing —
+# "Step 7 does not exist yet, so the guard pins the shared blackbox-plex prefix
+# and says so; the exact-match half arrives with the rules" — and this is that
+# half. Every coordinate below is read out of the far end rather than spelled
+# twice, so the pairs move together or redden.
+PLEX_BLIP_EXPR_READERS = {
+    # `job="X"`, NOT `job=~`: the negative lookahead is load-bearing, since
+    # `job=~"blackbox-plex.*"` would otherwise be read as an exact job name that
+    # no scrape config can ever carry.
+    "exact_job": r'\bjob\s*=(?!~)\s*"([^"]*)"',
+    "regex_job": r'\bjob\s*=~\s*"([^"]*)"',
+    "event_type": r'\bevent_type\s*=(?!~)\s*"([^"]*)"',
+    # The watchdog's families. Bounded to `plex_` on purpose: `up`,
+    # `probe_success` and `probe_duration_seconds` are Prometheus' and blackbox's
+    # OWN series, produced by the scrape rather than by anything this repo
+    # writes, so there is no far end in-tree to read them against and pretending
+    # otherwise would be a guard that pins its own literal.
+    "watchdog_metric": r'\b(plex_[a-z0-9_]+)',
+}
+# `_event("TX_HELD", …)` in the watchdog, read by `ast` and not by grep: the
+# source's own comment block names TX_STALL/TX_HELD/SLOW_QUERY in prose three
+# lines above the code, so a text scan would be answered by the documentation.
+PLEX_WATCHDOG_EVENT_FN = "_event"
+# THE WORLD-READ FENCE IS A COLUMN NOW, because this role gained a SECOND
+# world-readable render. `prom/prometheus:v3.12.0` runs as uid 65534, so every
+# file it must open is 0644 root:root or the crash loop both files were measured
+# into, and 0644 publishes each of them to every user on the docker host. The
+# licence is one sentence (`PROM_NO_CREDENTIAL_PROSE`) and one leak scan
+# (`_credential_spellings`), so both renders are walked by ONE clause rather than
+# the rules render arriving beside a check that names only its neighbour — the
+# "next render task walks straight past the table" defect `RELOAD_CONTRACT`'s own
+# header predicted and Step 4a then committed.
+WORLD_READ_LICENCE = (PROM_SCRAPE, PROM_RULES)
+
 # --- the field census, and it is LOAD-BEARING rather than prose ---------------
 # `prom/blackbox-exporter:v0.28.0` unmarshals its config STRICTLY: a field it
 # does not know is `Error loading config` and exit 1, which `restart:
@@ -3019,6 +3232,43 @@ RELOAD_CONTRACT = {
         "config_flag": "--config.file",
         "default_path": None,
     },
+    # plex-blip-manual-triage Step 7a — the SIXTH row, arriving by the route the
+    # paragraph above prescribes rather than being backfilled after a review
+    # found it missing.
+    #
+    # THE CONTAINER-SIDE HOP IS A THIRD CARRIER AND THAT IS THE WHOLE REASON THIS
+    # ROW IS INTERESTING. The five rows above resolve `reads_it` one of two ways:
+    # a `command:` FLAG the compose spec carries (prometheus, blackbox), or a path
+    # the IMAGE fixes (traefik, and the grafana pair's `default_dir`). A rule file
+    # is neither — Prometheus has no `--rule.file` flag and no built-in rules
+    # path, and the only thing that names this file is `rule_files:` inside
+    # ANOTHER template this same role renders. So the hop is `named_in`, read
+    # through `_rule_files_entries`, and the relation the acceptance asks for —
+    # the render's `dest` and the `rule_files:` value are ONE thing, not two
+    # literals that agree — is spelled here rather than as a second literal
+    # anywhere. Moving the file moves both ends or reddens; that is the c6c4/e627
+    # class this objective has already charged twice.
+    #
+    # THE HANDLER IS REQUIRED AND IT IS MEASURED (`PROM_RULES_DELIVERY_EVIDENCE`,
+    # rows D1-D4). The four rows above each earned their `notify:` on ONE finding
+    # — the process does not re-read. This file has TWO: the process does not
+    # re-read rule files (D2 — the container sees the new bytes and serves the old
+    # rule set 40s later), and a single-FILE bind mount does not even follow
+    # ansible's atomic replace (D3 — the container cannot see the new bytes at
+    # all). `docker restart` delivers both (D4).
+    #
+    # THE MODE IS 0644 AND IT WAS DRIVEN ON THIS FILE (`PROM_RULES_MODE`): 0640
+    # root:root under the pinned image is `restarts=7` with `permission denied` on
+    # the rule path — the same crash loop that emptied this stack's TSDB for two
+    # weeks — and NOT an inference from the prometheus.yml row's digits.
+    "plex-blip-rules.yml.j2": {
+        "service": PROMETHEUS_SERVICE,
+        "owner": RENDER_OWNER,
+        "mode": PROM_RULES_MODE,
+        "config_flag": None,
+        "default_path": None,
+        "named_in": PROM_SCRAPE,
+    },
 }
 
 
@@ -3283,7 +3533,8 @@ _WS_CONTROL_MARKER = re.compile(r'^[-+]|[-+]$')
 # THEM before Ansible evaluates the expression, so a newline in a value lands
 # inside a scalar and cannot manufacture a key.
 LINE_READ_TEMPLATES = (
-    COMPOSE, STATIC, DYNAMIC, PROM_SCRAPE, ENV, HOMEPAGE_SERVICES, BLACKBOX_CONFIG
+    COMPOSE, STATIC, DYNAMIC, PROM_SCRAPE, ENV, HOMEPAGE_SERVICES, BLACKBOX_CONFIG,
+    PROM_RULES,
 )
 
 
@@ -4579,8 +4830,11 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
       mount: `--config.file=<the mount's own target>` where the image takes such
       a flag, the image's documented default DIRECTORY where it scans one
       (`default_dir`, the two grafana rows — the filename is this repo's, the
-      directory is the image's), or its documented default path where it does
-      neither. Derived
+      directory is the image's), the path ANOTHER of this role's templates names
+      for it (`named_in`, Step-7a's rules row — Prometheus has no `--rule.file`
+      flag and no built-in rules path, so `rule_files:` in `prometheus.yml.j2` is
+      the only thing that points at it), or its documented default path where it
+      does none of those. Derived
       from the mount rather than pinned as a literal, so moving the container-side
       path consistently stays green and moving it on one side alone reddens.
       Read via `_last_flag_value`, not membership: `command:` is a sequence the
@@ -4624,9 +4878,21 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
         target = _bind_mount_target(service_block, dest.group(1)) if dest else None
         flag = row["config_flag"]
         want_dir = row.get("default_dir")
+        named_in = row.get("named_in")
         if flag:
             reads_it = target is not None and target == _last_flag_value(
                 _service_command_args(service_block), flag
+            )
+        elif named_in:
+            # Step-7a, the THIRD carrier: no flag names this file and the image
+            # fixes no path for it — ANOTHER template this role renders does, via
+            # `rule_files:`. Membership and not equality, because that key is a
+            # LIST: Prometheus loads every entry, so what must hold is that this
+            # render's mount target is one of the files the config asks for.
+            # `_rule_files_entries` is the same reader
+            # `test_prometheus_rule_files_names_the_render` quantifies over.
+            reads_it = target is not None and target in _rule_files_entries(
+                _read(named_in)
             )
         elif want_dir:
             # The image SCANS a directory (grafana provisioning): the file's name
@@ -4650,7 +4916,7 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
                 f"restarts_{service}={restarts} in_compose={in_compose} "
                 f"dest={_norm_path(dest.group(1)) if dest else None} "
                 f"mounted_at={target!r} reads_it={reads_it} "
-                f"(via {flag or 'default ' + str(want_dir or row['default_path'])}) "
+                f"(via {flag or (named_in.name + ' ' + PROM_RULES_KEY + ':' if named_in else 'default ' + str(want_dir or row['default_path']))}) "
                 f"mode={mode} (want {want_mode}) "
                 f"owner={owner}:{group} (want {want_owner}:{want_group})"
             )
@@ -7333,6 +7599,212 @@ def test_blackbox_scrape_cadence_is_what_prometheus_runs() -> bool:
     return ok
 
 
+def test_prometheus_rule_files_names_the_render() -> bool:
+    """Step-7a: `rule_files:` is a LITERAL path and it is THIS role's render.
+
+    Prometheus evaluated nothing at all before this row — `rule_files` is zero
+    hits across `ansible/` at `2e8280c` — so the key arriving is the whole of the
+    change, and the two ways it can arrive wrong are opposites.
+
+    * `key_present` / `entries_readable` — the key exists at the document root
+      and every entry is a SCALAR. Fails closed on a flow collection or a block
+      mapping, which `_rule_files_entries` returns as `None` rather than dropping.
+
+    * `all_literal` — NO entry carries a glob metacharacter. This is the pin the
+      acceptance asks for by name, and the reason is measured rather than
+      stylistic (`PROM_RULES_LITERAL_EVIDENCE`, five `promtool` legs on the pinned
+      `prom/prometheus:v3.12.0`, each direction with its own control): a glob
+      matching ZERO files is rc=0 `is valid prometheus config file syntax` with
+      the `SUCCESS: N rule files found` line simply ABSENT (leg C2, control C3
+      being the same glob with the file present), while a literal path that does
+      not exist is rc=1 `does not point to an existing file` (leg C, control B).
+      A render that fails to land is therefore invisible or loud purely as a
+      function of this one spelling, and this row ships the loud one.
+
+      SAID EXACTLY AS FAR AS IT WAS MEASURED, because the acceptance also forbids
+      a clause stronger than its evidence: the loudness is `promtool`'s and NOT
+      the running process's. Driven live (`PROM_RULES_DELIVERY_EVIDENCE`, rows
+      D5b/D6), a literal naming a missing file and a glob over an empty directory
+      are the SAME container — `running restarts=0`, `Completed loading of
+      configuration file`, `/api/v1/rules` -> `{"groups":[]}`. So this pin buys a
+      validator's exit code and nothing else until `7c` runs one before the
+      restart handler fires; it is a precondition for that row, not a substitute.
+
+    * `names_the_render` — the entries are EXACTLY the container-side paths this
+      role's rule renders are mounted at, derived through `_bind_mount_target`
+      from each render task's own `dest`. Set equality in both directions and
+      that is the point: a subset would let `rule_files:` ask for a file nothing
+      renders (rc=1 at `promtool`, `groups: []` live), and a superset would let a
+      render land somewhere the config never asks about (silent — leg C2's shape
+      without even needing a glob). One relation, spelled once; the far end is
+      `RELOAD_CONTRACT`'s `named_in` hop reading this same list.
+
+    NOT CLAIMED HERE: that any of these alerts can FIRE. Four of the seven cannot
+    match an absent series at all — `absent()` is the door and it is measured at
+    the wave cut, not here — and `7b` is the row that owns it. A clause asserting
+    otherwise would be the sentence-stronger-than-its-guard class this objective
+    has charged repeatedly.
+    """
+    prom, tasks, compose = _read(PROM_SCRAPE), _read(TASKS), _read(COMPOSE)
+    entries = _rule_files_entries(prom)
+    key_present = bool(entries)
+    entries_readable = all(e is not None for e in entries)
+    globbed = sorted(
+        e for e in entries
+        if e is not None and any(c in e for c in PROM_RULES_GLOB_CHARS)
+    )
+    all_literal = not globbed
+    rendered = {}
+    for src, row in RELOAD_CONTRACT.items():
+        if row.get("named_in") != PROM_SCRAPE:
+            continue
+        task = _render_task_block(tasks, src)
+        dest = re.search(r'(?m)^\s*dest:\s*(\S.*?)\s*$', task)
+        rendered[src] = _bind_mount_target(
+            _compose_service_block(compose, row["service"]), dest.group(1)
+        ) if dest else None
+    want = {t for t in rendered.values() if t is not None}
+    names_the_render = (
+        bool(want) and all(t is not None for t in rendered.values())
+        and entries_readable and set(entries) == want
+    )
+    ok = key_present and entries_readable and all_literal and names_the_render
+    print(
+        f"{'OK' if ok else 'FAIL'}: {PROM_SCRAPE.name}'s {PROM_RULES_KEY}: is a "
+        f"literal path naming this role's render (key_present={key_present}, "
+        f"entries={entries}, entries_readable={entries_readable}, "
+        f"all_literal={all_literal} (glob metacharacters "
+        f"{PROM_RULES_GLOB_CHARS!r}; globbed={globbed} — a glob matching zero "
+        f"files is promtool rc=0 with the 'N rule files found' line absent, "
+        f"measured with its control at {PROM_RULES_LITERAL_EVIDENCE}), "
+        f"names_the_render={names_the_render} (renders mounted at {rendered}))"
+    )
+    return ok
+
+
+def test_plex_blip_alert_rules_are_design_5_3() -> bool:
+    """Step-7a: the seven alerts of design §5.3, and every coordinate RESOLVES.
+
+    The alert set is the design's (`design/detailed-design.md:583-605`) and it is
+    pinned as an ORDERED sequence with each `for:`, so a rule silently dropped —
+    `PlexWatchdogProbeBroken` above all, the meta-guard that exists because a
+    diagnostic tool failed silently for 34 runs — reddens rather than shrinking a
+    count nobody reads.
+
+    THE EXPRS' COORDINATES ARE THE REAL SUBJECT, because they are JOINS NOTHING
+    AT RUNTIME CHECKS. An alert whose `job=` names a job this stack does not
+    scrape loads at `promtool` rc=0, matches no series and fires never, and is
+    indistinguishable from an alert with nothing to say. So each is read against
+    its far end rather than spelled a second time:
+
+    * `exact_job` — every `job="X"` is a `job_name:` under `scrape_configs:` in
+      `prometheus.yml.j2`.
+    * `regex_job` — `job=~"blackbox-plex.*"` is stronger than membership: the set
+      of this file's job names that the regex matches must EQUAL `BLACKBOX_JOBS`.
+      This is the half `prometheus.yml.j2`'s own 5c comment deferred in writing —
+      "Step 7 does not exist yet, so the guard pins the shared blackbox-plex
+      prefix and says so; the exact-match half arrives with the rules" — and it
+      closes in both directions: a fourth `blackbox-plex-*` job silently joining
+      the regex's fan-in reddens too, because `PlexUnreachable` would then alert
+      on a probe nobody decided it should cover.
+    * `watchdog_metric` — every `plex_*` family is one the watchdog SOURCE emits,
+      read by `ast` (`_watchdog_emitted`) because that file names its own metrics
+      in prose and a grep would be answered by the documentation.
+    * `event_type` — `TX_HELD` is a type the watchdog's classifier really emits.
+      A label value is the quietest coordinate of the four: `increase(...{
+      event_type="TX_HELED"}[5m])` is a valid expr over an empty selector.
+
+    Fully anchored, as Prometheus anchors: `re.fullmatch`, so `blackbox-plex.*`
+    cannot be satisfied by a job that merely CONTAINS the prefix.
+
+    NOT PINNED, and each absence is deliberate:
+
+    * `labels:` / `annotations:` — design §5.3 carries none, and plan.md's
+      "every alert has `severity` and a `summary`" is an obligation on `7d`, not a
+      property of the source. Pinning them here would redden the file this row is
+      required to ship.
+    * that any alert FIRES. Four of the seven compare a series to a constant and
+      cannot match an ABSENT one — `plex_watchdog_probe_status == 0` returns an
+      empty vector exactly when the watchdog has stopped producing, which is the
+      only moment the meta-guard exists for. That is measured at the wave cut with
+      a positive control and it is `7b`'s row, named here so this clause is not
+      mistaken for covering it.
+    * `up{job="plex-exporter"}`, `probe_success`, `probe_duration_seconds` — the
+      metric NAMES are Prometheus' and blackbox's own, produced by the scrape
+      rather than by anything in this repo, so there is no in-tree far end to read
+      them against and `watchdog_metric` is bounded to `plex_` rather than
+      pretending otherwise. Their `job=` labels ARE checked, above.
+    """
+    body = _read(PROM_RULES)
+    try:
+        doc = yaml.load(_neutralise_refs(body), Loader=_StrictLoader)
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
+    groups = doc.get("groups") if isinstance(doc, dict) else None
+    groups = groups if isinstance(groups, list) else []
+    one_group = (
+        len(groups) == 1 and isinstance(groups[0], dict)
+        and groups[0].get("name") == PROM_RULES_GROUP
+    )
+    rules = groups[0].get("rules") if one_group else None
+    rules = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+    found = tuple((r.get("alert"), r.get("for")) for r in rules)
+    alerts_are_the_design = found == PLEX_BLIP_ALERTS
+    job_names = _scrape_job_names(_read(PROM_SCRAPE))
+    families, events = _watchdog_emitted(_read(PLEX_WATCHDOG_SOURCE))
+    unresolved = {}
+    for rule in rules:
+        expr = rule.get("expr")
+        if not isinstance(expr, str):
+            unresolved[rule.get("alert")] = ["expr is not a scalar"]
+            continue
+        bad = []
+        for job in re.findall(PLEX_BLIP_EXPR_READERS["exact_job"], expr):
+            if job not in job_names:
+                bad.append(
+                    f'job="{job}" is not a job_name in {PROM_SCRAPE.name} '
+                    f"(scraped={job_names}) — this rule matches no series"
+                )
+        for pattern in re.findall(PLEX_BLIP_EXPR_READERS["regex_job"], expr):
+            try:
+                fan_in = {j for j in job_names if re.fullmatch(pattern, j)}
+            except re.error as exc:
+                bad.append(f'job=~"{pattern}" does not compile ({exc})')
+                continue
+            if fan_in != set(BLACKBOX_JOBS):
+                bad.append(
+                    f'job=~"{pattern}" fans in to {sorted(fan_in)}, want '
+                    f"{sorted(BLACKBOX_JOBS)} — the exact-match far end "
+                    f"{PROM_SCRAPE.name}'s 5c comment deferred to this step"
+                )
+        for metric in re.findall(PLEX_BLIP_EXPR_READERS["watchdog_metric"], expr):
+            if metric not in families:
+                bad.append(
+                    f"{metric} is not a family {PLEX_WATCHDOG_SOURCE.name} emits "
+                    f"(emitted={sorted(families)})"
+                )
+        for event in re.findall(PLEX_BLIP_EXPR_READERS["event_type"], expr):
+            if event not in events:
+                bad.append(
+                    f'event_type="{event}" is not a type '
+                    f"{PLEX_WATCHDOG_SOURCE.name} emits (emitted={sorted(events)})"
+                )
+        if bad:
+            unresolved[rule.get("alert")] = bad
+    ok = bool(doc) and one_group and alerts_are_the_design and not unresolved
+    print(
+        f"{'OK' if ok else 'FAIL'}: {PROM_RULES.name} carries design 5.3's "
+        f"{len(PLEX_BLIP_ALERTS)} alerts with resolving coordinates "
+        f"(parses={bool(doc)} (error={parse_error!r}), one_group={one_group} "
+        f"(want {PROM_RULES_GROUP!r}), alerts_are_the_design="
+        f"{alerts_are_the_design} (found={found}), "
+        f"unresolved={unresolved} — no clause here claims any of these FIRE; "
+        f"the absent-series half is 7b's)"
+    )
+    return ok
+
+
 def test_prometheus_retention_outlives_the_blip_window() -> bool:
     """Step-5d: the prometheus `command:` keeps the TSDB for 90 days.
 
@@ -7536,35 +8008,55 @@ def test_prometheus_render_is_world_read_only_unpaid() -> bool:
       credential arriving alongside a quietly deleted sentence is the state this
       arm exists for — the mode would then be unlicensed with nothing in the
       diff reading as a lie.
+
+    STEP-7a MADE IT A COLUMN. The role now renders TWO world-readable files, for
+    one reason — `prom/prometheus:v3.12.0` runs as uid 65534 and 0640 root:root is
+    a `permission denied` crash loop on either of them (driven on both; see
+    `PROM_RULES_MODE`) — and a clause naming only `prometheus.yml.j2` would have
+    left the second one published with nothing holding the sentence that pays for
+    it. `WORLD_READ_LICENCE` is the walk and the arms per row are unchanged. The
+    rules file is a ROW and not an exception because a rule expr can carry the
+    credential exactly as a scrape target can: a label matcher is an ordinary
+    place to write `X-Plex-Token`, and `_credential_spellings` is the same reader
+    either way.
     """
     tasks = _read(TASKS)
-    task = _render_task_block(tasks, PROM_SCRAPE.name)
-    mode_text = _render_task_scalar(task, "mode")
-    mode_digits = (mode_text or "").strip('"\'')
-    try:
-        # Fails CLOSED, `world_bit_withheld`'s rule one file over: a mode this
-        # cannot read octally is treated as PUBLISHING, so an unreadable mode
-        # demands the licence rather than being waved through.
-        world_readable = bool(int(mode_digits, 8) & 0o004)
-    except ValueError:
-        world_readable = True
-    leaks = _credential_spellings(_read(PROM_SCRAPE))
-    claims_no_credential = PROM_NO_CREDENTIAL_PROSE in task
-    world_read_is_licensed = (
-        not world_readable or (not leaks and claims_no_credential)
-    )
-    rationale_agrees = claims_no_credential == (not leaks)
-    ok = world_read_is_licensed and rationale_agrees
+    seen, defects = {}, {}
+    for template in WORLD_READ_LICENCE:
+        task = _render_task_block(tasks, template.name)
+        mode_text = _render_task_scalar(task, "mode")
+        mode_digits = (mode_text or "").strip('"\'')
+        try:
+            # Fails CLOSED, `world_bit_withheld`'s rule one file over: a mode this
+            # cannot read octally is treated as PUBLISHING, so an unreadable mode
+            # demands the licence rather than being waved through.
+            world_readable = bool(int(mode_digits, 8) & 0o004)
+        except ValueError:
+            world_readable = True
+        leaks = _credential_spellings(_read(template))
+        claims_no_credential = PROM_NO_CREDENTIAL_PROSE in task
+        world_read_is_licensed = (
+            not world_readable or (not leaks and claims_no_credential)
+        )
+        rationale_agrees = claims_no_credential == (not leaks)
+        seen[template.name] = (
+            f"mode={mode_text!r} world_readable={world_readable} "
+            f"credential_spellings={leaks} "
+            f"claims_no_credential={claims_no_credential}"
+        )
+        if not (world_read_is_licensed and rationale_agrees):
+            defects[template.name] = (
+                f"world_read_is_licensed={world_read_is_licensed} "
+                f"rationale_agrees={rationale_agrees}"
+            )
+    ok = not defects
     print(
-        f"{'OK' if ok else 'FAIL'}: {PROM_SCRAPE.name}'s render mode is paid for "
-        f"(mode={mode_text!r}, world_readable={world_readable}, "
-        f"credential_spellings={leaks}, "
-        f"claims_no_credential={claims_no_credential} "
-        f"({TASKS.name}'s render task, {PROM_NO_CREDENTIAL_PROSE!r}), "
-        f"world_read_is_licensed={world_read_is_licensed}, "
-        f"rationale_agrees={rationale_agrees} — 0644 publishes this file to "
-        f"every user on the docker host, and the only thing that makes that free "
-        f"is the sentence the render task writes above the mode)"
+        f"{'OK' if ok else 'FAIL'}: the {len(WORLD_READ_LICENCE)} world-readable "
+        f"render modes are paid for (rows={seen}, licence="
+        f"{PROM_NO_CREDENTIAL_PROSE!r} in {TASKS.name}'s own render task, "
+        f"defects={defects} — 0644 publishes these files to every user on the "
+        f"docker host, and the only thing that makes that free is the sentence "
+        f"the render task writes above the mode)"
     )
     return ok
 
@@ -8714,6 +9206,8 @@ def main() -> int:
         test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses(),
         test_blackbox_scrape_jobs_probe_plex(),
         test_blackbox_scrape_cadence_is_what_prometheus_runs(),
+        test_prometheus_rule_files_names_the_render(),
+        test_plex_blip_alert_rules_are_design_5_3(),
         test_prometheus_retention_outlives_the_blip_window(),
         test_prometheus_render_is_world_read_only_unpaid(),
         test_homepage_allowed_hosts(),

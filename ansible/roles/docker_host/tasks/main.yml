@@ -95,8 +95,21 @@
     owner: root
     group: root
     mode: "0750"
+  # `prometheus/rules` is Step 7a's: the alert rules live one level down so the
+  # host side has the same shape as the container-side `/etc/prometheus/rules/`
+  # the `rule_files:` literal names. 0750 like its siblings is enough even though
+  # the file itself must be 0644 — the bind mount names the FILE, so traversal
+  # happens on the host as root and the container never walks this directory.
+  #
+  # THE PROSE IS UP HERE AND NOT BESIDE THE ENTRY ON PURPOSE: `_loop_items` in
+  # scripts/test_grafana_provisioning_shape.py stops at the first list line it
+  # cannot read as an entry, so a comment INSIDE this loop drops every grafana
+  # dir from `test_grafana_provisioning_dirs_are_traversable` and reds it with
+  # `never created`. It fails closed, but the message names the wrong defect;
+  # filed as its own row rather than repaired from this one.
   loop:
     - prometheus
+    - prometheus/rules
     - grafana/provisioning/datasources
     - grafana/provisioning/dashboards
     - grafana/dashboards
@@ -129,6 +142,49 @@
     # `restart: unless-stopped` had been re-reading that file all along. So the
     # next `just play` ENDS a two-week monitoring outage, and every dashboard,
     # alert and operator gate that queries Prometheus is dark until it runs.
+    mode: "0644"
+  notify: Restart prometheus
+
+# Design §5.3's alert rules (plex-blip-manual-triage Step 7a) — the first rule
+# file this stack has ever had. THE HANDLER IS REQUIRED TWICE OVER HERE, and both
+# halves were driven on the pinned prom/prometheus:v3.12.0 rather than taken by
+# analogy with the four renders above (logs/builder-7a-handler-question.log,
+# evaluation_interval 15s so +40s is two-plus cycles):
+#
+#   D1  POST /-/reload                     403 "Lifecycle API is not enabled."
+#   D2  edit IN PLACE, same inode, +40s    the container SEES the new bytes and the
+#                                          process still serves the OLD rule set
+#   D3  ATOMIC REPLACE, new inode, +40s    the container cannot even SEE the new
+#                                          bytes — a single-FILE bind holds the old
+#                                          inode, and os.replace is exactly what
+#                                          this module does
+#   D4  CONTROL, docker restart            same container id, new inode visible,
+#                                          new rule set served
+#
+# So the process does not re-read rule files AND the mount does not follow this
+# module's write; `docker compose up -d` changes no spec and touches neither.
+- name: Render the Plex blip alert rules
+  ansible.builtin.template:
+    src: plex-blip-rules.yml.j2
+    dest: "{{ docker_host_project_dir }}/prometheus/rules/plex-blip-rules.yml"
+    owner: root
+    group: root
+    # 0644 for the SAME reason prometheus.yml above uses it, and driven on THIS
+    # file rather than inferred from that one (logs/builder-7a-rules-mode.log,
+    # `docker run --entrypoint id` -> uid=65534(nobody)): at 0640 root:root the
+    # container is `restarting restarts=7` logging `Error loading rule file
+    # patterns from config ... open /etc/prometheus/rules/plex-blip-rules.yml:
+    # permission denied` — verbatim the crash loop that left this stack's TSDB
+    # empty from 2026-05-28 to 2026-07-29 — and at 0644 it is `running
+    # restarts=0` serving groups=['plex-blip'].
+    #
+    # Harmless to publish: this file carries no credential either. It is seven
+    # alert expressions over metric names and job labels, and the world bit is
+    # held to that sentence by test_prometheus_render_is_world_read_only_unpaid,
+    # which walks BOTH 0644 renders rather than only its neighbour.
+    #
+    # Note the asymmetry with the two legs the `rule_files:` comment records: an
+    # UNREADABLE rules file is loud, while a MISSING one is silent.
     mode: "0644"
   notify: Restart prometheus
 

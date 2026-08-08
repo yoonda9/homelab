@@ -7,6 +7,36 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alert rules (plex-blip-manual-triage Step 7a), design §5.3. Before this key
+# existed Prometheus evaluated NOTHING — `rule_files` was zero hits across
+# ansible/ — so detection depended entirely on a human noticing a paused stream.
+#
+# A LITERAL PATH AND NOT A GLOB, AND THE CHOICE IS MEASURED
+# (logs/builder-7a-literal-vs-glob.log, pinned prom/prometheus:v3.12.0, each
+# direction with its own positive control):
+#
+#   rule_files: ["/etc/prometheus/rules/*.yml"] over an EMPTY directory is
+#   `promtool check config` rc=0 — "... is valid prometheus config file syntax",
+#   with the "SUCCESS: N rule files found" line simply ABSENT — while the same
+#   glob with the file present is rc=0 WITH that line. A render that failed to
+#   land is invisible under the glob. The literal below, pointed at a file that
+#   does not exist, is rc=1 "... does not point to an existing file".
+#
+# Silent-healthy vs loud on one character; this takes the loud one. What it does
+# NOT buy is a louder RUNTIME: a literal naming a missing file starts
+# `running restarts=0`, logs `Completed loading of configuration file` and serves
+# `{"groups":[]}` from /api/v1/rules — byte-for-byte the glob leg
+# (logs/builder-7a-handler-question.log rows D5b/D6). The rc=1 only helps once
+# something runs the validator before the restart handler fires, which is Step 7c.
+#
+# THE PATH IS NOT A SECOND LITERAL. It is the container side of the rules bind
+# mount in compose.yml.j2, whose host side is the render task's own `dest` in
+# tasks/main.yml — one relation walked end to end by RELOAD_CONTRACT's `named_in`
+# hop in scripts/test_traefik_config_shape.py, which reads THIS list rather than
+# comparing two strings that agree until one moves.
+rule_files:
+  - /etc/prometheus/rules/plex-blip-rules.yml
+
 scrape_configs:
   - job_name: prometheus
     static_configs:
