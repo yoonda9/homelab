@@ -1360,7 +1360,7 @@ def _relabel_entry_fields(entry: str) -> tuple:
     anything deeper belongs to a value, not to the entry.
 
     `unreadable` is the half that makes the allow-list complete rather than
-    merely intended: a `%` merge key, an explicit-key pair or a line this file's
+    merely intended: a `<<` merge key, an explicit-key pair or a line this file's
     `_yaml_key` cannot parse comes back here and the caller reddens on it,
     instead of being dropped on the floor and counted as no field at all.
     """
@@ -1405,13 +1405,41 @@ def _flow_sequence(value: str) -> list | None:
     return [_yaml_unquote(m.strip()) for m in inner.split(",")] if inner else []
 
 
+# Every field a Prometheus `relabel_config` entry may declare (v3.12.0, the
+# image this row is measured against). `_RELABEL_HOP_FIELDS` is a SUBSET of this
+# per hop, so what the allow-list excludes is a relation between two constants
+# and not a sentence somebody has to keep true by hand.
+_PROM_RELABEL_FIELDS = (
+    "source_labels", "separator", "regex", "modulus", "target_label",
+    "replacement", "action",
+)
+
+# The spelling of each excluded field that CHANGES NOTHING — its documented
+# default, written out. This is the allow-list's PRICE, and it is here as a
+# constant because the sentence that used to stand in for it was false of every
+# field it named (DEC-318): it said the excluded fields "change what the hop
+# writes or whether it writes at all". Every one of them has a default, and a
+# default written out explicitly is a no-op the wire cannot tell from the
+# delivered tree — so each of these is a WORKING document this guard reds.
+# Measured, both legs from one mutation, with the CONTROL live in the same run:
+# logs/builder-5c-r3-price.log.
+#
+# `target_label` is absent because it is allowed on all three hops and therefore
+# never excluded; `modulus`'s entry is the value the field is ignored at under
+# `action: replace`, which is what its default 0 also is.
+_RELABEL_NOOP_SPELLING = {
+    "source_labels": "source_labels: []",
+    "separator": 'separator: ";"',
+    "regex": "regex: (.*)",
+    "modulus": "modulus: 0",
+    "replacement": "replacement: $1",
+    "action": "action: replace",
+}
+
 # The fields each hop's read MODELS, and therefore the only ones its entry may
 # declare. Sourced from what `_relabel_triplet` actually asks of the entry: the
 # two `carry`/`keep` hops are a copy from one label to another, and `dial`'s
-# `replacement:` IS its value. Everything else in a relabel entry —
-# `regex`, `action`, `modulus`, `separator`, a second `replacement` — changes
-# what the hop writes or whether it writes at all, and is measured at
-# logs/builder-5c-r2-wire.log.
+# `replacement:` IS its value.
 _RELABEL_HOP_FIELDS = {
     "carry": ("source_labels", "target_label"),
     "keep": ("source_labels", "target_label"),
@@ -1504,13 +1532,32 @@ def _relabel_triplet(block: str, exporter: str) -> tuple:
     that leave a valid config — and the control matters, because without it this
     paragraph would be claiming a hole where the runtime already stands.
 
-    THE PRICE, and it is a working document: `action: replace` written out
-    EXPLICITLY is the DEFAULT action, byte-identical to the delivered tree at
-    the wire (W6 — same instance, same `up`, same `probe_success`), and this
-    allow-list REDS it (logs/builder-5c-r2-arms.log M9). That is the standing
-    cost of an allow-list and it is taken deliberately: the door out is one
-    string in `_RELABEL_HOP_FIELDS`, whereas the door out of an absence pin is
-    another round of this. DEC-317.
+    THE PRICE IS EVERY EXCLUDED FIELD, NOT THE ONE THAT WAS NOTICED — DEC-318,
+    and the correction of a sentence this file shipped one constant above.
+    `action: replace` written out EXPLICITLY is the DEFAULT action and is
+    byte-identical to the delivered tree at the wire (W6), and SO IS EVERY OTHER
+    FIELD THIS ALLOW-LIST EXCLUDES, in its own default spelling: `separator:
+    ";"`, `regex: (.*)` and `modulus: 0` on all three hops, `replacement: $1` on
+    the two copying ones, and `source_labels: []` on `dial` — which is the field
+    the charge's own five did not reach, because it is excluded there and
+    nowhere else. Driven with the CONTROL live in the same run, both legs from
+    ONE mutation of the shipped template (logs/builder-5c-r3-price.log): every
+    one is `promtool` rc=0 carrying the untouched render's own `up`,
+    `probe_success`, `instance` and series count, and every one REDS here. A
+    field with a default always has BOTH spellings and an allow-list refuses
+    both, which is why the old sentence read true — the non-default spellings
+    beside them really do change the wire (W1 takes the job's `probe_*` series
+    away entirely; W2 redirects the probe), and this battery carries them as the
+    contrast rows N1/N2 rather than leaving the two cases to be conflated again.
+
+    The standing cost is therefore one document per (hop, field) pair, and the
+    count is READ OFF the constants by
+    `test_relabel_allow_list_prices_every_field_it_excludes` at every run rather
+    than typed here, because a number in prose is a measurement sentence with
+    nothing arming it. It is taken deliberately: the door out is one string in
+    `_RELABEL_HOP_FIELDS` — and that clause reds if it is walked through without
+    the price following it — whereas the door out of an absence pin is another
+    round of this. DEC-317.
 
     What is still NOT modelled, stated narrowly this time because a "what is NOT
     modelled" paragraph is an ARM's claim in prose and the last one was driven
@@ -1582,8 +1629,10 @@ def _relabel_triplet(block: str, exporter: str) -> tuple:
             defects.append(
                 f"the {name} hop (entry {hops[name]}) declares {extra} outside "
                 f"{list(allowed)}, unreadable={unreadable} — a field beside the "
-                "copy decides whether the hop fires and what it writes, and "
-                "every spelling of that leaves a config Prometheus loads"
+                "copy can decide whether the hop fires and what it writes while "
+                "leaving a config Prometheus loads, and this allow-list refuses "
+                "it in EVERY spelling including the default ones that change "
+                "nothing (_RELABEL_NOOP_SPELLING, the priced cost)"
             )
         want = _RELABEL_HOP_SOURCE.get(name)
         if want is not None:
@@ -4488,6 +4537,76 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
         f"{'OK' if ok else 'FAIL'}: rendered configs reach the service that reads them "
         f"({len(RELOAD_CONTRACT) - len(broken)}/{len(RELOAD_CONTRACT)} paths whole, "
         f"broken={broken})"
+    )
+    return ok
+
+
+def test_relabel_allow_list_prices_every_field_it_excludes() -> bool:
+    """Step-5c r3: `_RELABEL_HOP_FIELDS`' excluded set is ENUMERATED and PRICED.
+
+    This clause reads no file. It holds one relation between three constants,
+    and it exists because the sentence that used to carry that relation was
+    prose and was false (DEC-318): the allow-list excluded five fields with the
+    justification that each "changes what the hop writes or whether it writes at
+    all", when every one of them has a default whose explicit spelling is a
+    byte-identical no-op the guard reds anyway. A justification a reader quotes
+    to price the cost has to be a thing the suite can red on, so:
+
+    * `unknown` — every field the allow-list ALLOWS is a real relabel field.
+      A typo (`target_labels`) would silently forbid the field it meant to
+      permit, and `_relabel_triplet`'s defect text would name a field Prometheus
+      has never heard of.
+    * `unpriced` — every field the allow-list EXCLUDES has a no-op spelling
+      recorded. This is the arm that made the r2 charge's own door short by one:
+      the charge named five fields and the excluded set is SIX, because
+      `source_labels` is excluded on `dial` and nowhere else.
+    * `unused` — and nothing is priced that is not excluded, so widening the
+      allow-list (the declared door out, DEC-317) cannot leave a stale price
+      behind it.
+    * `mis_spelled` — each priced spelling is a spelling OF ITS OWN FIELD. The
+      table is two columns and nothing else relates them, so a row edited by
+      hand can name one field and demonstrate another.
+
+    WHAT IT DOES NOT DO, said plainly because the defect it repairs was an
+    over-claiming sentence: it does not drive any of these spellings, and it
+    cannot tell a TRUE default from a plausible one. That the wire cannot
+    distinguish them from the delivered tree is a MEASUREMENT, and it lives at
+    logs/builder-5c-r3-price.log — 15 documents, each one `promtool` rc=0 with
+    the CONTROL's own `up`, `probe_success`, `instance` and series count, each
+    one RED in this suite. Re-spelling `separator: ";"` as `separator: ';'` is
+    GREEN here and that is correct rather than a hole: what this clause holds is
+    that the priced set and the excluded set are the same set and that each row
+    demonstrates the field it names, so neither can drift without a red.
+
+    The COUNT is printed from the constants rather than typed into a docstring,
+    for the reason this row keeps rediscovering: a number in prose is a
+    measurement sentence with nothing arming it.
+    """
+    unknown = {
+        hop: sorted(set(allowed) - set(_PROM_RELABEL_FIELDS))
+        for hop, allowed in _RELABEL_HOP_FIELDS.items()
+    }
+    unknown = {hop: bad for hop, bad in unknown.items() if bad}
+    excluded = {
+        hop: tuple(f for f in _PROM_RELABEL_FIELDS if f not in allowed)
+        for hop, allowed in _RELABEL_HOP_FIELDS.items()
+    }
+    union = sorted({f for fields in excluded.values() for f in fields})
+    unpriced = [f for f in union if f not in _RELABEL_NOOP_SPELLING]
+    unused = [f for f in _RELABEL_NOOP_SPELLING if f not in union]
+    mis_spelled = {
+        f: s for f, s in _RELABEL_NOOP_SPELLING.items()
+        if not s.startswith(f"{f}:")
+    }
+    priced = [(hop, f) for hop, fields in excluded.items() for f in fields]
+    ok = not unknown and not unpriced and not unused and not mis_spelled
+    print(
+        f"{'OK' if ok else 'FAIL'}: the relabel-hop allow-list prices every "
+        f"field it excludes ({len(priced)} no-op documents over {len(union)} "
+        f"fields and {len(_RELABEL_HOP_FIELDS)} hops — the standing cost, "
+        f"measured at logs/builder-5c-r3-price.log; excluded="
+        f"{ {hop: list(f) for hop, f in excluded.items()} }, unpriced={unpriced}, "
+        f"unused={unused}, unknown={unknown}, mis_spelled={mis_spelled})"
     )
     return ok
 
@@ -8290,6 +8409,7 @@ def main() -> int:
         test_prometheus_never_public(),
         test_prometheus_histogram_buckets_tuned(),
         test_rendered_configs_reach_the_service_that_reads_them(),
+        test_relabel_allow_list_prices_every_field_it_excludes(),
         test_pve_scrape_job_is_multi_target(),
         test_pve_exporter_service_block(),
         test_pve_token_sourced_from_vault(),
