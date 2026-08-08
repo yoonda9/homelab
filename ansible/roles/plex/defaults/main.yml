@@ -53,6 +53,14 @@ plex_library_db: "{{ plex_state_dir }}/Library/Application Support/Plex Media Se
 # hours while `PRAGMA journal_mode;` answered `wal` and the audit stayed green.
 plex_wal_max_bytes: 8388608
 
+# node-exporter's textfile collector directory (design §4.5), named ONCE so the
+# writer and the reader can never drift onto different directories: the watchdog
+# unit passes it as --textfile-dir, and Step 4c's node-exporter will pass this
+# same variable as --collector.textfile.directory. Two literals that agree is
+# the defect task-1786153086-9f13 records one file over; this is a variable so
+# there is nothing to agree.
+plex_watchdog_textfile_dir: /var/lib/node_exporter/textfile
+
 # The +100000 shift the state-dir ownership gate uses to print the exact
 # host-side chown to run. CT 110's UID map is a single offset tile
 # (`u 0 100000 65536`), so any in-CT uid N is host uid N + 100000. The GID map

@@ -259,6 +259,20 @@
     group: root
     mode: "0755"
 
+- name: Ensure the Plex watchdog Prometheus textfile directory exists
+  ansible.builtin.file:
+    path: "{{ plex_watchdog_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    # 0755 and not 0700: the watchdog writes plex_blip.prom here as root (the
+    # unit is User=root) while node-exporter scrapes it as its OWN uid, so
+    # `other` needs r-x on the directory or the collector cannot open the file.
+    # The watchdog also creates this directory itself (files/plex_blip_watchdog.py
+    # os.makedirs) — it is created HERE so the mode is the role's decision and
+    # not whatever the daemon's umask happens to be.
+    mode: "0755"
+
 - name: Install the Plex blip watchdog script
   ansible.builtin.copy:
     src: plex_blip_watchdog.py

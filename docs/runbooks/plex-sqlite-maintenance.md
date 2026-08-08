@@ -12,10 +12,10 @@ The Ansible role audits **both halves** on every deployment, and either one fail
 
 | Half | Where | What it asserts |
 | --- | --- | --- |
-| Journal mode | `ansible/roles/plex/tasks/main.yml:355-364` — the `sqlite3` CLI, `-readonly` | `PRAGMA journal_mode` returns `wal` |
-| WAL size | `ansible/roles/plex/tasks/main.yml:366-424` — `ansible.builtin.stat` plus an `assert` | the `-wal` file is under `plex_wal_max_bytes`, **8388608** bytes (`ansible/roles/plex/defaults/main.yml:54`) |
+| Journal mode | `ansible/roles/plex/tasks/main.yml:369-378` — the `sqlite3` CLI, `-readonly` | `PRAGMA journal_mode` returns `wal` |
+| WAL size | `ansible/roles/plex/tasks/main.yml:380-438` — `ansible.builtin.stat` plus an `assert` | the `-wal` file is under `plex_wal_max_bytes`, **8388608** bytes (`ansible/roles/plex/defaults/main.yml:54`) |
 
-The size half is deliberately not derived from the `sqlite3` output. It stands on a `stat` alone, so it can be watched going red without a deploy and without the CLI — see `scripts/test_plex_wal_guard_shape.py`. When it fires, the failure message carries the ordered manual remedy inline (`ansible/roles/plex/tasks/main.yml:411-421`): stop `plexmediaserver`, reclaim the log, start it again, in that order. Do not run the reclaim step while Plex is up — it comes back `busy`, moves nothing, and the CLI still exits `0`.
+The size half is deliberately not derived from the `sqlite3` output. It stands on a `stat` alone, so it can be watched going red without a deploy and without the CLI — see `scripts/test_plex_wal_guard_shape.py`. When it fires, the failure message carries the ordered manual remedy inline (`ansible/roles/plex/tasks/main.yml:425-435`): stop `plexmediaserver`, reclaim the log, start it again, in that order. Do not run the reclaim step while Plex is up — it comes back `busy`, moves nothing, and the CLI still exits `0`.
 
 To manually verify the journal mode (read-only), as the Plex service user:
 ```bash
