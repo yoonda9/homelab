@@ -4246,7 +4246,7 @@ def _service_command_args(service_block: str) -> list:
 
 
 def _last_flag_value(args: list, flag: str) -> str | None:
-    """The value of the LAST `--flag=value` in an argv sequence, or None.
+    """The value of the LAST `--flag=value` OR `--flag value` in an argv, or None.
 
     `command:` is the fifth region meeting the criterion `_kv_entries` states —
     a sequence the runtime resolves by an in-string key, invisible to every YAML
@@ -4282,10 +4282,51 @@ def _last_flag_value(args: list, flag: str) -> str | None:
     guard-correctness — the same polarity round 6 recorded for the `environment:`
     flow mapping — and the price is zero, since no delivered `command:` arg carries
     Jinja at all (`--config.file=…`, `--path.rootfs=/host`, `--no-collector.config`).
+
+    AND THE RUNTIME ACCEPTS TWO SPELLINGS OF THE JOIN, WHICH IS WHY THIS READS
+    BOTH (5d round 4, DEC-306 charge). Until this round the match was
+    `a.startswith(f"{flag}=")` and nothing else. kingpin also takes the two-token
+    `--flag value` form, and a `command:` LIST is exactly where that spelling is
+    natural to write — two sequence entries, which `docker compose` hands the
+    daemon as two argv elements verbatim. An ABSENCE-shaped pin built on the
+    `=`-only reader is therefore only as wide as this reader's spelling census,
+    and it fails OPEN: measured through real ansible-core + `docker compose up
+    -d` (logs/critic-5d-r3-live-space.log, re-driven at this round's hands in
+    logs/builder-5d-r4-render.log), `--storage.tsdb.retention.size` + `1MB` as
+    two entries is `restarts=0` with the process logging `duration=90d
+    size=1MiB` — a healthy container pruned to a megabyte in minutes — while
+    `no_size_cap` printed `True (…=None, want absent)`. The path flag split the
+    same way put `wal/` directly in `/prometheus`, the SILENT trap
+    `test_prometheus_retention_outlives_the_blip_window` documents, with
+    `tsdb_path_ok=True`.
+
+    A VALUE pin fails CLOSED on the same gap, which is the other half of the
+    asymmetry and the reason this is ONE edit: the split spelling read as `None`,
+    so `retention_pinned` reddened — on a CORRECT tree
+    (`--storage.tsdb.retention.time` + `90d`), and so did `reads_it` on a split
+    `--config.file` (rows M7/C1, logs/builder-5d-r4-redfirst.log). This file
+    already calls false-RED-on-a-correct-tree a defect class in
+    `_service_command_args`; closing the hole and closing the false-RED are the
+    same three lines.
+
+    THE VALUE OF A BARE FLAG IS THE NEXT ARG, and where there is no such arg to
+    take — the flag is last, or the next arg is itself a flag — the answer is
+    `UNREADABLE` rather than absence, for the reason this helper already gives one
+    paragraph up: an arg this reader cannot attribute to a flag must not be read
+    as no flag at all. Rows N1/N2 are those two shapes, both GREEN before this
+    edit. That the runtime ALSO refuses them (kingpin wants an argument for the
+    flag) is not what licenses the polarity — fail-closed is, since a guard that
+    cannot read a list has nothing true to say about what is absent from it.
     """
     if any(not _resolvable_key(a.split("=", 1)[0]) for a in args):
         return UNREADABLE
-    hits = [a.split("=", 1)[1] for a in args if a.startswith(f"{flag}=")]
+    hits = []
+    for i, a in enumerate(args):
+        if a.startswith(f"{flag}="):
+            hits.append(a.split("=", 1)[1])
+        elif a == flag:
+            nxt = args[i + 1] if i + 1 < len(args) else None
+            hits.append(UNREADABLE if nxt is None or nxt.startswith("-") else nxt)
     return hits[-1] if hits else None
 
 
@@ -7345,6 +7386,15 @@ def test_prometheus_retention_outlives_the_blip_window() -> bool:
       `no_config_side_retention` below, so this is the flag side of the same axis
       and not a second door.
 
+      AN ABSENCE PIN IS EXACTLY AS WIDE AS ITS READER'S SPELLING CENSUS, and that
+      is the third census this one conjunct rests on — round 4's charge. Round 3
+      shipped it over an `=`-only reader while kingpin takes `--flag value` too,
+      so two `command:` entries delivered the cap at `restarts=0`, `size=1MiB`,
+      and THIS LINE printed `no_size_cap=True (…=None, want absent)`. `absent`
+      now means absent in BOTH joins (`_last_flag_value`), and the split form
+      whose value cannot be attributed reads `UNREADABLE`, which is not `None`
+      and reds here.
+
     * `tsdb_path_ok` — the path flag is absent today, and the clause admits every
       spelling that RESOLVES to `PROMETHEUS_TSDB_DIR` rather than the one that
       equals it. It reds on `/prometheus`, which is the obvious edit and the
@@ -7361,6 +7411,16 @@ def test_prometheus_retention_outlives_the_blip_window() -> bool:
       is the conservative direction on a spelling no tree carries, and this file
       already calls false-RED-on-a-correct-tree a defect class in
       `_service_command_args`.
+
+      RESOLVING THE VALUE IS NOT RESOLVING THE JOIN — the same round-4 charge as
+      `no_size_cap`'s, met from the other side. Round 3 resolved four spellings
+      of the VALUE and still read the FLAG in one, so `--storage.tsdb.path` +
+      `/prometheus` as two `command:` entries ran at `restarts=0` with `wal/`
+      landing directly in `/prometheus` — the silent trap this very clause
+      documents — while this line printed `tsdb_path_ok=True (value=None …)`.
+      Both joins are read now, and `UNREADABLE` composes rather than needing a
+      branch: it is a string, so the WORKDIR join carries it to a directory that
+      is not `PROMETHEUS_TSDB_DIR` and reds.
 
     * `no_config_side_retention` — `prometheus.yml` declares no `storage:` key.
       This is an ABSENCE pin and it is deliberate, because the precedence runs
