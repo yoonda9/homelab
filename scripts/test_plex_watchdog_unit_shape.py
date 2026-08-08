@@ -112,8 +112,9 @@ STAT_TASK = "Stat the Plex SQLite write-ahead log"
 # value is the reference plus SQLite's sibling-file wildcard. Pinned as a
 # constant because the suffix is the one character of the value that is NOT the
 # reference — and because dropping it narrows the LOCK-HOLDER probes off the
-# sidecars. See the `--db-pattern` row below for what it does and does not cost;
-# measured in both directions at `logs/builder-4b-r2-suffix.log`.
+# sidecars, so the capture stops naming WHICH file is contended. See the
+# `--db-pattern` row below for what it does and does not buy; measured with a
+# real WAL-mode connection at `logs/builder-4b-r3-suffix-holder.log`.
 DB_PATTERN_SUFFIX = "*"
 
 # block/rescue/always each carry a task list of their own. Armed by
@@ -255,21 +256,29 @@ def _flag_value(flag: str):
 
 
 def _argparse_flag_census():
-    """`(accepted, required)` — every long option the watchdog defines, and
-    which of them `argparse` will refuse to start without.
+    """`(accepted, required, unreadable)` — every long option the watchdog
+    defines, which of them `argparse` will refuse to start without, and which
+    ones this reader could not decide.
 
     Read and not imported: the module is a standalone script that this repo
     cannot take as a test dependency, and importing it to interrogate its parser
     would execute module-level code inside the gate.
 
-    `required=` counts only when it is the literal `True`. An expression-valued
-    `required=` reads here as NOT required — conservative in the direction of
-    missing a requirement, which is why the row that consumes this set asserts
-    it is non-empty rather than trusting it.
+    `required=` counts only when it is the literal `True`, because an `ast` walk
+    does not evaluate. The third set carries every flag whose `required=` is
+    present but is NOT a literal bool, so the conservative direction is
+    REPORTED rather than silently taken.
+
+    That set is not tidiness, and the sentence it replaces over-claimed. Asserting
+    `required` is non-empty catches a census that stopped reading `required=`
+    ALTOGETHER; it does nothing about a census blinded on ONE flag, which leaves
+    the set non-empty and the dropped flag invisible — measured, green over a
+    program that still exits 2 (`logs/critic-4b-r2-mutants.log` V4). Non-emptiness
+    is the mitigation for total blinding; this set is the mitigation for partial.
     """
-    accepted, required = set(), set()
+    accepted, required, unreadable = set(), set(), set()
     if not WATCHDOG_SOURCE.is_file():
-        return accepted, required
+        return accepted, required, unreadable
     tree = ast.parse(WATCHDOG_SOURCE.read_text())
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -285,14 +294,52 @@ def _argparse_flag_census():
             and arg.value.startswith("--")
         }
         accepted |= longs
-        if any(
-            keyword.arg == "required"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value is True
-            for keyword in node.keywords
-        ):
-            required |= longs
-    return accepted, required
+        for keyword in node.keywords:
+            if keyword.arg != "required":
+                continue
+            literal = isinstance(keyword.value, ast.Constant) and isinstance(
+                keyword.value.value, bool
+            )
+            if not literal:
+                unreadable |= longs
+            elif keyword.value.value is True:
+                required |= longs
+    return accepted, required, unreadable
+
+
+def _value_defect(flag: str):
+    """Why this flag's value is unusable to the program, or None when it is fine.
+
+    A flag that is PRESENT is not a flag that carries a value, and the three
+    ways it can be present-but-useless are three different `argparse` failures
+    — measured with argv rendered by real jinja through `ansible-playbook` and
+    run against the real program, with a CONTROL run that stays alive
+    (`logs/critic-4b-r2-consequence.log`, re-driven 6/6 at
+    `logs/builder-4b-r3-consequence-rerun.log`):
+
+      * `--output-dir` with the next token deleted swallows the FOLLOWING flag
+        as its value, so `argparse` exits 2 with `expected one argument` on
+        whatever it lost; the value is not `""` but a string starting `--`,
+        which is why truthiness alone cannot see it;
+      * the same flag as the LAST token has no value at all (`""` here);
+      * `--output-dir ""` parses, and the program then dies on the empty path.
+
+    All three are the same crash loop as an absent flag under
+    `Restart=on-failure`, and all three left this file 7/7 GREEN before this
+    clause (DEC-268 charge 2, `logs/critic-4b-r2-mutants.log` V1-V3).
+
+    It reaches the ExecStart's own argv and nothing else: a value that is a
+    variable reference rendering EMPTY is a different defect, pinned by the two
+    reference rows above rather than here.
+    """
+    value = _flag_value(flag)
+    if value is None:
+        return "absent"
+    if not value.strip():
+        return "present with no value"
+    if value.startswith("--"):
+        return f"swallowed the next flag ({value!r})"
+    return None
 
 
 def _passed_long_flags():
@@ -406,11 +453,29 @@ def test_exec_start_passes_the_db_pattern_as_a_variable_reference() -> bool:
 
     What the suffix actually buys is the OTHER consumer of the same glob. The
     match set is also `targets` for the lock-holder probes (`_run_cmd(["fuser",
-    "-v"] + targets)` in `capture_snapshot`), so without the `*` `fuser -v` and
-    `lsof` are asked about the `.db` alone: in
-    the same measurement (R2) a live writer holding the `-wal` open is REPORTED
-    by the probes with the suffix and INVISIBLE without it — and a WAL holder is
-    precisely what a lock-contention capture exists to name.
+    "-v"] + targets)` in `capture_snapshot`), so without the `*` both probes are
+    asked about the `.db` alone.
+
+    IT DOES NOT MAKE THE HOLDER INVISIBLE, and the previous version of this
+    paragraph said it did — the second false sentence this row has shipped in
+    the same place, which is why it is stated here at the length it is. A SQLite
+    connection holds the `.db` as well as its `-wal`, so asking about the `.db`
+    alone already returns that process. Measured (DEC-268, re-measured at
+    `logs/builder-4b-r3-suffix-holder.log`) with a real WAL-mode connection left
+    mid-transaction and the real CLI, `--dry-run` not set: the holder pid is
+    named by `fuser` AND by `lsof`, with the suffix and without it (R2). The
+    round-2 fixture that produced the false claim held the `-wal` with a bare
+    `open()` and nothing on the `.db`, so its narrow probe had no holder to find
+    — the fixture was wrong, not the probes.
+
+    WHAT CHANGES IS WHICH FILE THE CAPTURE NAMES, AND WITH WHAT ACCESS. With the
+    `*` the probes report the sidecar itself: `lsof` emits its own FD row,
+    `4u REG ... .db-wal`, mode column included, and `fuser` gives it its own
+    section (R3/R4). Without it the operator gets a pid and nothing saying the
+    contention is on the write-ahead log at all. That is the difference between
+    "something holds the library" and "this process has the WAL open for
+    writing", and the second is the question a lock-contention capture exists to
+    answer.
 
     Both halves are worth keeping in mind for `task-1786152669-ffe0`: the `*` is
     also what lets a SECOND `.db`-ending neighbour into `base_dbs`, so this
@@ -573,7 +638,7 @@ def test_every_flag_the_unit_passes_is_one_argparse_accepts() -> bool:
     parser defines none, and the ExecStart passes none — named so the sentence
     stays weaker than the guard rather than stronger.
     """
-    accepted, _ = _argparse_flag_census()
+    accepted, _, _ = _argparse_flag_census()
     passed = _passed_long_flags()
     unknown = sorted(passed - accepted)
     # Anti-vacuity: an `ast` walk that found nothing would make `unknown` empty
@@ -612,24 +677,43 @@ def test_every_flag_argparse_requires_is_one_the_unit_passes() -> bool:
     is exactly the alert a crash loop is invisible to. The two defects compose
     into a telemetry path with no observer.
 
-    `required_read` is a hard anti-vacuity clause, and its cost is stated rather
-    than hidden: if a later change legitimately gives every flag a default, this
-    row REDS and the next hat must revisit it. That is the intended prompt —
-    without it, a census that stopped recognising `required=` would empty the
-    set and pass over nothing at all, which is the failure mode this whole file
-    exists to refuse.
+    PASSING IS NOT CARRYING A VALUE, and scoring only the flag NAME is the
+    presence-vs-identity defect this file argues against everywhere else. Three
+    mutants that keep the flag and break its value — the next token deleted, the
+    flag last on the line, an explicit `""` — left this row GREEN while the real
+    program exited 2 or died on the empty path (DEC-268, `logs/critic-4b-r2-
+    mutants.log` V1-V3, consequence driven at `logs/critic-4b-r2-consequence.log`
+    and re-run at `logs/builder-4b-r3-mutants.log`). `_value_defect` is what
+    closes that, and note the shape of V1: the value is not `""` but the NEXT
+    FLAG, so a truthiness test passes it.
+
+    TWO ANTI-VACUITY CLAUSES, and they cover different blindings. `required_read`
+    catches a census that stopped reading `required=` altogether — the set empties
+    and the row would otherwise pass over nothing. `blinded` catches the census
+    reading a `required=` it cannot evaluate, which leaves the set NON-empty and
+    is invisible to the first (V4). Both costs are stated rather than hidden: if
+    a later change legitimately gives every flag a default, or writes a computed
+    `required=`, this row REDS and the next hat must revisit it. That is the
+    intended prompt.
     """
-    accepted, required = _argparse_flag_census()
+    accepted, required, unreadable = _argparse_flag_census()
     passed = _passed_long_flags()
     missing = sorted(required - passed)
+    unusable = []
+    for flag in sorted(required & passed):
+        defect = _value_defect(flag)
+        if defect is not None:
+            unusable.append(f"{flag}: {defect}")
     parser_read = bool(accepted)
     required_read = bool(required)
-    ok = parser_read and required_read and not missing
+    blinded = sorted(unreadable)
+    ok = parser_read and required_read and not blinded and not missing and not unusable
     print(
         f"{'OK' if ok else 'FAIL'}: every long flag plex_blip_watchdog.py's "
-        f"argparse REQUIRES is one the ExecStart passes "
+        f"argparse REQUIRES is one the ExecStart passes WITH A USABLE VALUE "
         f"(parser_read={parser_read} required_read={required_read} "
-        f"missing={missing} required={sorted(required)} passed={sorted(passed)})"
+        f"blinded={blinded} missing={missing} unusable={unusable} "
+        f"required={sorted(required)} passed={sorted(passed)})"
     )
     return ok
 
