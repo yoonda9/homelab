@@ -5365,23 +5365,56 @@ def _blackbox_field_defects(doc) -> tuple:
     return sorted(unknown), sorted(mistyped)
 
 
-def _leading_comment_block(text: str) -> str:
-    """The `#` header a reader meets before a document's first key.
+# The legal YAML that may stand between the top of a file and its first KEY
+# while carrying no prose: a document start, and the `%YAML` / `%TAG` directives
+# that must precede one. A BOM is stripped separately — it is a character on the
+# first line rather than a line of its own.
+_YAML_PROLOGUE = re.compile(r"^(?:---|%\S.*)$")
 
-    Stops at the first line that is neither blank nor a comment — for
-    `blackbox.yml.j2` that is `modules:` — so this is the file's OWN header and
-    never an inline comment further down. Scoped that way on purpose: the
-    per-module comments are attributions ("this module came from Step 5b"),
-    which stay true for ever, while the header is an ORIENTATION a later reader
-    trusts for what the file contains.
+
+def _leading_comment_block(text: str) -> tuple:
+    """The `#` header a reader meets before a document's first KEY.
+
+    Returns `(block, stopped_at)` — the comment lines, and the line this reader
+    refused to read past, so a caller can say what it could not see instead of
+    reporting an absence as a fact about the prose.
+
+    THE FIRST KEY, AND NOT THE FIRST NON-COMMENT LINE, and that distinction is
+    this function's whole defect history (DEC-305 charge 2). Round 2 shipped the
+    weaker spelling, and a YAML DOCUMENT START is neither blank nor a comment:
+    prepending `---` — ordinary YAML, and what `compose.yml.j2` in the SAME role
+    directory and the SAME `LINE_READ_TEMPLATES` tuple already opens with — made
+    the preamble EMPTY. Measured through real ansible-core 2.21.1 into
+    `prom/blackbox-exporter:v0.28.0 --config.check`
+    (`logs/builder-5b-r3-red.log` leg A): `---` rc=0 "Config file is ok", a
+    `%TAG` directive + `---` rc=0, a UTF-8 BOM rc=0 — three documents the binary
+    TAKES, on which the guard printed "own header is 0 line(s),
+    names_the_header=False, unannounced=['plex_sessions']", all three false of a
+    48-line header that names both. A prose-locating reader that breaks on "the
+    first non-comment line" inherits every legal prologue the format allows.
+
+    IT STOPS ON ANYTHING IT DOES NOT RECOGNISE, deliberately — an unknown
+    construct ends the header rather than letting this reader wander into the
+    document body and score a per-module comment. That is why the stop line is
+    RETURNED: an empty block is a statement about this reader, and the caller
+    prints it as one.
+
+    Scoped to the header on purpose: the per-module comments are attributions
+    ("this module came from Step 5b"), which stay true for ever, while the header
+    is an ORIENTATION a later reader trusts for what the file contains.
     """
     kept = []
+    stopped_at = None
     for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            break
-        kept.append(line)
-    return "\n".join(kept)
+        stripped = line.lstrip("\ufeff").strip()
+        if not stripped or stripped.startswith("#"):
+            kept.append(line)
+            continue
+        if _YAML_PROLOGUE.match(stripped):
+            continue
+        stopped_at = line
+        break
+    return "\n".join(kept), stopped_at
 
 
 def _credential_modules(modules) -> list:
@@ -5762,6 +5795,47 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
       is scoped to the module block by construction, so a second header line
       under a DIFFERENT module — the obvious way a literal gets pasted in while
       debugging — is precisely what it cannot see.
+    * `token_render_is_quoted` — and every such line renders the reference
+      QUOTED. This arm replaces a SENTENCE, and it is narrower than the sentence
+      was, because the measurement DEC-305 charge 1 forced came back narrower.
+      18 YAML-significant token first characters x three spellings, through real
+      ansible-core 2.21.1 into `prom/blackbox-exporter:v0.28.0 --config.check`,
+      with the value read BACK OUT by a parser rather than eyeballed
+      (`logs/builder-5b-r3-red.log` leg B, `logs/builder-5b-r3-quotestyle.log`).
+      INTACT out of 18: double-quoted 16, single-quoted 17, BARE 4. Bare REFUSES
+      the config on eleven first characters — under `restart: unless-stopped`
+      that is the crash loop this role served for two weeks — and on three more
+      (`&`, `#`, `!`) it loads at rc=0 carrying something that is not the token,
+      which is a probe reporting `probe_success 0` for ever with no config error
+      to read. The guard could not tell bare from quoted before this arm: the
+      bare template was 47/47 GREEN (leg C).
+
+      EITHER QUOTE STYLE, DELIBERATELY, and this is where a wider arm would have
+      been a wrong one. The obvious spelling of this check requires the DOUBLE
+      quotes the file ships — and it would red the spelling that measured BEST.
+      Single-quoted is 17/18 and its one loss is a rc=1 refusal an operator sees;
+      double-quoted is 16/18 and one of its two losses is SILENT. The arm may
+      claim only what the rows separate, which is quoted from bare.
+
+      WHY THE FILE NONETHELESS SHIPS THE WEAKER-ON-THE-WIRE SPELLING, measured
+      at `logs/builder-5b-r3-neutralise.log`: `_neutralise_refs` substitutes
+      `'<REF>'`, a SINGLE-quoted placeholder, so the single-quoted template
+      becomes `X-Plex-Token: ''<REF>''` and THIS FILE's own parse of it is a
+      PyYAML `ParserError`. Adopting the better spelling is a change to that
+      helper, not to that line, and it is not this row's.
+
+      AND QUOTING IS NOT A UNIVERSAL DEFENCE — that over-claim is exactly what
+      charge 1 struck, and the template's paragraph now carries the two rows
+      that falsify it. A `"` first character reproduces INSIDE the quotes
+      (`X-Plex-Token: ""TOKEN"`) and the render is rc=1 `did not find expected
+      key`, the document broken by the quoting meant to prevent it. A `\\` is the
+      silent one: a YAML DOUBLE-quoted scalar processes escapes, so `\\P` is
+      U+2029 and the config loads at rc=0 carrying a token that is NOT the
+      operator's, while the bare and single-quoted spellings of that same token
+      are intact. Filed as `task-1786195905-16ec` rather than fixed here,
+      because the fix is a JSON-escaping filter and a SECOND filter is what
+      `test_templates_render_line_for_line` refuses on a `LINE_READ_TEMPLATES`
+      member — this row's own description's fence 1, with "do not flip a clause".
 
     THE READ IS A JOIN OF THE PARSE AND THE RAW TEXT, and it has to be. The
     parse is what proves the header sits under this module's `http:` and nowhere
@@ -5878,9 +5952,12 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
     )
     in_module = header_line.search(module_block)
     header_value = in_module.group(1) if in_module else None
-    # The single existing spelling, `env.j2:46`, with its filter — quoting is free
-    # because both render to a string and `_neutralise_refs` quotes its own
-    # placeholder either way.
+    # The single existing spelling, `env.j2:46`, with its filter. The quotes are
+    # OPTIONAL HERE and REQUIRED by `token_render_is_quoted` below, which is a
+    # separation and not an oversight: this pattern answers "which variable, with
+    # which filter", and the quoting is a second fact with its own measurement and
+    # its own arm, so a mutant that unquotes reds on the arm whose sentence it
+    # falsifies.
     vault_reference = re.compile(
         rf'"?\{{\{{\s*{re.escape(PLEX_VAULT_KEY)}\s*\|\s*default\(\'\'\)\s*\}}\}}"?'
     )
@@ -5893,6 +5970,17 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         if vault_reference.fullmatch(value) is None
     ]
     no_token_literal = bool(every_header_value) and not literal_headers
+    # THE QUOTING IS A MEASUREMENT, so it gets an arm rather than a sentence.
+    # EITHER quote style and not the double one alone, because the arm may claim
+    # only what was measured: what the 18 rows separate is QUOTED from BARE
+    # (4/18), not one quote style from the other. On EVERY token line, for
+    # `no_token_literal`'s reason — a second header line under a different module
+    # is how an unquoted one gets pasted in while debugging.
+    unquoted_headers = [
+        value for value in every_header_value
+        if not (len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'")
+    ]
+    token_render_is_quoted = bool(every_header_value) and not unquoted_headers
 
     task = _render_task_block(_read(TASKS), BLACKBOX_CONFIG.name)
     mode_text = _render_task_scalar(task, "mode")
@@ -5919,7 +6007,7 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
     # a suffix is not named by a header still saying `plex_sessions`, and one
     # renamed by dropping a character IS a substring of it — both green under
     # `in` and both red here (mem-1786173563-eb5c, met on the prose side).
-    preamble = _leading_comment_block(text)
+    preamble, preamble_stop = _leading_comment_block(text)
     credential_modules = _credential_modules(modules)
     preamble_names_header = re.search(
         rf"(?i)\b{re.escape(BLACKBOX_TOKEN_HEADER)}\b", preamble
@@ -5933,10 +6021,22 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         else not preamble_names_header
     )
 
+    # What the reader could not see is named as such. An empty block is a fact
+    # about THIS READER — `names_the_header` and `unannounced` are then its
+    # blindness rather than the file's prose, and saying so is the difference
+    # between a red someone can act on and DEC-305 charge 2.
+    preamble_note = (
+        f"the reader stopped at {preamble_stop!r}" if preamble.strip() else
+        f"AND THIS READER SAW NO HEADER AT ALL — it stopped at "
+        f"{preamble_stop!r}, so the two facts after the colon are what it could "
+        f"not read and not what the file says"
+    )
+
     ok = (
         module_defined and header_key and token_from_vault and single_vault_ref
-        and no_token_literal and sessions_accepts_plain and world_bit_withheld
-        and prom_carries_no_credential and header_prose_current
+        and no_token_literal and token_render_is_quoted and sessions_accepts_plain
+        and world_bit_withheld and prom_carries_no_credential
+        and header_prose_current
     )
     print(
         f"{'OK' if ok else 'FAIL'}: {BLACKBOX_SESSIONS_MODULE} sends "
@@ -5951,6 +6051,11 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         f"no_token_literal={no_token_literal} "
         f"({len(every_header_value)} {BLACKBOX_TOKEN_HEADER} line(s), "
         f"not the vault reference: {literal_headers}), "
+        f"token_render_is_quoted={token_render_is_quoted} "
+        f"(unquoted: {unquoted_headers} — over 18 YAML-significant token first "
+        f"characters the value survives intact 16 times double-quoted and 17 "
+        f"single-quoted but only 4 BARE: bare refuses the config on 11 and "
+        f"loads at rc=0 carrying something other than the token on 3), "
         f"sessions_accepts_plain={sessions_accepts_plain} "
         f"({BLACKBOX_SESSIONS_MODULE}.http.fail_if_not_ssl={fail_if_not_ssl!r} — "
         f"true would be a permanent probe_success 0 against a plain-HTTP "
@@ -5963,8 +6068,8 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         f"({PROM_SCRAPE.name} leaks={prom_leaks}), "
         f"header_prose_current={header_prose_current} "
         f"({BLACKBOX_CONFIG.name}'s own header is "
-        f"{len(preamble.splitlines())} line(s) and modules carrying a "
-        f"credential are {credential_modules or 'NONE'}: "
+        f"{len(preamble.splitlines())} line(s), {preamble_note}, and modules "
+        f"carrying a credential are {credential_modules or 'NONE'}: "
         f"names_the_header={preamble_names_header}, unannounced={unannounced} — "
         f"a header that calls this file credential-free, or calls a module that "
         f"has LANDED a future row, is what {BLACKBOX_SESSIONS_MODULE} shipped "

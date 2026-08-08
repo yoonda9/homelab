@@ -184,9 +184,38 @@ modules:
         # recorder can see every state the claim was about — there is no 401
         # anyone could read differently.
         #
-        # THE REASON THAT SURVIVES was the second half of that paragraph and it
-        # is enough on its own: a token whose first character is YAML-significant
-        # cannot break the document.
+        # SO WHY QUOTE AT ALL, and this is a COUNT rather than a principle,
+        # because the principle this comment used to give here — that a token
+        # whose first character is YAML-significant "cannot break the document"
+        # — is measurably false. 18 YAML-significant first characters x three
+        # spellings, through real ansible-core into this image's own
+        # `--config.check`, with the value read BACK OUT by a parser
+        # (logs/builder-5b-r3-red.log leg B, logs/builder-5b-r3-quotestyle.log).
+        # INTACT out of 18: double-quoted 16, single-quoted 17, BARE 4.
+        #
+        # BARE IS THE ONE TO AVOID and that is what `token_render_is_quoted` in
+        # scripts/test_traefik_config_shape.py now holds — the guard could not
+        # tell it from this line until it did, and the bare template was 47/47
+        # GREEN. Bare REFUSES the config on eleven of the eighteen, which under
+        # `restart: unless-stopped` is the crash loop this role served for two
+        # weeks, and on three more (`&`, `#`, `!`) it loads at rc=0 carrying
+        # something that is not the token.
+        #
+        # QUOTING IS STILL NOT A UNIVERSAL DEFENCE, AND THIS SPELLING IS NOT THE
+        # BEST ONE. Double quotes lose twice. A `"` reproduces INSIDE them —
+        # `X-Plex-Token: ""TOKEN"` — rc=1 `did not find expected key`, the
+        # document broken by the quoting meant to prevent it. A `\` is the silent
+        # loss: a YAML double-quoted scalar processes escapes, so `\P` is U+2029
+        # and the config loads at rc=0 carrying a token that is NOT the
+        # operator's — a probe reporting `probe_success 0` for ever with no
+        # config error anywhere to read. SINGLE quotes beat that (17/18, and
+        # their one loss is a loud rc=1), and this file does not use them for a
+        # reason outside itself: `_neutralise_refs` substitutes a SINGLE-quoted
+        # placeholder, so a single-quoted value makes the gate's own parse of
+        # this template a `ParserError` (logs/builder-5b-r3-neutralise.log).
+        # Filed as task-1786195905-16ec, not fixed here: the real fix is a
+        # JSON-escaping filter, and a SECOND filter is refused on this file by
+        # `test_templates_render_line_for_line`.
         #
         # THIS IS WHY THIS FILE IS 0640 AND NOT THE 0644 THE PROMETHEUS RENDER
         # USES. 0644 would publish a live Plex API token to every user on the
