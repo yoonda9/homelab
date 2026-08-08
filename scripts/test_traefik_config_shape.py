@@ -31,7 +31,7 @@ scripts/test_ansible_layout_shape.py (mem-1781891042-4495).
 
 STDLIB PLUS `yaml`, and the qualifier is Step-5a's — this header said "stdlib
 only" while it was true and is corrected here rather than left to read as a
-promise. `test_blackbox_modules_are_the_two_token_free_probes` asks whether a
+promise. `test_blackbox_modules_are_the_three_plex_probes` asks whether a
 rendered config PARSES, and no regex answers that question; a document blackbox
 refuses to load is a crash loop, not a shape defect. The import is unconditional,
 never a `try/except ImportError` skip, which would be the vacuous green this repo
@@ -1751,13 +1751,32 @@ PLEX_NODE_JOB_KEYS = ("scrape_interval", "scrape_timeout", "static_configs")
 # the compose and the prometheus.yml side.
 BLACKBOX_SERVICE = "blackbox-exporter"
 BLACKBOX_CONFIG = TEMPLATES / "blackbox.yml.j2"
-# Two modules and no more, because this row is TOKEN-FREE by construction: the
-# `/status/sessions` probe of design §4.6 must send `vault_plex_token` and is row
-# `5b`. `5b` therefore ADDS a member here — set equality below means the tuple
-# and the template move together, which is the point.
+# Design §4.6's three probes. `5a` shipped the two that need no credential and
+# said so here: "`5b` therefore ADDS a member — set equality below means the tuple
+# and the template move together, which is the point." This is that edit, and it
+# is the whole of what the tuple is for: `5c` reads THIS for its `params.module`
+# values, so a name added to the template and not here reddens as loudly as one
+# named by a scrape job and never defined.
 BLACKBOX_DIRECT_MODULE = "plex_identity_direct"
 BLACKBOX_PROXIED_MODULE = "plex_identity_proxied"
-BLACKBOX_MODULES = (BLACKBOX_DIRECT_MODULE, BLACKBOX_PROXIED_MODULE)
+# Step 5b. The DB-TOUCHING probe, and the only one of the three that needs a
+# credential — which is why it is a row of its own rather than a third entry in
+# `5a`'s commit. `/identity` answered HTTP 200 through the whole five-minute
+# outage of 2026-08-07 while `/status/sessions` reached 101,394 ms
+# (research/live-blip-2026-08-07-case-study.md), so this is the probe the
+# differential is actually made of.
+BLACKBOX_SESSIONS_MODULE = "plex_sessions"
+BLACKBOX_MODULES = (
+    BLACKBOX_DIRECT_MODULE, BLACKBOX_PROXIED_MODULE, BLACKBOX_SESSIONS_MODULE
+)
+# The header that carries the token, pinned as a NAME rather than as "a headers
+# block exists". Plex authenticates on this exact spelling and rejects anything
+# else as unauthenticated, and blackbox answers `/probe` with HTTP 200 and
+# `probe_success 0` for an auth rejection — so the TARGET READS UP either way and
+# a mistyped header key is invisible at the target level. See
+# `test_blackbox_sessions_probe_carries_the_vault_token` for why the falsifier is
+# at metric level and what it costs to get there.
+BLACKBOX_TOKEN_HEADER = "X-Plex-Token"
 # The compose service is scrape-only like `pve-exporter`/`plex-exporter`, plus
 # the ONE key those two do not have: it is the first scrape target in this stack
 # that reads a rendered config, so it carries `volumes:`. Spelled as its own
@@ -1788,6 +1807,15 @@ BLACKBOX_SERVICE_KEYS = SCRAPE_ONLY_KEYS | {"volumes"}
 # fails closed on `user:` like on any other unenumerated key — the same standing
 # the grafana modes have through `test_grafana_provisioning_shape.py`.
 BLACKBOX_MODE = "0640"
+# THE UID, AND WHERE IT WAS MEASURED — printed by the Step-5b clause rather than
+# left in a comment, because it is the fact that decides which invariant this
+# file's mode actually carries. `Config.User` is EMPTY on this image and `id -u`
+# inside it answers 0, so there is no owner/mode pair here the process cannot
+# read and "readable to the container" is NOT what any mode pin below is for.
+# What survives is the WORLD bit. Re-measured at this row's own parent rather
+# than carried from the routing's log.
+BLACKBOX_UID = 0
+BLACKBOX_UID_EVIDENCE = "logs/builder-5b-headers-probe.log"
 # --- the field census, and it is LOAD-BEARING rather than prose ---------------
 # `prom/blackbox-exporter:v0.28.0` unmarshals its config STRICTLY: a field it
 # does not know is `Error loading config` and exit 1, which `restart:
@@ -1826,6 +1854,26 @@ BLACKBOX_MODE = "0640"
 #     valid_status_codes: 200 / {} / [true] / ['200']       REFUSES
 #         -> a possibly-EMPTY list of non-bool ints. `[]` loading is why the
 #            predicate does not require a member.
+#
+# STEP 5b ADDS `headers`, AND IT IS A TRAP IN THE OPPOSITE DIRECTION FROM THE
+# THREE ABOVE — measured, 23 documents, logs/builder-5b-headers-probe.log:
+#
+#     headers: {X-Plex-Token: abc} / {} / two keys / ~      LOADS
+#     headers: {X-Plex-Token: 5 / true / ~ / 1.5}          LOADS
+#     headers: {200: abc} / {on: abc}                       LOADS
+#     headers: abc / 5 / [X-Plex-Token]                     REFUSES
+#     headers: {X-Plex-Token: [a]} / {X-Plex-Token: {a: b}} REFUSES
+#         -> the Go field is `map[string]string`, NOT a string, so `_bb_scalar`
+#            — the honest predicate for `prober`, where a raw scalar fills a
+#            string — is a FALSE-ACCEPT here on `headers: abc` (rc=1, crash
+#            loop). And the raw-scalar rule that makes `prober: 3` load applies
+#            ONE LEVEL DOWN instead: a non-container VALUE loads, a container
+#            value is `cannot unmarshal !!seq into string`. So the predicate is
+#            a mapping whose values are each `_bb_scalar` — the same measured
+#            notion of "a Go string field takes any raw scalar", reused rather
+#            than re-derived — plus `None`, because a bare `headers:` LOADS and
+#            a predicate that redded it would false-RED a document the binary
+#            accepts (the `[]`-loads lesson one row up).
 #
 # THESE MAPS ARE THIS DOCUMENT'S VOCABULARY, NOT A COPY OF BLACKBOX'S SCHEMA,
 # and that distinction is the whole design. Each is the fields the row PINS plus
@@ -1876,6 +1924,27 @@ def _bb_int_list(value) -> bool:
         isinstance(item, int) and not isinstance(item, bool) for item in value)
 
 
+def _bb_string_map(value) -> bool:
+    """A Go `map[string]string`, possibly EMPTY or NULL.
+
+    Step-5b, and every clause of it is a row of logs/builder-5b-headers-probe.log
+    rather than a reading of the struct tag:
+
+    * a bare `headers:` (PyYAML `None`) LOADS — so `None` is accepted here, for
+      the same reason `valid_status_codes: []` does not require a member.
+    * a SCALAR refuses (`cannot unmarshal !!str \\`abc\\` into map[string]string`),
+      which is why this is not `_bb_scalar`: that predicate is correct for
+      `prober`, where go-yaml fills a Go STRING from the raw scalar, and it would
+      be a false-ACCEPT here over an exit-1 crash loop.
+    * a non-container VALUE loads whatever its tag — `5`, `true`, `~`, `1.5` are
+      all rc=0 — because the raw-scalar rule applies to the map's string VALUES.
+      A list or mapping value is `cannot unmarshal !!seq into string`, rc=1.
+    """
+    return value is None or (
+        isinstance(value, dict) and all(_bb_scalar(v) for v in value.values())
+    )
+
+
 BLACKBOX_TOP_FIELDS = {"modules": _bb_mapping}
 BLACKBOX_MODULE_FIELDS = {
     "prober": _bb_scalar, "timeout": _bb_duration, "http": _bb_mapping,
@@ -1887,6 +1956,10 @@ BLACKBOX_HTTP_FIELDS = {
     "method": _bb_scalar, "valid_status_codes": _bb_int_list,
     "preferred_ip_protocol": _bb_scalar, "ip_protocol_fallback": _bb_bool,
     "follow_redirects": _bb_bool,
+    # Step 5b: the token. Enumerated here in the SAME commit that turns the knob,
+    # which is the cost `5a` declared this allow-list would impose on this row
+    # (its L1) — and it is the fail-closed direction.
+    "headers": _bb_string_map,
 }
 BLACKBOX_TLS_FIELDS = {"insecure_skip_verify": _bb_bool}
 
@@ -2258,10 +2331,39 @@ def _param_values(params: str, key: str) -> list:
 # dashboard routes. The 0644 here is therefore not a precaution taken on account
 # of the new restart — it is the REPAIR of a live outage that predates this step,
 # and the operator tasks say so.
+# THE OWNER COLUMN, Step 5b — and it closes the `RELOAD_CONTRACT` half of
+# `task-1786187620-633b`, which recorded that not one of these rows pinned an
+# owner while `BLACKBOX_MODE`'s whole argument was about `root:root 0640`.
+#
+# READABILITY IS NOT THE REASON, and saying so is the point of this comment. The
+# obvious rationale — "root:root is what the process can read" — is FALSE of the
+# file this row cares about: `prom/blackbox-exporter:v0.28.0` runs as uid 0, and
+# uid 0 bypasses the permission bits, so five owner/mode pairs mounted `:ro` into
+# it are all READ=ok (`logs/planner-step05b-owner-mode.log`, re-measured for the
+# identity half at logs/builder-5b-headers-probe.log). A guard whose printed
+# reason is "the container could not read it" would be asserting something that
+# never happens — the guard-rationale-disagrees-with-the-file defect this
+# objective has charged five times.
+#
+# What the column IS: the other half of a mode. `0640` means nothing without the
+# owner it is 0640 FOR, and `owner: 65534` on a 0640 file hands group-read to a
+# different identity than the one the comment above the render names. It is a
+# FILESYSTEM FACT the role already writes on all five renders, pinned so that
+# changing it is deliberate.
+#
+# ONE SPELLING, FIVE READERS. All five renders agree today, so the pair lives in
+# a constant rather than being written out five times: five literals that agree
+# is the defect class this suite has charged on `--output-dir`, on the watchdog
+# program path and on the node-exporter binary. A row that must legitimately
+# differ writes its own tuple, which is what makes this a COLUMN and not a
+# global.
+RENDER_OWNER = ("root", "root")
+
 RELOAD_CONTRACT = {
     # rendered template -> every hop between the render task and the process
     "traefik.yml.j2": {
         "service": "traefik",
+        "owner": RENDER_OWNER,
         "mode": "0640",
         # traefik:v3.7.5 reads its static config from this path with no flag
         # naming it, so HERE the container-side path IS the runtime contract.
@@ -2270,6 +2372,7 @@ RELOAD_CONTRACT = {
     },
     "prometheus.yml.j2": {
         "service": "prometheus",
+        "owner": RENDER_OWNER,
         "mode": "0644",
         # Prometheus is TOLD where to look, so the container-side path is free —
         # what must hold is that the flag names the mount's own target.
@@ -2301,6 +2404,7 @@ RELOAD_CONTRACT = {
     # the process, and a single row would leave the other unpinned.
     "grafana-datasource.yml.j2": {
         "service": "grafana",
+        "owner": RENDER_OWNER,
         "mode": "0640",
         "config_flag": None,
         # A DIRECTORY, not a path: grafana/grafana:13.1.0 SCANS
@@ -2316,6 +2420,7 @@ RELOAD_CONTRACT = {
     },
     "grafana-dashboards.yml.j2": {
         "service": "grafana",
+        "owner": RENDER_OWNER,
         "mode": "0640",
         "config_flag": None,
         "default_path": None,
@@ -2342,11 +2447,36 @@ RELOAD_CONTRACT = {
     # withholds the token row `5b` puts in this same file.
     "blackbox.yml.j2": {
         "service": BLACKBOX_SERVICE,
+        "owner": RENDER_OWNER,
         "mode": BLACKBOX_MODE,
         "config_flag": "--config.file",
         "default_path": None,
     },
 }
+
+
+def _render_task_scalar(task: str, key: str):
+    """The scalar value a render task's `ansible.builtin.template:` gives `key`.
+
+    Step-5b. ONE reader for `mode`, `owner` and `group`, and for the mode read a
+    second time by `test_blackbox_sessions_probe_carries_the_vault_token` — the
+    world bit and the reload contract must not be able to disagree about which
+    line they are looking at. A second regex over the same key in a second clause
+    is the two-readers-drift defect this file spent Step-2a rounds 13-15 on.
+
+    Returns `None` when the key is absent, which every caller distinguishes from
+    a present-but-wrong value: those are different reds.
+
+    NOT `\\d+`, deliberately: the previous mode reader was `"?(\\d+)"?` and so an
+    `owner: root` would have been invisible to it, while a `mode: u=rw,g=r`
+    (which `ansible.builtin.template` accepts) read as ABSENT rather than as
+    unpinned. Taking the raw scalar and letting the caller interpret it means the
+    world-bit clause can red on a symbolic mode instead of silently not seeing it.
+    """
+    match = re.search(
+        rf'(?m)^[^\S\n]*{re.escape(key)}:[^\S\n]*(\S.*?)[^\S\n]*$', task or ""
+    )
+    return match.group(1) if match else None
 
 
 def _render_task_block(body: str, src: str) -> str:
@@ -3849,8 +3979,16 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
       runtime resolves by an in-string key, so a decoy `--config.file=` appended
       after the delivered one used to leave this GREEN. See that helper.
     * `mode` — the rendered file is readable by the uid the service runs as.
-      See `RELOAD_CONTRACT`: the two rows want different modes, and the
-      prometheus row is repairing an outage that is live right now.
+      See `RELOAD_CONTRACT`: the rows want different modes, and the prometheus
+      row is repairing an outage that is live right now.
+    * `owner` — Step-5b, and it is the OTHER HALF of that mode rather than a
+      second spelling of it: `0640` says nothing until you know whose 0640 it is,
+      and `owner: 65534` under the same digits hands group-read to an identity no
+      comment in this role names. Pinned as the filesystem fact it is, from the
+      `RENDER_OWNER` column — and NOT because the process could not otherwise
+      read the file, which is measurably false for the blackbox row (uid 0
+      bypasses the bits; see that constant). This closes the `RELOAD_CONTRACT`
+      half of `task-1786187620-633b`.
 
     NOT pinned, deliberately: that a restart is the ONLY delivery mechanism.
     Adding `--web.enable-lifecycle` plus a POST would also work, and forbidding
@@ -3890,17 +4028,23 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
             reads_it = target is not None and target.rsplit("/", 1)[0] == want_dir
         else:
             reads_it = target is not None and target == row["default_path"]
-        mode = re.search(r'(?m)^\s*mode:\s*"?(\d+)"?\s*$', task)
-        mode_ok = bool(mode) and mode.group(1) == want_mode
+        mode = _render_task_scalar(task, "mode")
+        mode_ok = mode is not None and mode.strip('"\'') == want_mode
+        want_owner, want_group = row["owner"]
+        owner = _render_task_scalar(task, "owner")
+        group = _render_task_scalar(task, "group")
+        owner_ok = (owner is not None and owner.strip('"\'') == want_owner
+                    and group is not None and group.strip('"\'') == want_group)
         if not (task and name and handler and restarts and in_compose
-                and target and reads_it and mode_ok):
+                and target and reads_it and mode_ok and owner_ok):
             broken[src] = (
                 f"task={bool(task)} notify={name!r} handler={bool(handler)} "
                 f"restarts_{service}={restarts} in_compose={in_compose} "
                 f"dest={_norm_path(dest.group(1)) if dest else None} "
                 f"mounted_at={target!r} reads_it={reads_it} "
                 f"(via {flag or 'default ' + str(want_dir or row['default_path'])}) "
-                f"mode={mode.group(1) if mode else None} (want {want_mode})"
+                f"mode={mode} (want {want_mode}) "
+                f"owner={owner}:{group} (want {want_owner}:{want_group})"
             )
     ok = not broken
     print(
@@ -5209,8 +5353,26 @@ def _blackbox_field_defects(doc) -> tuple:
     return sorted(unknown), sorted(mistyped)
 
 
-def test_blackbox_modules_are_the_two_token_free_probes() -> bool:
+def test_blackbox_modules_are_the_three_plex_probes() -> bool:
     """Step-5a: the blackbox config PARSES and defines exactly `BLACKBOX_MODULES`.
+
+    RENAMED AT `5b`, from `…_are_the_two_token_free_probes`, and the rename is
+    the point rather than tidying. `5a` shipped the two probes that need no
+    credential and this clause was named for that fact; `5b` adds
+    `plex_sessions`, which carries a live Plex token, so a clause named "the two
+    token-free probes" would print OK over a document that is neither. A guard
+    whose name disagrees with the file it guards is the defect this objective has
+    charged repeatedly — and the count is now read from `BLACKBOX_MODULES` in
+    every arm below, so the NAME is the last place a number was written twice.
+    (`progress.md`'s Step-5a verification table cites the old name; that row
+    records what was true at `5a` and is annotated rather than rewritten.)
+
+    WHAT THIS CLAUSE DOES NOT COVER, so the split is legible: the SESSIONS
+    module's own token wiring — the header key, the vault reference, the world
+    bit and the owner — is `test_blackbox_sessions_probe_carries_the_vault_token`.
+    This one still asks only what it always asked: does the document parse, is
+    every field known and typed, and is the module SET exactly the tuple `5c`
+    reads.
 
     THE JOIN NOTHING ELSE CHECKS. Row `5c` writes three scrape jobs whose
     `params.module` values are the names defined here, and no process reconciles
@@ -5243,12 +5405,14 @@ def test_blackbox_modules_are_the_two_token_free_probes() -> bool:
       refuses every construct that could do anything else — a filter, a call, a
       `{% for %}`, a multi-line expression — for this file as for the other six.
 
-    Today the substitution is a NO-OP: this row's config is token-free and
-    carries no Jinja at all. It is written anyway, and it is the reason row `5b`
-    can add `{{ vault_plex_token }}` to the sessions module without a guard
-    standing in its way — a flipped clause in the next row is a cost this one can
-    just decline to impose. Row S1 of this row's mutation battery is the control
-    that says the substitution works rather than merely existing.
+    At `5a` the substitution was a NO-OP — that config was token-free and carried
+    no Jinja at all — and it was written anyway so that row `5b` could add
+    `{{ vault_plex_token | default('') }}` to the sessions module without a guard
+    standing in its way. THAT PREDICTION IS NOW SPENT AND IT HELD: `5b` added the
+    reference and flipped no clause here. Row S1 of `5a`'s mutation battery was
+    the control that said the substitution worked rather than merely existed;
+    from `5b` on it is load-bearing on the shipped bytes, and the placeholder
+    scalar is what this walk sees where the token is.
 
     THE LOADER IS `_StrictLoader` AND NOT `yaml.safe_load`, which is this row's
     own first cut being repaired: `safe_load` takes a DUPLICATED key and keeps
@@ -5384,7 +5548,15 @@ def test_blackbox_modules_are_the_two_token_free_probes() -> bool:
     (L1). Neither is a trap — `5b` is already adding a member to
     `BLACKBOX_MODULES` for its module name, and this is the same one-line edit
     in the same commit, in the same direction: fail-closed, and it makes the
-    census the thing that must move when the document does. A legal knob turned
+    census the thing that must move when the document does. THAT COST WAS PAID AT
+    `5b`, EXACTLY AS DESCRIBED AND WITH ONE SURPRISE: `headers` entered the map as
+    `_bb_string_map` in the same commit as the module that needs it, and the
+    predicate is 23 measured documents rather than a struct tag
+    (logs/builder-5b-headers-probe.log) — because the field is a trap in the
+    OPPOSITE direction from the three named above. `headers: abc` is rc=1 where
+    `prober: 3` LOADS, so `_bb_scalar` would have been a FALSE-ACCEPT over a
+    crash loop, and the raw-scalar rule applies one level down to the map's
+    values instead. A legal knob turned
     WITHIN the census stays green, and the value half is held to the same
     standard: `valid_status_codes: [200, 204]` (L2), `timeout: 1m30s`,
     `preferred_ip_protocol: ip5`, `method: GETT` and `valid_status_codes: []`
@@ -5453,7 +5625,8 @@ def test_blackbox_modules_are_the_two_token_free_probes() -> bool:
     )
     print(
         f"{'OK' if ok else 'FAIL'}: {BLACKBOX_CONFIG.name} defines exactly the "
-        f"token-free probe modules (present={present}, parses={parses} "
+        f"{len(BLACKBOX_MODULES)} design-4.6 probe modules "
+        f"(present={present}, parses={parses} "
         f"(error={parse_error!r}), modules_mapping={mapping}, "
         f"names_exact={names_exact} (found={names}, want={sorted(BLACKBOX_MODULES)}), "
         f"probers={probers} (not_http={not_http}), "
@@ -5468,6 +5641,213 @@ def test_blackbox_modules_are_the_two_token_free_probes() -> bool:
         f"{_field(direct_http, 'fail_if_not_ssl')!r}), "
         f"fields_known={fields_known} (unknown={unknown_fields}), "
         f"values_typed={values_typed} (mistyped={mistyped_fields}))"
+    )
+    return ok
+
+
+def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
+    """Step-5b: the `/status/sessions` probe sends the VAULT token, and the file
+    that carries it is not world-readable.
+
+    THE SILENT FAILURE THIS CLAUSE EXISTS FOR, stated first because it is what
+    makes every arm below a metric-level pin rather than a target-level one.
+    Plex answers an unauthenticated `/status/sessions` with HTTP 401, and
+    blackbox reports an auth rejection as HTTP 200 on `/probe` with
+    `probe_success 0` — a probe that RAN and failed. So the TARGET READS UP
+    either way and `up{job=…}` is 1 whether the token arrives or not. A misspelt
+    header key is therefore invisible everywhere except in the value of
+    `probe_success`, which is exactly the series `5c`'s job and design §5.3's
+    alerts consume. That is a different fact from `5a`'s neighbouring shape — a
+    module name no config defines is HTTP 400 with ZERO `probe_*` series — and
+    the two must not be conflated when reading a red at 07:00.
+
+    Hence `header_key`: the DISTINGUISHING config is the key NAME, and pinning
+    "a headers block exists" would be green over `X-Plex-Token2`,
+    `X_Plex_Token`, or the token sent as `Authorization`. Plex accepts this
+    spelling and treats every other one as no credential at all.
+
+    * `module_defined` / `header_key` — `BLACKBOX_SESSIONS_MODULE` exists in the
+      PARSED document and its `http.headers` keys are exactly
+      `[BLACKBOX_TOKEN_HEADER]`. Set equality, the fail-closed direction and the
+      same idiom as `names_exact` and the field census: a second header is a
+      one-line edit HERE, in the commit that adds it. That is deliberate — a
+      second header on this module is the shape a token leaking to a second
+      destination takes.
+    * `token_from_vault` — the header's value is the SINGLE EXISTING vault
+      spelling: `{{ vault_plex_token | default('') }}`, read from
+      `PLEX_VAULT_KEY` so this clause and
+      `test_plex_token_sourced_from_vault` cannot drift onto two different
+      variables. The `| default('')` filter is pinned, not tolerated: it is what
+      lets the repo-side wiring render and stay green before the operator has
+      stored a value, which `env.j2:27-45` spends nineteen lines saying about
+      this very variable. Without it an undefined vault key fails the render and
+      every `just play` between now and then dies.
+    * `single_vault_ref` — the only `vault_*` name anywhere in this template is
+      that one. The row was cut with "do NOT add a second vault variable", and an
+      arm that only checks the header line would be green over a second secret
+      introduced three lines down.
+    * `no_token_literal` — EVERY `X-Plex-Token:` line in the whole file is that
+      reference, not just the one inside the sessions module. `token_from_vault`
+      is scoped to the module block by construction, so a second header line
+      under a DIFFERENT module — the obvious way a literal gets pasted in while
+      debugging — is precisely what it cannot see.
+
+    THE READ IS A JOIN OF THE PARSE AND THE RAW TEXT, and it has to be. The
+    parse is what proves the header sits under this module's `http:` and nowhere
+    else; but `_neutralise_refs` replaces every `{{ … }}` with a placeholder
+    scalar before the loader sees it, so the parsed value CANNOT carry the
+    reference. The raw slice is taken from the same module's block
+    (`_indented_key_lines` + `_block_under`), so the two halves are about one
+    module rather than about the file in general.
+
+    THE WORLD BIT IS THE SURVIVING INVARIANT, AND READABILITY IS NOT THE REASON.
+    The premise this row was cut from said `prom/*` runs as `nobody`, so
+    `0640 root:root` would be a crash loop and the door was `owner: 65534` /
+    `0600`. That is measurably FALSE for this image and the premise is struck in
+    `plan.md`: `Config.User` is EMPTY and `id -u` answers `{BLACKBOX_UID}`, and
+    five owner/mode pairs mounted `:ro` into it — `65534:65534` 0640/0600,
+    `root:root` 0640/0600/0644 — are READ=ok on ALL FIVE, because uid 0 bypasses
+    the permission bits. There is no pair in this row's space the process cannot
+    read, so a guard arming "the container could not read it" would assert
+    something that never happens.
+
+    What 0644 DOES do is publish a live Plex API token to every user on the
+    docker host, and falsify a load-bearing sentence at
+    `ansible/roles/docker_host/tasks/main.yml:118-122`: that the 0644 prometheus
+    render "carries no credential … so world-read costs nothing". So:
+
+    * `world_bit_withheld` — a PROPERTY of the mode, not the digits `0640`.
+      `int(mode, 8) & 0o004` must be clear, so 0600 does not false-RED and 0644
+      cannot pass. A SYMBOLIC mode (`u=rw,g=r`, which `ansible.builtin.template`
+      accepts) reds rather than being invisible — see `_render_task_scalar`,
+      which is why this clause does not carry a `\\d+` reader of its own.
+    * `prom_carries_no_credential` — and this arm is aimed at row `5c`, not at
+      today. `prometheus.yml.j2` is NOT touched by this row, and its
+      carries-no-credential sentence is re-asserted as a CHECK: no `vault_*`
+      reference, no `X-Plex-Token`, no `PLEX_TOKEN` in it. `5c` writes three
+      scrape jobs against these modules, and the one thing it must not do is
+      move the token into the 0644 file — which would be silently correct at
+      runtime and would falsify the sentence that licenses that mode.
+
+    ONE ARM NOBODY ASKED FOR, AND IT IS THE SAME DIFFERENTIAL KILLED FROM A THIRD
+    END. `sessions_accepts_plain`: this module must NOT carry `fail_if_not_ssl`.
+    Its target is plain HTTP to the Plex container on the compose network, so the
+    field that is CORRECT on the proxied module makes this one report
+    `probe_success 0` FOR EVER — a permanent "the origin is down" no certificate,
+    restart or Plex fix can clear, and on THIS module it would be indistinguishable
+    from the token being wrong, which is the one thing this clause exists to make
+    visible. The direct module's identical arm lives in the clause above because
+    each row pins the module it ships; what differs is the PREDICATE, and
+    deliberately: that one spells the arm `== "<absent>"`, which false-REDs on
+    `fail_if_not_ssl: false` — runtime-identical to absent on the real exporter,
+    and filed as `task-1786184652-0a6a`. This arm is `is not True`, the spelling
+    that filing recommends. Two spellings of one idea is normally the defect; here
+    the older one is a KNOWN defect under a filed row that is not this row's to
+    close, and re-spelling it would propagate the false-RED to a second module.
+
+    NOT PINNED HERE, deliberately, because it is pinned better one clause over:
+    the owner/group of this render. `RELOAD_CONTRACT` gained a `RENDER_OWNER`
+    column at this row, walked by
+    `test_rendered_configs_reach_the_service_that_reads_them` across all five
+    renders — the `task-1786187620-633b` half that recorded none of them pinning
+    an owner. Repeating it here would be the second-reader drift this file has
+    already paid for; the constant's own comment carries the "readability is not
+    the reason" sentence.
+    """
+    text = _read(BLACKBOX_CONFIG)
+    try:
+        doc = yaml.load(_neutralise_refs(text), Loader=_StrictLoader)
+    except yaml.YAMLError:
+        doc = None
+    modules = doc.get("modules") if isinstance(doc, dict) else None
+    sessions = modules.get(BLACKBOX_SESSIONS_MODULE) if isinstance(modules, dict) else None
+    module_defined = isinstance(sessions, dict)
+    sessions_http = sessions.get("http") if module_defined else None
+    headers = sessions_http.get("headers") if isinstance(sessions_http, dict) else None
+    # `key=str` for the reason the clause above states at length: PyYAML is YAML
+    # 1.1, so a header spelled `on:` comes back as a `bool` and a bare `sorted`
+    # over mixed types is a `TypeError` — rc=1 naming nothing, the crashed-reader
+    # shape this row has grown three times.
+    header_keys = sorted(headers, key=str) if isinstance(headers, dict) else []
+    header_key = header_keys == [BLACKBOX_TOKEN_HEADER]
+    fail_if_not_ssl = (
+        sessions_http.get("fail_if_not_ssl", "<absent>")
+        if isinstance(sessions_http, dict) else "<not a mapping>"
+    )
+    sessions_accepts_plain = fail_if_not_ssl is not True
+
+    # The RAW half of the join: the sessions module's own block, so a header line
+    # belonging to a different module cannot answer for this one.
+    openers = _indented_key_lines(text, BLACKBOX_SESSIONS_MODULE)
+    module_block = _block_under(text, openers[0]) if len(openers) == 1 else ""
+    header_line = re.compile(
+        rf'(?m)^[^\S\n]*{re.escape(BLACKBOX_TOKEN_HEADER)}:[^\S\n]*(\S.*?)[^\S\n]*$'
+    )
+    in_module = header_line.search(module_block)
+    header_value = in_module.group(1) if in_module else None
+    # The single existing spelling, `env.j2:46`, with its filter — quoting is free
+    # because both render to a string and `_neutralise_refs` quotes its own
+    # placeholder either way.
+    vault_reference = re.compile(
+        rf'"?\{{\{{\s*{re.escape(PLEX_VAULT_KEY)}\s*\|\s*default\(\'\'\)\s*\}}\}}"?'
+    )
+    token_from_vault = bool(header_value) and vault_reference.fullmatch(header_value) is not None
+    vault_refs = sorted(set(re.findall(r'\b(vault_\w+)\b', text)))
+    single_vault_ref = vault_refs == [PLEX_VAULT_KEY]
+    every_header_value = header_line.findall(text)
+    literal_headers = [
+        value for value in every_header_value
+        if vault_reference.fullmatch(value) is None
+    ]
+    no_token_literal = bool(every_header_value) and not literal_headers
+
+    task = _render_task_block(_read(TASKS), BLACKBOX_CONFIG.name)
+    mode_text = _render_task_scalar(task, "mode")
+    mode_digits = (mode_text or "").strip('"\'')
+    try:
+        # Fails CLOSED: a mode this cannot read octally is reported as unpinned
+        # rather than silently skipped.
+        world_bit_withheld = not int(mode_digits, 8) & 0o004
+    except ValueError:
+        world_bit_withheld = False
+    prom_text = _read(PROM_SCRAPE)
+    prom_leaks = sorted(set(
+        re.findall(r'\bvault_\w+', prom_text)
+        + re.findall(rf'(?i){re.escape(BLACKBOX_TOKEN_HEADER)}', prom_text)
+        + re.findall(rf'\b{re.escape(PLEX_TOKEN_ENV)}\b', prom_text)
+    ))
+    prom_carries_no_credential = not prom_leaks
+
+    ok = (
+        module_defined and header_key and token_from_vault and single_vault_ref
+        and no_token_literal and sessions_accepts_plain and world_bit_withheld
+        and prom_carries_no_credential
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: {BLACKBOX_SESSIONS_MODULE} sends "
+        f"{PLEX_VAULT_KEY} as the {BLACKBOX_TOKEN_HEADER} header and "
+        f"{BLACKBOX_CONFIG.name} withholds it from the world "
+        f"(module_defined={module_defined}, "
+        f"header_key={header_key} "
+        f"({BLACKBOX_SESSIONS_MODULE}.http.headers keys={header_keys}, "
+        f"want=[{BLACKBOX_TOKEN_HEADER!r}]), "
+        f"token_from_vault={token_from_vault} (value={header_value!r}), "
+        f"single_vault_ref={single_vault_ref} (found={vault_refs}), "
+        f"no_token_literal={no_token_literal} "
+        f"({len(every_header_value)} {BLACKBOX_TOKEN_HEADER} line(s), "
+        f"not the vault reference: {literal_headers}), "
+        f"sessions_accepts_plain={sessions_accepts_plain} "
+        f"({BLACKBOX_SESSIONS_MODULE}.http.fail_if_not_ssl={fail_if_not_ssl!r} — "
+        f"true would be a permanent probe_success 0 against a plain-HTTP "
+        f"target, indistinguishable from a rejected token), "
+        f"world_bit_withheld={world_bit_withheld} (mode={mode_text!r} — 0644 "
+        f"would publish a live Plex API token to every user on the docker host "
+        f"and falsify the carries-no-credential sentence the prometheus render's "
+        f"own 0644 rests on), "
+        f"prom_carries_no_credential={prom_carries_no_credential} "
+        f"({PROM_SCRAPE.name} leaks={prom_leaks}), "
+        f"runs_as_uid={BLACKBOX_UID} — readability is NOT what any mode here "
+        f"buys, uid 0 bypasses the bits; measured at {BLACKBOX_UID_EVIDENCE})"
     )
     return ok
 
@@ -6784,7 +7164,8 @@ def main() -> int:
         test_plex_token_sourced_from_vault(),
         test_plex_node_exporter_scrape_job(),
         test_blackbox_exporter_service_block(),
-        test_blackbox_modules_are_the_two_token_free_probes(),
+        test_blackbox_modules_are_the_three_plex_probes(),
+        test_blackbox_sessions_probe_carries_the_vault_token(),
         test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses(),
         test_homepage_allowed_hosts(),
         test_internal_services_lists_all_internal(),

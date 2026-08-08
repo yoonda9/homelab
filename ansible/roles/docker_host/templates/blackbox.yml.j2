@@ -102,3 +102,65 @@ modules:
         # this key's presence, so the sentence above has a line to red on and
         # deleting the block is caught exactly like flipping it.
         insecure_skip_verify: false
+
+  # /status/sessions — plex-blip-manual-triage Step 5b, and THE PROBE THE
+  # DIFFERENTIAL IS ACTUALLY MADE OF. `/identity` above answered HTTP 200 on
+  # every poll through the whole five-minute outage of 2026-08-07 with a worst
+  # case of 1,761 ms, while this endpoint reached 101,394 ms in the same window
+  # (research/live-blip-2026-08-07-case-study.md) — an ~900x signal, because this
+  # one touches session state and therefore the database whose lock is the open
+  # suspect. `/identity` fast + this slow is the A2 database/lock signature;
+  # both slow is host or thread-pool saturation (design §4.6's table).
+  plex_sessions:
+    prober: http
+    # 30s, and it is NOT the 5s the two probes above use. Two constraints and
+    # this value is between them: it must stay below the 60 s scrape interval
+    # design §4.6 gives this probe (5c), so a hung probe is reported as a failure
+    # rather than colliding with the next scrape; and it must sit WELL ABOVE the
+    # 5 s that §4.6 alerts on (`probe_duration_seconds > 5`), because a timeout
+    # AT the alert threshold clips the measurement exactly where it becomes
+    # interesting — a 20 s stall would be recorded as a 5 s failure and the
+    # "how slow" that separates a blip from an outage would be gone.
+    #
+    # A CEILING, NOT A FLOOR, exactly as the note on the direct module says:
+    # blackbox clamps to Prometheus's own timeout header minus --timeout-offset
+    # (0.5 s), so 5c's `scrape_timeout` is what will actually bind. This value is
+    # what this module permits, not what it will take.
+    timeout: 30s
+    http:
+      method: GET
+      # 200 only, and here that is the AUTH check as much as the health check:
+      # Plex answers /status/sessions with 401 when the token is missing or
+      # rejected, and blackbox reports an auth rejection as HTTP 200 on /probe
+      # with `probe_success 0`. So a broken token shows up in the SERIES and
+      # never in the target's own up/down — see the guard clause for why every
+      # pin on this module is at metric level.
+      valid_status_codes: [200]
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      follow_redirects: false
+      # NO `fail_if_not_ssl` HERE EITHER, for the direct module's reason: this
+      # probe's target is plain HTTP to the Plex container on the compose
+      # network, so the field that is correct on the proxied module one block up
+      # would make this one report `probe_success 0` for ever. Its absence is
+      # pinned by the Step-5b clause, which reads it as `is not True` rather than
+      # as "the key is absent" — see task-1786184652-0a6a.
+      headers:
+        # THE SECRET LINE. The vault reference and never a literal: the single
+        # existing `vault_plex_token` spelling, the same one env.j2:46 uses, with
+        # the `| default('')` filter that lets this render and stay green before
+        # the operator has stored a value (env.j2:27-45 says so at length about
+        # this exact variable).
+        #
+        # QUOTED, deliberately. Bare, an empty default renders `X-Plex-Token:`
+        # with a null value — which the binary does accept (rc=0, measured) but
+        # which sends no header at all; quoted it renders `""`, an empty header,
+        # and the difference matters when reading why a probe 401s. The quotes
+        # also mean a token whose first character is YAML-significant cannot
+        # break the document.
+        #
+        # THIS IS WHY THIS FILE IS 0640 AND NOT THE 0644 THE PROMETHEUS RENDER
+        # USES. 0644 would publish a live Plex API token to every user on the
+        # docker host — see tasks/main.yml, which chose this mode at 5a in
+        # advance of this line existing.
+        X-Plex-Token: "{{ vault_plex_token | default('') }}"
