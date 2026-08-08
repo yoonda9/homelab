@@ -7,6 +7,8 @@ queries (>500ms), and network relay connectivity drops. Enforces a 30-second
 debounce cooldown window and executes bounded diagnostic snapshots (2.0s default
 per probe, four probes serial, so 8.0s worst case) including fuser/lsof on SQLite
 databases, pidstat, and open descriptor counts, serialized as structured JSON Lines.
+SQLite WAL state rides along on three os.stat calls -- no connection and no lock, so
+it adds nothing to the bound above and cannot join the contention it measures.
 The snapshot is bounded, not instant: a probe that blocks is itself the signal, so
 each one is allowed to run to its timeout and report the elapsed time it burned.
 """
@@ -229,6 +231,56 @@ def _dry_run_fallback(result: Dict[str, Any], simulated: str) -> Dict[str, Any]:
     if result.get("status") != "ok" or not result.get("output"):
         return {**result, "output": simulated}
     return result
+
+
+def _wal_state(db_path: Optional[str]) -> Dict[str, Any]:
+    """Measure SQLite WAL state with three `os.stat` calls (design C1.4).
+
+    ALWAYS returns the same four keys, so a reader can take a column across a
+    day of captures:
+        {"db_bytes": int|None, "wal_bytes": int|None,
+         "shm_bytes": int|None, "wal_ratio": float|None}
+
+    No connection, no lock, no writer. This runs on the blip path, where the
+    database is by definition already contended, so anything that could block is
+    disqualified on principle -- the measurement must not join the queue it is
+    trying to describe. An unchecked WAL is itself a stall mechanism, which is
+    what turns its size from a curiosity into the leading indicator.
+
+    `None` is NOT a spelling of zero, and the distinction is the point. A
+    checkpointed WAL genuinely measures 0 bytes and is healthy; a file that is
+    not there means WAL mode is off or was never entered. Collapsing those two
+    would make the size audit that reads this number unable to tell a working
+    checkpoint from an absent journal.
+
+    Anything unreadable -- absent, a dangling symlink, a permission denial --
+    reads as `None` rather than raising. A nice-to-have must never abort a
+    capture.
+    """
+
+    def _size(path: Optional[str]) -> Optional[int]:
+        if not path:
+            return None
+        try:
+            return os.stat(path).st_size
+        except OSError:
+            return None
+
+    db_bytes = _size(db_path)
+    wal_bytes = _size(db_path + "-wal" if db_path else None)
+    shm_bytes = _size(db_path + "-shm" if db_path else None)
+
+    # A quotient needs a numerator AND a non-zero denominator. A zero-byte or
+    # unreadable database would otherwise raise here and cost the whole
+    # snapshot, which is exactly the trade this block is not allowed to make.
+    wal_ratio = wal_bytes / db_bytes if wal_bytes is not None and db_bytes else None
+
+    return {
+        "db_bytes": db_bytes,
+        "wal_bytes": wal_bytes,
+        "shm_bytes": shm_bytes,
+        "wal_ratio": wal_ratio,
+    }
 
 
 def get_plex_fd_count(proc_dir: str = "/proc", dry_run: bool = False) -> int:
@@ -492,6 +544,21 @@ class WatchdogEngine:
         # 3. FD Count
         fd_count = get_plex_fd_count(proc_dir="/proc", dry_run=self.dry_run)
 
+        # 4. SQLite WAL state -- three os.stat calls, no connection, no lock, so
+        # nothing is added to the probe bound the header names. Read off the
+        # ALREADY-RESOLVED match set above rather than a second hardcoded path:
+        # db_pattern ends in `...library.db*`, so the matches hold the db, the
+        # -wal and the -shm together.
+        #
+        # Selected by NAME and by an inclusive test, both deliberate. glob order
+        # is filesystem order, so `matched_dbs[0]` would be a coin flip; and
+        # excluding the two sidecars by name would still admit any OTHER `.db*`
+        # neighbour the pattern sweeps up -- `-journal` from a rollback-mode
+        # database, or a `.db.bak` an operator left behind. The base database is
+        # the match that ends in `.db`, which is the one thing only it does.
+        base_dbs = [p for p in matched_dbs if p.endswith(".db")]
+        sqlite_state = _wal_state(base_dbs[0] if base_dbs else None)
+
         record = {
             "timestamp": iso_ts,
             "trigger_event": trigger.get("event_type", "UNKNOWN"),
@@ -526,6 +593,12 @@ class WatchdogEngine:
             "sysstat_metrics": {
                 "fd_count": fd_count,
             },
+            # Step 3a's WAL block (design C1.4). ALWAYS PRESENT for the same
+            # reason hold_site is: the captures on disk share one key set, and a
+            # reader taking `sqlite.wal_bytes` as a column would KeyError on
+            # precisely the records a missing WAL makes interesting. plan.md's
+            # "the sqlite block is omitted" is the inner figures reading null.
+            "sqlite": sqlite_state,
             "dry_run": self.dry_run
         }
 

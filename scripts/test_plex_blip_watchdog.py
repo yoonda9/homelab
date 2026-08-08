@@ -444,11 +444,15 @@ class TestSnapshotStructuredShape(unittest.TestCase):
     skips a candidate it cannot run and keeps searching the rest of PATH).
     """
 
-    # Step 2d flipped this from eight to ten. The eight below the fold are the
-    # keys the 34 captures already on disk carry; `hold_site` and
-    # `live_connections` are Step 2's Integration line (plan.md:95). The set is
-    # still an EQUALITY, not a subset: an addition is a deliberate edit here and
-    # a removal still breaks every capture already written.
+    # Widened twice: Step 2d took it 8 -> 10, Step 3a takes it 10 -> 11. Spelled
+    # in digits deliberately -- a number-WORD here is what let a method name go
+    # on claiming a count the set had outgrown, and this comment is the only
+    # place the history is worth keeping. The eight below the fold are the keys
+    # the 34 captures already on disk carry;
+    # `hold_site` and `live_connections` are Step 2's Integration line
+    # (plan.md:95); `sqlite` is Step 3's WAL block (design C1.4, plan.md:165).
+    # The set is still an EQUALITY, not a subset: an addition is a deliberate
+    # edit here and a removal still breaks every capture already written.
     KEYS_ALREADY_ON_DISK = {
         "timestamp",
         "trigger_event",
@@ -459,7 +463,7 @@ class TestSnapshotStructuredShape(unittest.TestCase):
         "sysstat_metrics",
         "dry_run",
     }
-    TOP_LEVEL_KEYS = KEYS_ALREADY_ON_DISK | {"hold_site", "live_connections"}
+    TOP_LEVEL_KEYS = KEYS_ALREADY_ON_DISK | {"hold_site", "live_connections", "sqlite"}
     PROBE_KEYS = {"status", "elapsed_ms", "output", "error"}
 
     TRIGGER = {
@@ -688,12 +692,14 @@ class TestSnapshotStructuredShape(unittest.TestCase):
                 )
 
     # (c) additive-only at the top level: 448 KB of captures already on disk
-    def test_top_level_keys_are_exactly_the_ten_after_step_2(self):
+    def test_top_level_keys_are_exactly_the_eleven_after_step_3(self):
         record = self._capture()
         self.assertEqual(
             set(record), self.TOP_LEVEL_KEYS,
-            "Step 2d added hold_site/live_connections and Step 3 adds sqlite -- an "
-            "ADDITION here is expected and a REMOVAL breaks the captures already written",
+            "Step 2d added hold_site/live_connections and Step 3a HAS NOW added "
+            "sqlite -- the widening this message used to anticipate has landed, so "
+            "a further ADDITION is a deliberate edit at TOP_LEVEL_KEYS and a "
+            "REMOVAL breaks the captures already written",
         )
 
     def test_the_eight_keys_already_on_disk_are_all_still_written(self):
@@ -707,6 +713,295 @@ class TestSnapshotStructuredShape(unittest.TestCase):
             self.KEYS_ALREADY_ON_DISK.issubset(set(record)),
             "dropping a key the 34 captures on disk carry breaks every consumer of them; "
             f"missing: {sorted(self.KEYS_ALREADY_ON_DISK - set(record))}",
+        )
+
+
+class TestSqliteWalStateCapture(unittest.TestCase):
+    """Step 3a — `_wal_state` and the snapshot's `sqlite` block (design C1.4).
+
+    Design C1.4 buys the leading indicator for the price of three `os.stat`
+    calls: no connection, no lock, no writer. That CHEAPNESS is the whole
+    licence for putting it on the capture path, so it is asserted against the
+    shipped function's AST here rather than promised in a docstring.
+
+    THE ABSENT-VS-NULL CHOICE, MEASURED RATHER THAN INHERITED. plan.md:165-166
+    says a missing WAL means "the `sqlite` block is omitted and the snapshot is
+    still written", which is ambiguous between dropping the top-level key and
+    dropping the inner figures. Censused at this turn over
+    /tmp/plex-logs/plex_blip_diagnostics_*.jsonl: 34 records, 448,202 bytes,
+    THREE trigger_event values (STREAM_DROP 13, SLOW_QUERY 15, TX_STALL 6) and
+    exactly ONE top-level key set. Homogeneity is the only invariant that corpus
+    actually has, so the top-level key is ALWAYS PRESENT -- and the same reader
+    argument applies one level down, since `rec["sqlite"]["wal_bytes"]` taken as
+    a column would KeyError on exactly the records the fault makes interesting.
+    So both levels are always present and a file that is not there reads `None`.
+
+    `None` is load-bearing and NOT a spelling of zero: a checkpointed WAL is
+    genuinely 0 bytes and healthy, while an absent one means WAL mode is off or
+    was never entered. `test_an_absent_wal_is_not_a_zero_byte_wal` is the row
+    that refuses to let those two collapse into each other.
+    """
+
+    WAL_KEYS = {"db_bytes", "wal_bytes", "shm_bytes", "wal_ratio"}
+
+    # Mutually distinct on purpose, and distinct from each other's ratio too:
+    # equal fixtures let a transposed column pass by coincidence, which is the
+    # single most-charged defect in this objective.
+    DB_PAYLOAD = b"SQLite format 3\x00" + b"\xa5" * 4080     # 4096
+    WAL_PAYLOAD = b"\xde\xad\xbe\xef" * 256                  # 1024
+    SHM_PAYLOAD = b"\x5c" * 512                              # 512
+
+    TRIGGER_LINE = (
+        "Aug 04, 2026 06:58:11.899 [101] WARN - Took too long (0.120000 seconds) "
+        "to start a transaction on StatisticsBandwidth.cpp:110"
+    )
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_wal_")
+        self.log_path = os.path.join(self.test_dir, "mock_plex.log")
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("Aug 04, 2026 06:57:00.000 [100] INFO - Server starting up\n")
+        self.out_dir = os.path.join(self.test_dir, "diagnostics")
+        self.db_path = os.path.join(self.test_dir, "com.plexapp.plugins.library.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _write(self, path: str, payload: bytes) -> int:
+        """Write a fixture and read its size back OFF THE ARTIFACT.
+
+        `os.path.getsize` is a deliberately DIFFERENT spelling from the module's
+        `os.stat(...).st_size`, and it is cross-checked against the payload
+        length, so the expected figure is never a number this file hardcodes.
+        """
+        with open(path, "wb") as f:
+            f.write(payload)
+        size = os.path.getsize(path)
+        self.assertEqual(size, len(payload), "fixture did not land at its own length")
+        return size
+
+    def _capture(self, db_pattern: str, dry_run: bool = True) -> dict:
+        engine = watchdog.WatchdogEngine(
+            log_path=self.log_path,
+            output_dir=self.out_dir,
+            db_pattern=db_pattern,
+            dry_run=dry_run,
+        )
+        out_path = engine.capture_snapshot(
+            {"event_type": "TX_STALL", "delay_ms": 120.0, "line": self.TRIGGER_LINE}
+        )
+        with open(out_path, "r", encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, "one trigger must write exactly one JSONL line")
+        return json.loads(lines[0])
+
+    # -- the function itself ------------------------------------------------
+
+    def test_wal_state_reports_every_column_and_the_derived_ratio(self):
+        db = self._write(self.db_path, self.DB_PAYLOAD)
+        wal = self._write(self.db_path + "-wal", self.WAL_PAYLOAD)
+        shm = self._write(self.db_path + "-shm", self.SHM_PAYLOAD)
+        self.assertEqual(
+            len({db, wal, shm}), 3,
+            "the three fixtures must be MUTUALLY DISTINCT or a swapped column "
+            f"is invisible: db={db} wal={wal} shm={shm}",
+        )
+
+        state = watchdog._wal_state(self.db_path)
+        self.assertEqual(set(state), self.WAL_KEYS)
+        self.assertEqual(state["db_bytes"], db)
+        self.assertEqual(state["wal_bytes"], wal)
+        self.assertEqual(state["shm_bytes"], shm)
+        self.assertEqual(state["wal_ratio"], wal / db)
+
+        # Anti-vacuity: the ratio must be a RATIO, not a fourth copy of a count.
+        self.assertNotIn(
+            state["wal_ratio"], {db, wal, shm},
+            "wal_ratio coincides with a raw byte count, so the row cannot tell a "
+            "real quotient from a mislabelled column",
+        )
+
+    def test_an_absent_wal_is_not_a_zero_byte_wal(self):
+        # The reason the missing case is `None` and not 0. A checkpointed WAL is
+        # genuinely zero bytes and HEALTHY; an absent one means WAL mode is off.
+        # Collapsing them would make the Step 3b size audit unreadable.
+        self._write(self.db_path, self.DB_PAYLOAD)
+        absent = watchdog._wal_state(self.db_path)
+        self.assertIsNone(absent["wal_bytes"], "an absent -wal must not report a size")
+        self.assertIsNone(absent["wal_ratio"], "no WAL means no ratio, not a zero one")
+
+        zero = self._write(self.db_path + "-wal", b"")
+        checkpointed = watchdog._wal_state(self.db_path)
+        self.assertEqual(checkpointed["wal_bytes"], zero)
+        self.assertEqual(checkpointed["wal_ratio"], 0.0)
+
+        self.assertNotEqual(
+            absent["wal_bytes"], checkpointed["wal_bytes"],
+            "an absent WAL and a checkpointed one must be distinguishable",
+        )
+
+    def test_a_zero_byte_database_beside_a_live_wal_does_not_divide(self):
+        # The DENOMINATOR guard, armed. Found by mutation, not by inspection:
+        # deleting `and db_bytes` from the ratio left every other row in this
+        # class green (logs/builder-3a-mutants.log, C9), and the fault it hides
+        # is not cosmetic -- it is a ZeroDivisionError raised from inside
+        # capture_snapshot, which loses the entire snapshot. That is exactly the
+        # trade plan.md:165-166 forbids.
+        #
+        # Reachable two ways: SQLite leaves a zero-byte database during creation,
+        # and a database removed without its sidecars leaves the -wal with
+        # nothing to divide by.
+        zero_db = self._write(self.db_path, b"")
+        wal = self._write(self.db_path + "-wal", self.WAL_PAYLOAD)
+
+        state = watchdog._wal_state(self.db_path)
+        self.assertEqual(state["db_bytes"], zero_db)
+        self.assertEqual(state["wal_bytes"], wal)
+        self.assertIsNone(
+            state["wal_ratio"],
+            "a zero-byte database has no ratio to report, and dividing by it "
+            "raises from the capture path",
+        )
+
+        # The other direction: a WAL whose database is gone entirely.
+        os.remove(self.db_path)
+        orphaned = watchdog._wal_state(self.db_path)
+        self.assertIsNone(orphaned["db_bytes"])
+        self.assertEqual(orphaned["wal_bytes"], wal)
+        self.assertIsNone(orphaned["wal_ratio"])
+
+        # And the whole thing survives the real capture path.
+        self._write(self.db_path, b"")
+        record = self._capture(self.db_path + "*")
+        self.assertEqual(json.loads(json.dumps(record)), record)
+        self.assertIsNone(record["sqlite"]["wal_ratio"])
+
+    def test_wal_state_opens_no_connection_and_spawns_no_process(self):
+        # design C1.4's entire claim is that this is cheap enough to run on every
+        # capture. Pinned to the shipped AST so a later "just one quick PRAGMA"
+        # reds here instead of quietly taking a lock on the blip path.
+        tree = ast.parse(inspect.getsource(watchdog._wal_state))
+        called = {
+            ast.unparse(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+        }
+        forbidden = sorted(
+            c for c in called
+            if any(
+                token in c.lower()
+                for token in ("sqlite3", "subprocess", "_run_cmd", "connect", "popen", "system")
+            )
+        )
+        self.assertEqual(
+            forbidden, [],
+            f"_wal_state must take no lock and spawn no process, but calls: {forbidden}",
+        )
+        self.assertIn(
+            "os.stat", called,
+            "design C1.4 names os.stat as the mechanism; asserting the absence of "
+            "the expensive spellings proves nothing if the cheap one is gone too",
+        )
+
+    # -- the block inside the record ----------------------------------------
+
+    def test_the_snapshot_sqlite_block_carries_the_measured_byte_counts(self):
+        # Driven through the SHIPPED glob shape (`...db*`), which matches the db,
+        # the -wal and the -shm. glob order is filesystem order, so this is also
+        # the row that catches picking `matched_dbs[0]` and calling it the db.
+        db = self._write(self.db_path, self.DB_PAYLOAD)
+        wal = self._write(self.db_path + "-wal", self.WAL_PAYLOAD)
+        shm = self._write(self.db_path + "-shm", self.SHM_PAYLOAD)
+
+        record = self._capture(self.db_path + "*")
+        block = record["sqlite"]
+        self.assertEqual(set(block), self.WAL_KEYS)
+        self.assertEqual(block["db_bytes"], db)
+        self.assertEqual(block["wal_bytes"], wal)
+        self.assertEqual(block["shm_bytes"], shm)
+        self.assertEqual(block["wal_ratio"], wal / db)
+
+    def test_the_base_database_is_chosen_by_name_not_by_glob_position(self):
+        # glob order is FILESYSTEM order, so a row that merely creates the three
+        # files and hopes scores positional selection by coin flip. The match set
+        # is handed over in a controlled order instead, with the database LAST
+        # and a `-journal` sidecar in front of it -- `...library.db*` sweeps that
+        # up too, so excluding only -wal/-shm is not the same as picking the db.
+        db = self._write(self.db_path, self.DB_PAYLOAD)
+        wal = self._write(self.db_path + "-wal", self.WAL_PAYLOAD)
+        self._write(self.db_path + "-shm", self.SHM_PAYLOAD)
+        self._write(self.db_path + "-journal", b"\x17" * 77)
+
+        ordered = [
+            self.db_path + "-wal",
+            self.db_path + "-shm",
+            self.db_path + "-journal",
+            self.db_path,
+        ]
+
+        class _OrderedGlob:
+            @staticmethod
+            def glob(_pattern):
+                return list(ordered)
+
+        real_glob = watchdog.glob
+        watchdog.glob = _OrderedGlob
+        try:
+            record = self._capture(self.db_path + "*")
+        finally:
+            watchdog.glob = real_glob
+
+        self.assertEqual(
+            record["sqlite"]["db_bytes"], db,
+            "the base database must be selected by name; this match set puts three "
+            "sidecars ahead of it, so a positional pick reports one of those",
+        )
+        self.assertEqual(record["sqlite"]["wal_bytes"], wal)
+
+    def test_a_missing_wal_still_writes_a_snapshot_that_round_trips(self):
+        # plan.md:165-166 -- "a nice-to-have must never abort a capture".
+        self._write(self.db_path, self.DB_PAYLOAD)
+        self.assertFalse(os.path.exists(self.db_path + "-wal"))
+
+        record = self._capture(self.db_path + "*")
+        self.assertEqual(json.loads(json.dumps(record)), record)
+        self.assertIn(
+            "sqlite", record,
+            "the top-level key is homogeneous across the 34 captures' successors; "
+            "'omitted' is the inner figures reading null, not the block vanishing",
+        )
+        self.assertEqual(set(record["sqlite"]), self.WAL_KEYS)
+        self.assertEqual(record["sqlite"]["db_bytes"], os.path.getsize(self.db_path))
+        self.assertIsNone(record["sqlite"]["wal_bytes"])
+        self.assertIsNone(record["sqlite"]["shm_bytes"])
+        self.assertIsNone(record["sqlite"]["wal_ratio"])
+
+    def test_a_pattern_matching_nothing_still_writes_the_snapshot(self):
+        # The `targets = [self.db_pattern]` fallback at the resolved-glob site
+        # hands an UNEXPANDED pattern downstream. Statting a literal "*" must
+        # read as absent, never as a crash that loses the capture.
+        missing = os.path.join(self.test_dir, "no-such-database.db*")
+        record = self._capture(missing)
+        self.assertEqual(json.loads(json.dumps(record)), record)
+        self.assertEqual(set(record["sqlite"]), self.WAL_KEYS)
+        self.assertEqual(
+            {v for v in record["sqlite"].values()}, {None},
+            "no database matched, so every figure must be null rather than zero",
+        )
+
+    def test_a_directory_where_the_wal_should_be_does_not_lose_the_capture(self):
+        # Degenerate shapes the real host can produce. A directory stats fine and
+        # a dangling symlink does not; neither may abort the snapshot.
+        self._write(self.db_path, self.DB_PAYLOAD)
+        os.makedirs(self.db_path + "-wal", exist_ok=True)
+        os.symlink(os.path.join(self.test_dir, "gone"), self.db_path + "-shm")
+
+        record = self._capture(self.db_path + "*")
+        self.assertEqual(json.loads(json.dumps(record)), record)
+        self.assertEqual(set(record["sqlite"]), self.WAL_KEYS)
+        self.assertEqual(record["sqlite"]["db_bytes"], os.path.getsize(self.db_path))
+        self.assertIsNone(
+            record["sqlite"]["shm_bytes"], "a dangling symlink must read as absent"
         )
 
 
@@ -1156,7 +1451,7 @@ class TestSnapshotCarriesHoldSiteAndLiveConnections(unittest.TestCase):
                 )
                 self.assertIsNone(record[key])
 
-    def test_every_trigger_kind_writes_the_same_ten_top_level_keys(self):
+    def test_every_trigger_kind_writes_the_same_eleven_top_level_keys(self):
         # The homogeneity claim as a measurement rather than a sentence: one
         # record per branch this row can reach, key sets compared as sets.
         expected = TestSnapshotStructuredShape.TOP_LEVEL_KEYS
