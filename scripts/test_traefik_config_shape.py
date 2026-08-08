@@ -1345,6 +1345,85 @@ def _static_targets(block: str) -> list:
     )
 
 
+def _relabel_entry_fields(entry: str) -> tuple:
+    """`(fields, unreadable)` for ONE `relabel_configs` entry's own key column.
+
+    The same two halves `_service_key_lines` returns, for the same reason, one
+    nesting level down: `_relabel_triplet` locates a hop by two of its keys and
+    then has to say what ELSE the entry declares, and an absence pin naming the
+    fields somebody thought of fails OPEN one field past its edge.
+
+    The `-` is replaced by a SPACE rather than stripped, because an entry's
+    first key shares its line with it and the column is what tells that key from
+    a nested one. `- source_labels: [__address__]` and the `target_label:` under
+    it then sit at one column, which is the column this reader reports on;
+    anything deeper belongs to a value, not to the entry.
+
+    `unreadable` is the half that makes the allow-list complete rather than
+    merely intended: a `%` merge key, an explicit-key pair or a line this file's
+    `_yaml_key` cannot parse comes back here and the caller reddens on it,
+    instead of being dropped on the floor and counted as no field at all.
+    """
+    lines = [
+        re.sub(r'^([^\S\n]*)-(?=[^\S\n]|$)', lambda m: m.group(1) + " ", ln, count=1)
+        for ln in entry.splitlines() if ln.strip()
+    ]
+    if not lines:
+        return {}, []
+    top = min(len(ln) - len(ln.lstrip()) for ln in lines)
+    fields, unreadable = {}, []
+    for line in lines:
+        if len(line) - len(line.lstrip()) != top:
+            continue
+        if _line_class(line) == "key":
+            _, key, value = _yaml_key(line)
+            fields[key] = value
+        else:
+            unreadable.append(line.strip())
+    return fields, unreadable
+
+
+def _flow_sequence(value: str) -> list | None:
+    """A YAML FLOW sequence's members, unquoted, or None if it is not one.
+
+    `source_labels: [__address__]` is the only shape `_relabel_triplet` locates
+    — the block form puts the label on its own line, where that helper's
+    single-line pattern does not match it and the hop reads MISSING — so this
+    reader is deliberately narrow: it answers the members of a `[…]` and None
+    for everything else, which the caller reports as a hop whose source list it
+    could not read rather than as an empty one.
+
+    `_yaml_unquote` per member for `PLEX_JOB_KEYS`' reason: `[__address__]` and
+    `["__address__"]` are one list with two spellings, and an arm that told them
+    apart would be pinning a typography (measured: logs/builder-5c-r2-arms.log
+    M10/M11).
+    """
+    v = value.strip()
+    if not (v.startswith("[") and v.endswith("]")):
+        return None
+    inner = v[1:-1].strip()
+    return [_yaml_unquote(m.strip()) for m in inner.split(",")] if inner else []
+
+
+# The fields each hop's read MODELS, and therefore the only ones its entry may
+# declare. Sourced from what `_relabel_triplet` actually asks of the entry: the
+# two `carry`/`keep` hops are a copy from one label to another, and `dial`'s
+# `replacement:` IS its value. Everything else in a relabel entry —
+# `regex`, `action`, `modulus`, `separator`, a second `replacement` — changes
+# what the hop writes or whether it writes at all, and is measured at
+# logs/builder-5c-r2-wire.log.
+_RELABEL_HOP_FIELDS = {
+    "carry": ("source_labels", "target_label"),
+    "keep": ("source_labels", "target_label"),
+    "dial": ("target_label", "replacement"),
+}
+
+# The label each copying hop reads FROM, compared as a whole list rather than
+# searched: a second member is concatenated with the default `;` separator and
+# the write silently becomes a value nothing named (wire W5).
+_RELABEL_HOP_SOURCE = {"carry": "__address__", "keep": "__param_target"}
+
+
 def _relabel_triplet(block: str, exporter: str) -> tuple:
     """`(defects, hops)` for one multi-target job's `__param_target` walk.
 
@@ -1389,9 +1468,60 @@ def _relabel_triplet(block: str, exporter: str) -> tuple:
     `dial` does not touch, so either sequence produces the same label set and a
     guard demanding one of them would be forbidding a config that works.
 
-    What is NOT modelled, carried over from the clause that won these rows:
-    which WRITE WINS. A later entry overwriting `__param_target` with a literal
-    is green here, and it fails loudly at deploy.
+    THE LIST IS THE TRIPLET AND NOTHING ELSE, which is the repair of a sentence
+    this docstring shipped and DEC-316 charged. It used to say a later entry
+    overwriting `__param_target` "is green here, and it fails loudly at deploy".
+    That is false, measured — at my own hands on real prom/prometheus:v3.12.0 +
+    prom/blackbox-exporter:v0.28.0 against a stub origin, on renders of the
+    shipped templates (logs/builder-5c-r2-wire.log, W4): `promtool check config`
+    rc=0, the target UP, and `probe_success 0` carried on
+    `instance="http://origin/identity"` — the same origin the CONTROL row probes
+    at `probe_success 1`. Nothing is loud. The graph blames a healthy Plex and
+    design §5.3's `PlexUnreachable` fires an outage alert about it.
+
+    So the entries OUTSIDE the three hops are a defect, not a residual. W7 is
+    why the pin is the LIST and not a write-count per label: a fourth entry
+    `action: labeldrop` / `regex: instance` writes no `target_label` at all,
+    rc=0, `up 1`, `probe_success 1` — and `instance` is back to
+    `blackbox-exporter:9115`, undoing the keep hop in perfect silence.
+
+    AND THE FIELDS INSIDE A HOP ARE THE SAME CLASS, which is the half the old
+    paragraph's boundary missed entirely. An entry this reader reports PRESENT
+    can still be made not to fire or to write something else, and both leave a
+    VALID config (same log): `regex:` matching no address on the carry hop is
+    rc=0 with `up 0` and the job's `probe_*` series ABSENT ENTIRELY — a state
+    `probe_success == 0` cannot match (W1, the class already filed at
+    `task-1786159639-39db`); `replacement:` on the same hop redirects the probe
+    and the `instance` label follows it (W2). A second `source_labels` member is
+    the same silence one layer down — concatenated with the default `;`
+    separator, rc=0, `probe_success 1`, `instance="http://origin/identity;http"`
+    (W5). Hence `_RELABEL_HOP_FIELDS`, an allow-list rather than an absence pin
+    for `PLEX_JOB_KEYS`' reason, plus `_relabel_entry_fields`' unreadable half.
+
+    WHERE THE CLASS ENDS, measured rather than assumed: `action: labeldrop` on a
+    hop is `promtool` rc=1, *"labeldrop action requires only 'regex', and no
+    other fields"* (W3). That one was never silent, so the class is the fields
+    that leave a valid config — and the control matters, because without it this
+    paragraph would be claiming a hole where the runtime already stands.
+
+    THE PRICE, and it is a working document: `action: replace` written out
+    EXPLICITLY is the DEFAULT action, byte-identical to the delivered tree at
+    the wire (W6 — same instance, same `up`, same `probe_success`), and this
+    allow-list REDS it (logs/builder-5c-r2-arms.log M9). That is the standing
+    cost of an allow-list and it is taken deliberately: the door out is one
+    string in `_RELABEL_HOP_FIELDS`, whereas the door out of an absence pin is
+    another round of this. DEC-317.
+
+    What is still NOT modelled, stated narrowly this time because a "what is NOT
+    modelled" paragraph is an ARM's claim in prose and the last one was driven
+    only after it shipped: relabelling that reaches a job from OUTSIDE its own
+    `relabel_configs` key. This reader is handed one block and opens one key in
+    it, so a `metric_relabel_configs:` beside it is invisible HERE. It is not
+    invisible everywhere — for the three blackbox jobs it is a key outside
+    `BLACKBOX_JOB_KEYS` and their clause reddens on it — but
+    `test_pve_scrape_job_is_multi_target` has no key allow-list, so on that job
+    it is open. Named rather than closed: this row owns the entries under one
+    key, and a second key is the pve clause's to pin.
     """
     entries = _list_entries(_indented_block(block, "relabel_configs"))
 
@@ -1443,6 +1573,39 @@ def _relabel_triplet(block: str, exporter: str) -> tuple:
                 f"the carry hop is entry {hops['carry']} but {later} is entry "
                 f"{hops[later]}: {why}"
             )
+    for name, allowed in _RELABEL_HOP_FIELDS.items():
+        if hops[name] is None:
+            continue
+        fields, unreadable = _relabel_entry_fields(entries[hops[name]])
+        extra = sorted(k for k in fields if k not in allowed)
+        if extra or unreadable:
+            defects.append(
+                f"the {name} hop (entry {hops[name]}) declares {extra} outside "
+                f"{list(allowed)}, unreadable={unreadable} — a field beside the "
+                "copy decides whether the hop fires and what it writes, and "
+                "every spelling of that leaves a config Prometheus loads"
+            )
+        want = _RELABEL_HOP_SOURCE.get(name)
+        if want is not None:
+            members = _flow_sequence(fields.get("source_labels", ""))
+            if members != [want]:
+                defects.append(
+                    f"the {name} hop reads source_labels={members} (raw "
+                    f"{fields.get('source_labels', '')!r}), want [{want!r}] — "
+                    "extra members are joined with the default `;` separator, "
+                    "so the hop writes a value nothing in this file names"
+                )
+    outside = [
+        i for i in range(len(entries)) if i not in set(hops.values())
+    ]
+    if outside:
+        defects.append(
+            "relabel_configs holds entries outside the triplet at "
+            f"{outside} ({[entries[i].strip().splitlines()[0] for i in outside]})"
+            " — a later write wins, and one that writes no target_label at all "
+            "(labeldrop) takes the keep hop's `instance` back to the exporter "
+            "with the probe still succeeding"
+        )
     return defects, hops
 
 
@@ -4382,11 +4545,16 @@ def test_pve_scrape_job_is_multi_target() -> bool:
       run is ONE irreproducible pass and this clause is the one that decides whether
       it can produce its falsifier.
 
-      What is NOT checked, measured and named so it is not rediscovered as a hole:
-      which WRITE WINS. A third entry overwriting `__param_target` with a literal
-      is green here and under the review's own prototype, and Prometheus builds
-      `target=pve` (logs/review-step02a-rework-f1-round10e.log). Answering that
-      needs a model of relabel ACTIONS, not a sliced list, and it also fails loudly.
+      WHICH WRITE WINS IS NOW CHECKED, and this paragraph used to say it was
+      not. It named a third entry overwriting `__param_target` as green here
+      (logs/review-step02a-rework-f1-round10e.log) and priced it "it also fails
+      loudly" — a price DEC-316 measured false one caller over, where the same
+      shape is `promtool` rc=0 with the alert firing at a healthy host. Since
+      that round `_relabel_triplet` pins the LIST rather than three memberships:
+      an entry outside the triplet is a defect, and so is a field beside the
+      copy inside one. It did not need a model of relabel ACTIONS after all —
+      it needed the entries the model does not cover to be named rather than
+      allowed (logs/builder-5c-r2-arms.log M14/M15 drive both on THIS job).
     * `path_is_not_default` — the pinned constant DIFFERS from
       `PVE_EXPORTER_DEFAULT_PATH`. Without this clause a later edit satisfies the
       check by writing out the default explicitly, which is the same no-op with
@@ -6710,7 +6878,11 @@ def test_blackbox_scrape_jobs_probe_plex() -> bool:
       which hop is missing is in the defect text. The `keep` hop is the silent
       one and the reason that helper exists: without it the probes still run and
       all three land on one `instance` label — the exporter's — so design §4.6's
-      whole differential reads as one line.
+      whole differential reads as one line. Since DEC-316 the read is of the
+      LIST and not of three memberships: a fourth entry, and a field beside the
+      copy inside a hop, are both defects here, because each one leaves a config
+      `promtool` accepts while the probe goes somewhere the file does not name.
+      That helper's docstring holds the measurements and the one price.
     * per-job `keys_allowed` — `BLACKBOX_JOB_KEYS`. What it keeps out is a
       credential: `basic_auth:`, `authorization:` and `bearer_token_file:` are
       ordinary scrape-config keys and every one of them would put a secret into
