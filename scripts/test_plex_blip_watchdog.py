@@ -11,11 +11,13 @@ import inspect
 import json
 import os
 import pathlib
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -1494,6 +1496,1136 @@ class TestSnapshotCarriesHoldSiteAndLiveConnections(unittest.TestCase):
             record = json.loads(f.readline())
         self.assertEqual(record["hold_site"], "MetadataItemSetting.cpp:459")
         self.assertEqual(record["live_connections"], 7)
+
+
+# ---------------------------------------------------------------------------
+# Step 4a -- the Prometheus textfile emitter (design §5.2, plan.md Step 4).
+#
+# THE INSTRUMENT, AND WHY IT IS HAND-WRITTEN. plan.md's first Tests bullet names
+# `prometheus_client.parser.text_string_to_metric_families`. That package is
+# importable under NEITHER `.venv/bin/python` NOR `mise exec -- python`, and
+# `pyproject.toml` is `dependencies = []` while `run_gate.py:54` runs every
+# `scripts/test_*.py` as a standalone stdlib script under `sys.executable`
+# (plan.md Step 4, premise 1). So the obligation stands and the instrument
+# changes: a strict stdlib reader, written below.
+#
+# A parser written beside the writer it scores is worth NOTHING unless it can
+# refuse. An acceptor that accepts exactly what the writer emits is a second
+# spelling of the thing under test, which is the charge DEC-243 laid on
+# re-spelling an Ansible `that:` expression in Python. So the parser is scored
+# in both directions BEFORE it scores anything: it must accept a valid document
+# this repo never writes, and it must refuse four named malformations, each one
+# derived from a document that parses green by a SINGLE edit.
+# ---------------------------------------------------------------------------
+
+_METRIC_NAME_RE = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
+_LABEL_NAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
+_METRIC_TYPES = ("counter", "gauge", "histogram", "summary", "untyped")
+
+
+class ExpositionError(ValueError):
+    """Text that a Prometheus text-format parser would refuse."""
+
+
+def _parse_label_value(line, i, lineno):
+    """Read one quoted label value, honouring exactly the three escapes the
+    exposition format defines (`\\\\`, `\\"`, `\\n`). An unescaped `"` ENDS the
+    value here, which is what leaves the trailing garbage the caller rejects."""
+    i += 1  # the opening quote
+    out = []
+    while i < len(line):
+        c = line[i]
+        if c == "\\":
+            if i + 1 >= len(line):
+                raise ExpositionError(f":{lineno} label value ends in a dangling escape")
+            e = line[i + 1]
+            if e == "n":
+                out.append("\n")
+            elif e in ('"', "\\"):
+                out.append(e)
+            else:
+                raise ExpositionError(f":{lineno} unknown escape \\{e} in a label value")
+            i += 2
+            continue
+        if c == '"':
+            return "".join(out), i + 1
+        out.append(c)
+        i += 1
+    raise ExpositionError(f":{lineno} unterminated label value")
+
+
+def _parse_labels(line, i, lineno):
+    """Read a `{k="v",...}` list. Rejects an unquoted value, a missing `=`, a
+    duplicate key, and a list that does not close where it should."""
+    labels = {}
+    if i < len(line) and line[i] == "}":
+        return labels, i + 1
+    while True:
+        m = _LABEL_NAME_RE.match(line, i)
+        if not m:
+            raise ExpositionError(f":{lineno} expected a label name at offset {i}")
+        key = m.group(0)
+        i = m.end()
+        if i >= len(line) or line[i] != "=":
+            raise ExpositionError(f":{lineno} label {key!r} carries no '='")
+        i += 1
+        if i >= len(line) or line[i] != '"':
+            raise ExpositionError(f":{lineno} label {key!r} has an unquoted value")
+        value, i = _parse_label_value(line, i, lineno)
+        if key in labels:
+            raise ExpositionError(f":{lineno} duplicate label {key!r}")
+        labels[key] = value
+        if i < len(line) and line[i] == ",":
+            i += 1
+            if i < len(line) and line[i] == "}":
+                return labels, i + 1
+            continue
+        if i < len(line) and line[i] == "}":
+            return labels, i + 1
+        raise ExpositionError(
+            f":{lineno} label list is not closed -- unescaped quote or stray text "
+            f"at offset {i}: {line[i:]!r}"
+        )
+
+
+def _parse_sample(line, lineno):
+    m = _METRIC_NAME_RE.match(line)
+    if not m:
+        raise ExpositionError(f":{lineno} line does not open with a metric name")
+    name = m.group(0)
+    i = m.end()
+    labels = {}
+    if i < len(line) and line[i] == "{":
+        labels, i = _parse_labels(line, i + 1, lineno)
+    rest = line[i:]
+    if rest and not rest[0].isspace():
+        raise ExpositionError(f":{lineno} metric name is not followed by whitespace")
+    fields = rest.split()
+    if not fields:
+        raise ExpositionError(f":{lineno} sample carries no value")
+    if len(fields) > 2:
+        raise ExpositionError(f":{lineno} trailing text after the sample value")
+    token = fields[0]
+    # `float("1_0")` is 10.0 in Python and is not a sample value anywhere else.
+    if "_" in token:
+        raise ExpositionError(f":{lineno} {token!r} is not a sample value")
+    try:
+        value = float(token)
+    except ValueError:
+        raise ExpositionError(f":{lineno} {token!r} is not a float") from None
+    if len(fields) == 2:
+        try:
+            int(fields[1])
+        except ValueError:
+            raise ExpositionError(f":{lineno} {fields[1]!r} is not a millisecond timestamp") from None
+    return name, labels, value
+
+
+def parse_exposition(text):
+    """Strict, stdlib-only reader for the Prometheus text exposition format.
+
+    Returns `{name: {"help": str|None, "type": str, "samples": [(labels, value)]}}`.
+    Raises `ExpositionError` for a sample with no preceding `# TYPE`, a repeated
+    `# HELP` or `# TYPE` for one name, an unknown metric type, a malformed label
+    list, and a value that is not a float.
+    """
+    families = {}
+    helps = {}
+    for lineno, raw in enumerate(text.split("\n"), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            parts = line.split(None, 3)
+            if len(parts) >= 2 and parts[1] == "HELP":
+                if len(parts) < 3:
+                    raise ExpositionError(f":{lineno} '# HELP' names no metric")
+                name = parts[2]
+                if name in helps:
+                    raise ExpositionError(f":{lineno} duplicate '# HELP' for {name!r}")
+                helps[name] = parts[3] if len(parts) > 3 else ""
+            elif len(parts) >= 2 and parts[1] == "TYPE":
+                if len(parts) < 4:
+                    raise ExpositionError(f":{lineno} '# TYPE' is incomplete")
+                name, mtype = parts[2], parts[3]
+                if mtype not in _METRIC_TYPES:
+                    raise ExpositionError(f":{lineno} unknown metric type {mtype!r}")
+                if name in families:
+                    raise ExpositionError(f":{lineno} duplicate '# TYPE' for {name!r}")
+                families[name] = {"help": None, "type": mtype, "samples": []}
+            continue
+        name, labels, value = _parse_sample(line, lineno)
+        if name not in families:
+            raise ExpositionError(f":{lineno} sample {name!r} has no preceding '# TYPE'")
+        families[name]["samples"].append((labels, value))
+    for name, help_text in helps.items():
+        if name not in families:
+            raise ExpositionError(f"'# HELP' for {name!r} names no typed family")
+        families[name]["help"] = help_text
+    return families
+
+
+def _samples_by_label(families, name, label):
+    """`{label value: sample value}` for one family, so a test names a series by
+    its LABEL rather than by its position in the file."""
+    return {labels[label]: value for labels, value in families[name]["samples"]}
+
+
+class TestPrometheusExpositionParserRefuses(unittest.TestCase):
+    """The instrument, scored in both directions before it scores the writer.
+
+    Each refusal below is DIFFERENTIAL: the same document is parsed green first
+    and then broken by one edit, so a parser that refused everything -- the way
+    an over-strict instrument silently turns every later row into a pass for the
+    wrong reason -- fails the control half of its own test.
+    """
+
+    # A real node-exporter document. Nothing in this repo emits these names, an
+    # explicit millisecond timestamp, or a trailing comma inside a label list,
+    # so accepting it cannot be a property of the writer.
+    VALID_FOREIGN = (
+        "# HELP node_load1 1m load average.\n"
+        "# TYPE node_load1 gauge\n"
+        "node_load1 0.42 1754870400000\n"
+        "\n"
+        "# HELP node_scrape_collector_success Whether the collector succeeded.\n"
+        "# TYPE node_scrape_collector_success gauge\n"
+        'node_scrape_collector_success{collector="textfile",} 1\n'
+        'node_scrape_collector_success{collector="cpu"} 0\n'
+        "# a bare comment line\n"
+    )
+
+    def test_the_parser_accepts_a_valid_document_this_repo_never_writes(self):
+        families = parse_exposition(self.VALID_FOREIGN)
+        self.assertEqual(set(families), {"node_load1", "node_scrape_collector_success"})
+        self.assertEqual(families["node_load1"]["type"], "gauge")
+        self.assertEqual(families["node_load1"]["help"], "1m load average.")
+        self.assertEqual(families["node_load1"]["samples"], [({}, 0.42)])
+        self.assertEqual(
+            _samples_by_label(families, "node_scrape_collector_success", "collector"),
+            {"textfile": 1.0, "cpu": 0.0},
+        )
+
+    def test_a_sample_with_no_preceding_type_is_refused(self):
+        good = "# TYPE plex_probe gauge\nplex_probe 1\n"
+        self.assertEqual(len(parse_exposition(good)), 1)
+
+        bad = good.replace("# TYPE plex_probe gauge\n", "")
+        with self.assertRaises(ExpositionError) as ctx:
+            parse_exposition(bad)
+        self.assertIn("# TYPE", str(ctx.exception))
+
+    def test_a_duplicated_help_for_one_name_is_refused(self):
+        good = "# HELP plex_probe One sentence.\n# TYPE plex_probe gauge\nplex_probe 1\n"
+        self.assertEqual(parse_exposition(good)["plex_probe"]["help"], "One sentence.")
+
+        bad = good.replace(
+            "# TYPE plex_probe gauge\n",
+            "# HELP plex_probe A second sentence.\n# TYPE plex_probe gauge\n",
+        )
+        with self.assertRaises(ExpositionError) as ctx:
+            parse_exposition(bad)
+        self.assertIn("duplicate", str(ctx.exception))
+
+    def test_an_unescaped_quote_in_a_label_value_is_refused(self):
+        good = '# TYPE plex_probe gauge\nplex_probe{hold_site="Cache.cpp:12"} 1\n'
+        self.assertEqual(
+            _samples_by_label(parse_exposition(good), "plex_probe", "hold_site"),
+            {"Cache.cpp:12": 1.0},
+        )
+
+        # ONE character: the quote that the writer is obliged to escape. The
+        # value terminates early and the label list no longer closes.
+        bad = good.replace('Cache.cpp:12"}', 'Cache"cpp:12"}')
+        with self.assertRaises(ExpositionError):
+            parse_exposition(bad)
+
+        # And the ESCAPED form of the same character must still parse, or the
+        # refusal above is a ban on quotes rather than a conformance check.
+        escaped = good.replace('Cache.cpp:12"}', 'Cache\\"cpp:12"}')
+        self.assertEqual(
+            _samples_by_label(parse_exposition(escaped), "plex_probe", "hold_site"),
+            {'Cache"cpp:12': 1.0},
+        )
+
+    def test_a_non_float_sample_value_is_refused(self):
+        good = "# TYPE plex_probe gauge\nplex_probe 1\n"
+        self.assertEqual(parse_exposition(good)["plex_probe"]["samples"], [({}, 1.0)])
+
+        for token in ("ok", "1.2.3", "", "1_0"):
+            with self.subTest(value=token):
+                bad = f"# TYPE plex_probe gauge\nplex_probe {token}\n"
+                with self.assertRaises(ExpositionError):
+                    parse_exposition(bad)
+
+    def test_the_four_refusals_are_four_and_not_one_blanket_no(self):
+        # Anti-vacuity for the instrument itself: every control document above
+        # parses, so the refusals are properties of the malformation.
+        for doc in (
+            self.VALID_FOREIGN,
+            "# TYPE plex_probe gauge\nplex_probe 1\n",
+            "# HELP plex_probe One sentence.\n# TYPE plex_probe gauge\nplex_probe 1\n",
+            '# TYPE plex_probe gauge\nplex_probe{hold_site="Cache.cpp:12"} 1\n',
+            "",
+        ):
+            with self.subTest(doc=doc[:40]):
+                parse_exposition(doc)
+
+
+class TestTextfileMetricsRendering(unittest.TestCase):
+    """`render_textfile_metrics` -- design §5.2's exposition, byte for byte.
+
+    The renderer is a PURE function of the metric state so the golden can be
+    compared without a filesystem, a clock or a probe in the way. Its state dict
+    is the one the engine keeps in memory across snapshots; nothing here reads
+    `plex_blip_diagnostics_*.jsonl` back (plan.md Step 4, premise 5).
+
+    THE HELP STRINGS ARE THE DESIGN'S OWN for the four families design §5.2
+    spells out, so a reader can hold the two side by side; the other four are
+    authored here because §5.2 renders them under a shared block.
+    """
+
+    # design §5.2's own figures, so the golden IS the design's example.
+    STATE = {
+        "sqlite": {
+            "db_bytes": 42834944,
+            "wal_bytes": 43735168,
+            "shm_bytes": 360448,
+            # The fourth key the record's `sqlite` block carries. It is a RATIO,
+            # not a byte count, and it must not reach the collector file at all.
+            "wal_ratio": 43735168 / 42834944,
+        },
+        "events": {"TX_HELD": 42, "TX_STALL": 32, "SLOW_QUERY": 49, "STREAM_DROP": 8},
+        "hold_seconds_max": {"MetadataItemSetting.cpp:459": 2.51},
+        "probe_seconds": {"lsof": 2.0, "fuser": 0.031},
+        "probe_ok": {"fuser": True, "lsof": False},
+        "live_connections": 13,
+    }
+
+    GOLDEN = (
+        "# HELP plex_sqlite_wal_bytes Size of the SQLite WAL file.\n"
+        "# TYPE plex_sqlite_wal_bytes gauge\n"
+        "plex_sqlite_wal_bytes 43735168\n"
+        "\n"
+        "# HELP plex_sqlite_db_bytes Size of the Plex library SQLite database.\n"
+        "# TYPE plex_sqlite_db_bytes gauge\n"
+        "plex_sqlite_db_bytes 42834944\n"
+        "\n"
+        "# HELP plex_sqlite_shm_bytes Size of the SQLite shared-memory index.\n"
+        "# TYPE plex_sqlite_shm_bytes gauge\n"
+        "plex_sqlite_shm_bytes 360448\n"
+        "\n"
+        "# HELP plex_watchdog_events_total Watchdog trigger events by type since start.\n"
+        "# TYPE plex_watchdog_events_total counter\n"
+        'plex_watchdog_events_total{event_type="SLOW_QUERY"} 49\n'
+        'plex_watchdog_events_total{event_type="STREAM_DROP"} 8\n'
+        'plex_watchdog_events_total{event_type="TX_HELD"} 42\n'
+        'plex_watchdog_events_total{event_type="TX_STALL"} 32\n'
+        "\n"
+        "# HELP plex_watchdog_hold_seconds_max Longest transaction hold observed, by site.\n"
+        "# TYPE plex_watchdog_hold_seconds_max gauge\n"
+        'plex_watchdog_hold_seconds_max{hold_site="MetadataItemSetting.cpp:459"} 2.51\n'
+        "\n"
+        "# HELP plex_watchdog_probe_duration_seconds Duration of the last diagnostic probe.\n"
+        "# TYPE plex_watchdog_probe_duration_seconds gauge\n"
+        'plex_watchdog_probe_duration_seconds{probe="fuser"} 0.031\n'
+        'plex_watchdog_probe_duration_seconds{probe="lsof"} 2.0\n'
+        "\n"
+        "# HELP plex_watchdog_probe_status 1 when the last diagnostic probe returned ok, 0 otherwise.\n"
+        "# TYPE plex_watchdog_probe_status gauge\n"
+        'plex_watchdog_probe_status{probe="fuser"} 1\n'
+        'plex_watchdog_probe_status{probe="lsof"} 0\n'
+        "\n"
+        "# HELP plex_live_connections Concurrent Plex connections seen on the last trigger line.\n"
+        "# TYPE plex_live_connections gauge\n"
+        "plex_live_connections 13\n"
+    )
+
+    def _state(self, **overrides):
+        state = json.loads(json.dumps(self.STATE))
+        state.update(overrides)
+        return state
+
+    def test_the_rendered_exposition_matches_the_golden_byte_for_byte(self):
+        self.assertEqual(watchdog.render_textfile_metrics(self._state()), self.GOLDEN)
+
+    def test_the_golden_is_what_the_strict_parser_reads_back(self):
+        # The golden pins the BYTES; this pins their MEANING, through the
+        # instrument that was scored against four malformations above.
+        families = parse_exposition(watchdog.render_textfile_metrics(self._state()))
+
+        self.assertEqual(families["plex_sqlite_wal_bytes"]["type"], "gauge")
+        self.assertEqual(families["plex_watchdog_events_total"]["type"], "counter")
+        self.assertEqual(families["plex_sqlite_wal_bytes"]["samples"], [({}, 43735168.0)])
+        self.assertEqual(
+            _samples_by_label(families, "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 42.0, "TX_STALL": 32.0, "SLOW_QUERY": 49.0, "STREAM_DROP": 8.0},
+        )
+        self.assertEqual(
+            _samples_by_label(families, "plex_watchdog_probe_status", "probe"),
+            {"fuser": 1.0, "lsof": 0.0},
+        )
+        self.assertEqual(
+            _samples_by_label(families, "plex_watchdog_probe_duration_seconds", "probe"),
+            {"fuser": 0.031, "lsof": 2.0},
+        )
+
+    def test_every_family_carries_its_own_help_and_type(self):
+        # design §5.2 renders three gauges under ONE header block, which is legal
+        # exposition and leaves two of the three untyped for anything reading the
+        # file. The writer emits a header pair per family instead, and this is
+        # the row that says so.
+        families = parse_exposition(watchdog.render_textfile_metrics(self._state()))
+        self.assertEqual(len(families), 8, f"eight families, got {sorted(families)}")
+        for name, family in families.items():
+            with self.subTest(metric=name):
+                self.assertIn(family["type"], ("gauge", "counter"))
+                self.assertTrue(family["help"], f"{name} carries no # HELP text")
+                self.assertTrue(family["help"].endswith("."), "HELP is a sentence")
+
+    def test_the_ratio_column_is_not_published_as_a_byte_count(self):
+        text = watchdog.render_textfile_metrics(self._state())
+        self.assertNotIn("wal_ratio", text)
+        self.assertNotIn(repr(self.STATE["sqlite"]["wal_ratio"]), text)
+
+    def test_a_null_wal_omits_the_sample_rather_than_publishing_a_zero(self):
+        # plan.md Step 4, premise 6a. A zero is indistinguishable from a freshly
+        # checkpointed WAL once it is a point on a Grafana graph, and
+        # task-1786152655-55f9 measured an orphaned 41.71 MiB WAL recording as
+        # all-null -- so the null case is exactly the case that must not lie.
+        state = self._state()
+        state["sqlite"] = {"db_bytes": None, "wal_bytes": None, "shm_bytes": None, "wal_ratio": None}
+        text = watchdog.render_textfile_metrics(state)
+
+        families = parse_exposition(text)
+        for name in ("plex_sqlite_wal_bytes", "plex_sqlite_db_bytes", "plex_sqlite_shm_bytes"):
+            with self.subTest(metric=name):
+                self.assertNotIn(
+                    name, families,
+                    "a null measurement must omit the family outright -- a `# TYPE` "
+                    "with no sample still tells a reader the series exists",
+                )
+        self.assertNotIn("plex_sqlite", text)
+        # The rest of the document is unaffected: omission is per family.
+        self.assertIn("plex_watchdog_events_total", families)
+
+    def test_a_zero_byte_wal_is_published_because_zero_is_a_measurement(self):
+        # The other half of the same distinction, and the one that keeps the row
+        # above from being satisfiable by "never publish the WAL at all".
+        state = self._state()
+        state["sqlite"] = {"db_bytes": 42834944, "wal_bytes": 0, "shm_bytes": None, "wal_ratio": 0.0}
+        families = parse_exposition(watchdog.render_textfile_metrics(state))
+
+        self.assertEqual(families["plex_sqlite_wal_bytes"]["samples"], [({}, 0.0)])
+        self.assertIn("plex_sqlite_db_bytes", families)
+        self.assertNotIn("plex_sqlite_shm_bytes", families)
+
+    def test_a_label_value_carrying_a_quote_or_a_backslash_is_escaped(self):
+        # `hold_site` is a compiler-supplied string. It has never carried either
+        # character, which is exactly why an unescaped writer would ship green
+        # for months and then emit one unparseable file on the day it does.
+        state = self._state()
+        state["hold_seconds_max"] = {'Odd"Site\\cpp:1': 1.5, "Line\nBreak.cpp:2": 0.5}
+        text = watchdog.render_textfile_metrics(state)
+
+        self.assertIn(r'hold_site="Odd\"Site\\cpp:1"', text)
+        self.assertIn(r'hold_site="Line\nBreak.cpp:2"', text)
+        self.assertEqual(
+            len(text.split("\n")), len(self.GOLDEN.split("\n")) + 1,
+            "an unescaped newline would add a line to the document",
+        )
+        self.assertEqual(
+            _samples_by_label(parse_exposition(text), "plex_watchdog_hold_seconds_max", "hold_site"),
+            {'Odd"Site\\cpp:1': 1.5, "Line\nBreak.cpp:2": 0.5},
+        )
+
+    def test_an_empty_state_renders_an_empty_document_not_a_file_of_headers(self):
+        empty = watchdog.render_textfile_metrics(watchdog._new_metrics_state())
+        self.assertEqual(empty, "")
+        self.assertEqual(parse_exposition(empty), {})
+
+    def test_series_are_ordered_by_label_so_two_renders_are_byte_identical(self):
+        # node-exporter re-serves this file verbatim; a set-ordered document
+        # would churn the bytes on every write for no change in meaning.
+        shuffled = self._state()
+        shuffled["events"] = dict(reversed(list(shuffled["events"].items())))
+        shuffled["probe_seconds"] = {"lsof": 2.0, "fuser": 0.031}
+        self.assertEqual(watchdog.render_textfile_metrics(shuffled), self.GOLDEN)
+
+
+class TestTextfileMetricsFromTheRecord(unittest.TestCase):
+    """The engine half: the metric state is derived from the IN-MEMORY record.
+
+    plan.md Step 4, premise 5 -- the emitter must not read the day's JSONL back.
+    A counter that resets when the unit restarts is not a defect (Prometheus
+    handles counter resets); a reader of `plex_blip_diagnostics_*.jsonl` is
+    `task-1786137337-99cf`'s subject and that file mixes 8-key, 10-key and
+    11-key records on the deploy day.
+    """
+
+    TRIGGERS = {
+        "TX_HELD": {
+            "event_type": "TX_HELD",
+            "delay_ms": 540.0,
+            "line": "Aug 07, 2026 06:37:33.273 [1] WARN - Held transaction for too long (X): 0.540000 seconds",
+            "hold_site": "StatisticsManager.cpp:288",
+            "live_connections": 4,
+        },
+        "TX_STALL": {
+            "event_type": "TX_STALL",
+            "delay_ms": 120.0,
+            "line": "Aug 07, 2026 06:38:11.899 [101] WARN - Took too long (0.120000 seconds) to start a transaction",
+        },
+        "SLOW_QUERY": {
+            "event_type": "SLOW_QUERY",
+            "delay_ms": 4977.0,
+            "line": "Aug 07, 2026 06:39:00.000 [1] DEBUG - Completed: [x] 200 GET /library (7 live) 4977ms",
+            "live_connections": 7,
+        },
+    }
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_4a_")
+        self.log_path = os.path.join(self.test_dir, "mock_plex.log")
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("Aug 07, 2026 06:30:00.000 [100] INFO - Server starting up\n")
+        self.out_dir = os.path.join(self.test_dir, "diagnostics")
+        self.textfile_dir = os.path.join(self.test_dir, "textfile_collector")
+        os.makedirs(self.textfile_dir, exist_ok=True)
+        self.db_path = os.path.join(self.test_dir, "com.plexapp.plugins.library.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _engine(self, **overrides):
+        kwargs = dict(
+            log_path=self.log_path,
+            output_dir=self.out_dir,
+            db_pattern=self.db_path + "*",
+            dry_run=False,
+            textfile_dir=self.textfile_dir,
+        )
+        kwargs.update(overrides)
+        return watchdog.WatchdogEngine(**kwargs)
+
+    def _prom_path(self):
+        return os.path.join(self.textfile_dir, watchdog.TEXTFILE_NAME)
+
+    def _published(self):
+        with open(self._prom_path(), "r", encoding="utf-8") as f:
+            return parse_exposition(f.read())
+
+    def _write_db(self, db=None, wal=None, shm=None):
+        for suffix, size in ((".db", db), (".db-wal", wal), (".db-shm", shm)):
+            if size is None:
+                continue
+            path = self.db_path if suffix == ".db" else self.db_path + suffix[3:]
+            with open(path, "wb") as f:
+                f.truncate(size)
+
+    # -- counters -----------------------------------------------------------
+
+    def test_counters_are_monotonic_across_three_successive_snapshots(self):
+        engine = self._engine()
+        seen = []
+        for name in ("TX_HELD", "TX_STALL", "TX_HELD"):
+            engine.capture_snapshot(self.TRIGGERS[name])
+            seen.append(_samples_by_label(self._published(), "plex_watchdog_events_total", "event_type"))
+
+        self.assertEqual(seen[0], {"TX_HELD": 1.0})
+        self.assertEqual(seen[1], {"TX_HELD": 1.0, "TX_STALL": 1.0})
+        self.assertEqual(seen[2], {"TX_HELD": 2.0, "TX_STALL": 1.0})
+        for earlier, later in zip(seen, seen[1:]):
+            for event_type, count in earlier.items():
+                with self.subTest(event_type=event_type):
+                    self.assertGreaterEqual(
+                        later[event_type], count, "a counter may not go backwards"
+                    )
+        self.assertEqual(sum(seen[-1].values()), 3.0, "one snapshot, one increment")
+
+    def test_the_counter_lives_in_memory_and_survives_the_jsonl_being_deleted(self):
+        # premise 5, measured rather than promised: the artifact is removed
+        # between snapshots and the count still carries. An emitter that
+        # re-derived its counters from the day's file would restart at 1 here.
+        engine = self._engine()
+        engine.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        for stale in pathlib.Path(self.out_dir).glob("*.jsonl"):
+            stale.unlink()
+        engine.capture_snapshot(self.TRIGGERS["TX_HELD"])
+
+        self.assertEqual(
+            _samples_by_label(self._published(), "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 2.0},
+        )
+
+    def test_a_second_engine_starts_its_counters_at_zero_and_that_is_the_contract(self):
+        # The other side of premise 5: a unit restart resets the counter, which
+        # Prometheus handles, and NOT reading the mixed-schema artifact back is
+        # the trade that buys it. Pinned so a later row cannot quietly add the
+        # read without `task-1786137337-99cf` coming with it.
+        first = self._engine()
+        first.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        first.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        self.assertEqual(
+            _samples_by_label(self._published(), "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 2.0},
+        )
+
+        second = self._engine()
+        second.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        self.assertEqual(
+            _samples_by_label(self._published(), "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 1.0},
+        )
+
+    def test_the_emitter_names_no_diagnostics_artifact_anywhere_in_its_source(self):
+        # An AST/source census beside the behavioural row above, because the
+        # behavioural one passes for an emitter that reads the file and happens
+        # to add to it rather than replacing.
+        for func in (
+            watchdog.WatchdogEngine._observe_record,
+            watchdog.WatchdogEngine.write_textfile_metrics,
+            watchdog.WatchdogEngine.refresh_textfile_gauges,
+            watchdog.render_textfile_metrics,
+        ):
+            with self.subTest(func=func.__name__):
+                source = inspect.getsource(func)
+                self.assertNotIn("plex_blip_diagnostics", source)
+                self.assertNotIn("output_dir", source)
+                self.assertNotIn("json.load", source)
+
+    def test_hold_seconds_max_keeps_the_longest_hold_per_site(self):
+        engine = self._engine()
+        long_hold = {**self.TRIGGERS["TX_HELD"], "delay_ms": 2510.0}
+        short_hold = {**self.TRIGGERS["TX_HELD"], "delay_ms": 540.0}
+        other_site = {**self.TRIGGERS["TX_HELD"], "delay_ms": 1020.0,
+                      "hold_site": "MetadataItemSetting.cpp:459"}
+
+        for trigger in (long_hold, short_hold, other_site):
+            engine.capture_snapshot(trigger)
+
+        self.assertEqual(
+            _samples_by_label(self._published(), "plex_watchdog_hold_seconds_max", "hold_site"),
+            {"StatisticsManager.cpp:288": 2.51, "MetadataItemSetting.cpp:459": 1.02},
+            "the MAX per site, in SECONDS -- a later shorter hold must not lower it",
+        )
+
+    def test_a_waiter_trigger_publishes_no_hold_site_series(self):
+        engine = self._engine()
+        engine.capture_snapshot(self.TRIGGERS["TX_STALL"])
+        self.assertNotIn(
+            "plex_watchdog_hold_seconds_max", self._published(),
+            "TX_STALL is the waiter side and names no code site; a null hold_site "
+            "must not become a series labelled with the empty string",
+        )
+
+    def test_live_connections_publishes_the_count_the_last_trigger_carried(self):
+        engine = self._engine()
+        engine.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        self.assertEqual(self._published()["plex_live_connections"]["samples"], [({}, 4.0)])
+
+        engine.capture_snapshot(self.TRIGGERS["SLOW_QUERY"])
+        self.assertEqual(self._published()["plex_live_connections"]["samples"], [({}, 7.0)])
+
+        # A trigger that carries no count must not zero the gauge: the saturation
+        # counter rides on Request:/Completed: lines only, so "absent" here means
+        # "this line did not say", not "there are no connections".
+        engine.capture_snapshot(self.TRIGGERS["TX_STALL"])
+        self.assertEqual(self._published()["plex_live_connections"]["samples"], [({}, 7.0)])
+
+    # -- probes -------------------------------------------------------------
+
+    def test_probe_status_is_one_for_ok_alone_across_all_four_run_cmd_statuses(self):
+        # The four statuses are produced by the SHIPPED `_run_cmd` rather than
+        # typed into a fixture, so the row cannot drift from the vocabulary
+        # `test_run_cmd_status_vocabulary_is_exactly_four_spellings` pins.
+        not_executable = os.path.join(self.test_dir, "probe.sh")
+        with open(not_executable, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(not_executable, 0o644)
+
+        results = {
+            "ok": watchdog._run_cmd([sys.executable, "-c", "print('held')"], timeout=5.0),
+            "timeout": watchdog._run_cmd(
+                [sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2
+            ),
+            "missing": watchdog._run_cmd(["plex-blip-no-such-binary-xyz"], timeout=0.5),
+            "error": watchdog._run_cmd([not_executable], timeout=0.5),
+        }
+        self.assertEqual(
+            {name: res["status"] for name, res in results.items()},
+            {"ok": "ok", "timeout": "timeout", "missing": "missing", "error": "error"},
+            "the four spellings must be REACHED, or this row scores nothing",
+        )
+
+        engine = self._engine()
+        engine._observe_record({
+            "trigger_event": "TX_STALL",
+            "lock_holders": {"fuser": results["ok"], "lsof": results["missing"]},
+            "process_traces": {"pidstat": results["timeout"], "ps_aux_t": results["error"]},
+            "sqlite": {"db_bytes": None, "wal_bytes": None, "shm_bytes": None, "wal_ratio": None},
+        })
+        engine.write_textfile_metrics()
+
+        self.assertEqual(
+            _samples_by_label(self._published(), "plex_watchdog_probe_status", "probe"),
+            {"fuser": 1.0, "lsof": 0.0, "pidstat": 0.0, "ps_aux_t": 0.0},
+            "1 for `ok` ALONE -- missing, timeout and error are each a 0, and the "
+            "metric that would have surfaced the absent psmisc on day one is the "
+            "one that must not report a missing binary as healthy",
+        )
+
+    def test_the_probe_duration_is_the_measured_elapsed_ms_in_seconds(self):
+        engine = self._engine()
+        timed_out = watchdog._run_cmd(
+            [sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2
+        )
+        engine._observe_record({
+            "trigger_event": "TX_STALL",
+            "lock_holders": {"lsof": timed_out},
+            "process_traces": {},
+            "sqlite": {"db_bytes": None, "wal_bytes": None, "shm_bytes": None, "wal_ratio": None},
+        })
+        engine.write_textfile_metrics()
+
+        published = _samples_by_label(
+            self._published(), "plex_watchdog_probe_duration_seconds", "probe"
+        )
+        self.assertEqual(
+            published["lsof"], timed_out["elapsed_ms"] / 1000.0,
+            "the gauge is the probe's own measurement, converted -- never the "
+            "timeout it was given and never the milliseconds unconverted",
+        )
+        self.assertGreaterEqual(published["lsof"], 0.18)
+        self.assertLess(published["lsof"], 2.0)
+
+    # -- the two silences ---------------------------------------------------
+
+    def test_a_dry_run_writes_nothing_into_the_collector_directory(self):
+        # plan.md Step 4, premise 6b. `_dry_run_fallback` keeps the measurement
+        # but `task-1786128505-658f` measured `elapsed_ms` pinned only by
+        # PRESENCE, so a fabricated 999.0 would land on a Grafana graph as a real
+        # probe duration. The collector directory is the boundary.
+        engine = self._engine(dry_run=True)
+        engine.capture_snapshot(self.TRIGGERS["TX_HELD"])
+
+        self.assertEqual(
+            sorted(os.listdir(self.textfile_dir)), [],
+            "--dry-run must leave the collector directory EMPTY -- not a stale "
+            "file, not a .tmp, not an empty .prom",
+        )
+        # ...and the snapshot itself still lands, so the silence is not a crash.
+        self.assertEqual(len(list(pathlib.Path(self.out_dir).glob("*.jsonl"))), 1)
+
+    def test_an_unset_textfile_dir_writes_nothing_and_is_the_default(self):
+        # The flag defaults to unset and unset means silence; the wiring is 4b's.
+        default = inspect.signature(watchdog.WatchdogEngine.__init__).parameters["textfile_dir"].default
+        self.assertIsNone(default, "--textfile-dir must default to unset")
+
+        engine = self._engine(textfile_dir=None)
+        engine.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        self.assertEqual(sorted(os.listdir(self.textfile_dir)), [])
+        self.assertEqual(len(list(pathlib.Path(self.out_dir).glob("*.jsonl"))), 1)
+
+    def test_a_null_wal_reaches_the_collector_file_as_an_omitted_sample(self):
+        # The omission proven end-to-end through `capture_snapshot`, not only
+        # through the renderer: the db is present, the -wal is not.
+        self._write_db(db=4096)
+        engine = self._engine()
+        engine.capture_snapshot(self.TRIGGERS["TX_STALL"])
+
+        families = self._published()
+        self.assertEqual(families["plex_sqlite_db_bytes"]["samples"], [({}, 4096.0)])
+        self.assertNotIn("plex_sqlite_wal_bytes", families)
+        self.assertNotIn("plex_sqlite_shm_bytes", families)
+
+        # And with the -wal in place the same call publishes its true size.
+        self._write_db(wal=43735168)
+        engine.capture_snapshot(self.TRIGGERS["TX_STALL"])
+        self.assertEqual(
+            self._published()["plex_sqlite_wal_bytes"]["samples"], [({}, 43735168.0)]
+        )
+
+    # -- the record is not widened ------------------------------------------
+
+    def test_the_record_key_set_is_untouched_by_the_metrics_row(self):
+        # Acceptance 2 as a live equality here as well as at :695 and :1454:
+        # metrics are a SECOND OUTPUT, not a wider record.
+        self._write_db(db=4096, wal=1024)
+        engine = self._engine()
+        out_path = engine.capture_snapshot(self.TRIGGERS["TX_HELD"])
+        with open(out_path, "r", encoding="utf-8") as f:
+            record = json.loads(f.readline())
+
+        self.assertEqual(set(record), TestSnapshotStructuredShape.TOP_LEVEL_KEYS)
+        self.assertEqual(set(record["sqlite"]), TestSqliteWalStateCapture.WAL_KEYS)
+        self.assertEqual(
+            record["sqlite"]["wal_bytes"],
+            self._published()["plex_sqlite_wal_bytes"]["samples"][0][1],
+            "the published gauge must be the record's own number, so the two "
+            "outputs cannot disagree about the same measurement",
+        )
+
+
+class TestTextfileWriteIsAtomic(unittest.TestCase):
+    """Write-and-rename, proven by forcing the failure rather than asserting it.
+
+    node-exporter reads this file on its own schedule, so a reader can land
+    between the `write()` and the rename. `os.replace` is atomic ONLY within a
+    filesystem, which is why the temporary file being a sibling of the target is
+    a correctness property and not a matter of style.
+    """
+
+    PREVIOUS = "# HELP plex_sqlite_wal_bytes Size of the SQLite WAL file.\n"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_atomic_")
+        self.log_path = os.path.join(self.test_dir, "mock_plex.log")
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("Aug 07, 2026 06:30:00.000 [100] INFO - Server starting up\n")
+        self.out_dir = os.path.join(self.test_dir, "diagnostics")
+        self.textfile_dir = os.path.join(self.test_dir, "textfile_collector")
+        os.makedirs(self.textfile_dir, exist_ok=True)
+        self.engine = watchdog.WatchdogEngine(
+            log_path=self.log_path,
+            output_dir=self.out_dir,
+            db_pattern=os.path.join(self.test_dir, "absent.db*"),
+            dry_run=False,
+            textfile_dir=self.textfile_dir,
+        )
+        self.engine._metrics["events"]["TX_HELD"] = 1
+        self.target = os.path.join(self.textfile_dir, watchdog.TEXTFILE_NAME)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    class _OsShim:
+        """Proxies the real `os` and intercepts `replace` alone -- the same
+        module-attribute rebinding `test_the_base_database_is_chosen_by_name...`
+        uses for `glob`, so the failure is injected at the seam the code
+        actually goes through rather than by monkeypatching the stdlib."""
+
+        def __init__(self, real, on_replace):
+            self._real = real
+            self._on_replace = on_replace
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def replace(self, src, dst):
+            return self._on_replace(src, dst)
+
+    def _with_replace(self, on_replace):
+        real_os = watchdog.os
+        watchdog.os = self._OsShim(real_os, on_replace)
+        try:
+            return self.engine.write_textfile_metrics()
+        finally:
+            watchdog.os = real_os
+
+    def test_the_temporary_file_is_a_sibling_of_the_target(self):
+        seen = {}
+
+        def _record(src, dst):
+            seen["src"], seen["dst"] = src, dst
+            return os.replace(src, dst)
+
+        self._with_replace(_record)
+        self.assertEqual(seen["dst"], self.target)
+        self.assertEqual(
+            os.path.dirname(seen["src"]), os.path.dirname(seen["dst"]),
+            "a rename ACROSS filesystems is not atomic, so the temporary file "
+            f"must be a sibling of the target: {seen}",
+        )
+        self.assertNotEqual(seen["src"], seen["dst"])
+        self.assertTrue(os.path.exists(self.target))
+
+    def test_a_failure_between_the_write_and_the_rename_leaves_the_previous_bytes(self):
+        with open(self.target, "w", encoding="utf-8") as f:
+            f.write(self.PREVIOUS)
+        before = os.stat(self.target)
+
+        self.engine._metrics["events"]["TX_HELD"] = 99
+        self._with_replace(lambda src, dst: (_ for _ in ()).throw(OSError("ENOSPC")))
+
+        with open(self.target, "r", encoding="utf-8") as f:
+            after_text = f.read()
+        self.assertEqual(
+            after_text, self.PREVIOUS,
+            "a scrape landing on the failed write must read the PREVIOUS document, "
+            "never a truncated one",
+        )
+        self.assertEqual(os.stat(self.target).st_ino, before.st_ino)
+        self.assertEqual(
+            sorted(os.listdir(self.textfile_dir)), [watchdog.TEXTFILE_NAME],
+            "the temporary file must not be left behind for the collector to trip on",
+        )
+
+    def test_a_failure_on_the_first_write_leaves_no_target_at_all(self):
+        self._with_replace(lambda src, dst: (_ for _ in ()).throw(OSError("EROFS")))
+        self.assertFalse(
+            os.path.exists(self.target),
+            "an absent file is a scrape with no samples; a half-written one is a "
+            "parse error for every series in it",
+        )
+        self.assertEqual(sorted(os.listdir(self.textfile_dir)), [])
+
+    def test_a_failing_metrics_write_never_costs_the_snapshot(self):
+        # The same trade `_wal_state` makes: a nice-to-have may not abort the
+        # capture. The collector directory is removed out from under the engine.
+        shutil.rmtree(self.textfile_dir)
+        os.makedirs(self.textfile_dir)
+        os.chmod(self.textfile_dir, 0o500)
+        try:
+            out_path = self.engine.capture_snapshot(
+                {"event_type": "TX_STALL", "delay_ms": 120.0, "line": "x"}
+            )
+        finally:
+            os.chmod(self.textfile_dir, 0o700)
+
+        with open(out_path, "r", encoding="utf-8") as f:
+            record = json.loads(f.readline())
+        self.assertEqual(set(record), TestSnapshotStructuredShape.TOP_LEVEL_KEYS)
+
+    def test_the_target_is_replaced_by_rename_and_never_rewritten_in_place(self):
+        first = self.engine.write_textfile_metrics()
+        first_ino = os.stat(first).st_ino
+        self.engine._metrics["events"]["TX_STALL"] = 7
+        second = self.engine.write_textfile_metrics()
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(
+            os.stat(second).st_ino, first_ino,
+            "an in-place rewrite keeps the inode and is exactly the window this "
+            "row exists to close",
+        )
+        self.assertEqual(
+            _samples_by_label(
+                parse_exposition(pathlib.Path(second).read_text(encoding="utf-8")),
+                "plex_watchdog_events_total",
+                "event_type",
+            ),
+            {"TX_HELD": 1.0, "TX_STALL": 7.0},
+        )
+
+
+class TestIdleGaugeRefreshAndTheRealCli(unittest.TestCase):
+    """plan.md Step 4, premise 4 -- the gauges must move BETWEEN blips.
+
+    `capture_snapshot` is reached only from `run()`'s trigger branch, so a
+    `.prom` written there alone leaves node-exporter re-serving one stale sample
+    until the next stall and the operator MANUFACTURING a blip to see the graph
+    the step's own Demo promises. `run()` already gets `None` out of
+    `read_line(timeout=0.5)` on every idle poll, so the refresh goes in a branch
+    that already exists.
+
+    It is STAT-ONLY. No `_run_cmd` call site is added, which is what keeps
+    `task-1786124338-5963` unarmed and the module header's 8.0s bound true.
+    """
+
+    WAL_BYTES = 43735168      # the live CT 110 pathology, and Step 3's fixture
+    DB_BYTES = 41943040       # 40 MiB
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="plex_watchdog_idle_")
+        self.log_path = os.path.join(self.test_dir, "mock_plex.log")
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("Aug 07, 2026 06:30:00.000 [100] INFO - Server starting up\n")
+        self.out_dir = os.path.join(self.test_dir, "diagnostics")
+        self.textfile_dir = os.path.join(self.test_dir, "textfile_collector")
+        os.makedirs(self.textfile_dir, exist_ok=True)
+        self.db_path = os.path.join(self.test_dir, "com.plexapp.plugins.library.db")
+        self.target = os.path.join(self.textfile_dir, watchdog.TEXTFILE_NAME)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _sparse(self, path, size):
+        with open(path, "wb") as f:
+            f.truncate(size)
+        self.assertEqual(os.path.getsize(path), size, "fixture did not land at its own size")
+
+    def _engine(self, **overrides):
+        kwargs = dict(
+            log_path=self.log_path,
+            output_dir=self.out_dir,
+            db_pattern=self.db_path + "*",
+            dry_run=False,
+            textfile_dir=self.textfile_dir,
+            textfile_refresh_sec=0.0,
+        )
+        kwargs.update(overrides)
+        return watchdog.WatchdogEngine(**kwargs)
+
+    def _published(self):
+        return parse_exposition(pathlib.Path(self.target).read_text(encoding="utf-8"))
+
+    def test_the_refresh_re_stats_the_database_with_no_trigger_at_all(self):
+        self._sparse(self.db_path, self.DB_BYTES)
+        self._sparse(self.db_path + "-wal", 1024)
+        engine = self._engine()
+
+        engine.refresh_textfile_gauges()
+        self.assertEqual(self._published()["plex_sqlite_wal_bytes"]["samples"], [({}, 1024.0)])
+
+        # The WAL grows while Plex is perfectly quiet -- no log line, no trigger.
+        self._sparse(self.db_path + "-wal", self.WAL_BYTES)
+        engine.refresh_textfile_gauges()
+        self.assertEqual(
+            self._published()["plex_sqlite_wal_bytes"]["samples"],
+            [({}, float(self.WAL_BYTES))],
+            "the gauge must follow the file between blips, or the Demo needs a "
+            "manufactured stall to show anything",
+        )
+
+    def test_the_refresh_honours_its_interval(self):
+        self._sparse(self.db_path, self.DB_BYTES)
+        self._sparse(self.db_path + "-wal", 1024)
+        engine = self._engine(textfile_refresh_sec=3600.0)
+
+        self.assertIsNotNone(engine.refresh_textfile_gauges(), "the first poll publishes")
+        self._sparse(self.db_path + "-wal", self.WAL_BYTES)
+        self.assertIsNone(
+            engine.refresh_textfile_gauges(),
+            "a second refresh inside the window must not rewrite the file",
+        )
+        self.assertEqual(self._published()["plex_sqlite_wal_bytes"]["samples"], [({}, 1024.0)])
+
+    def test_the_refresh_preserves_the_counters_it_did_not_measure(self):
+        self._sparse(self.db_path, self.DB_BYTES)
+        engine = self._engine()
+        engine.capture_snapshot({
+            "event_type": "TX_HELD", "delay_ms": 540.0, "line": "x",
+            "hold_site": "StatisticsManager.cpp:288",
+        })
+        engine.refresh_textfile_gauges()
+
+        families = self._published()
+        self.assertEqual(
+            _samples_by_label(families, "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 1.0},
+            "a gauge refresh rewrites the whole document, so it must carry the "
+            "counters forward rather than publishing a reset",
+        )
+        self.assertEqual(families["plex_sqlite_db_bytes"]["samples"], [({}, float(self.DB_BYTES))])
+
+    def test_the_refresh_is_silent_under_dry_run_and_without_a_collector_dir(self):
+        self._sparse(self.db_path, self.DB_BYTES)
+        for label, engine in (
+            ("dry-run", self._engine(dry_run=True)),
+            ("unset", self._engine(textfile_dir=None)),
+        ):
+            with self.subTest(engine=label):
+                self.assertIsNone(engine.refresh_textfile_gauges())
+        self.assertEqual(sorted(os.listdir(self.textfile_dir)), [])
+
+    def test_the_refresh_spawns_no_process_and_adds_no_probe_call_site(self):
+        # `task-1786124338-5963` stays unarmed and the header's derived bound
+        # stays true only while this path runs no probe. Pinned to the shipped
+        # AST, the way design C1.4's cheapness is pinned for `_wal_state`.
+        source = textwrap.dedent(inspect.getsource(watchdog.WatchdogEngine.refresh_textfile_gauges))
+        tree = ast.parse(source)
+        called = {ast.unparse(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        forbidden = sorted(
+            c for c in called
+            if any(t in c.lower() for t in ("_run_cmd", "subprocess", "popen", "sqlite3", "connect"))
+        )
+        self.assertEqual(forbidden, [], f"the idle refresh must stay stat-only: {forbidden}")
+
+    def test_the_idle_branch_of_run_is_what_publishes_before_any_trigger(self):
+        # The refresh proven THROUGH `run()`, not by calling it directly: the
+        # trigger arrives only after the file already exists, so the publication
+        # cannot be attributed to `capture_snapshot`.
+        self._sparse(self.db_path, self.DB_BYTES)
+        self._sparse(self.db_path + "-wal", self.WAL_BYTES)
+        engine = self._engine()
+
+        thread = threading.Thread(target=engine.run, kwargs={"max_triggers": 1}, daemon=True)
+        thread.start()
+        deadline = time.time() + 10.0
+        while time.time() < deadline and not os.path.exists(self.target):
+            time.sleep(0.1)
+        published_before_any_trigger = os.path.exists(self.target)
+        idle_document = pathlib.Path(self.target).read_text(encoding="utf-8") if published_before_any_trigger else ""
+
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write("Aug 07, 2026 06:37:33.273 [1] WARN - Held transaction for too "
+                    "long (Statistics/StatisticsManager.cpp:288): 0.540000 seconds\n")
+            f.flush()
+        thread.join(timeout=30.0)
+        self.assertFalse(thread.is_alive(), "run() did not stop after --max-triggers 1")
+
+        self.assertTrue(
+            published_before_any_trigger,
+            "run()'s idle branch must publish the gauges before the first trigger",
+        )
+        idle = parse_exposition(idle_document)
+        self.assertEqual(idle["plex_sqlite_wal_bytes"]["samples"], [({}, float(self.WAL_BYTES))])
+        self.assertNotIn(
+            "plex_watchdog_events_total", idle,
+            "no trigger has fired yet, so there is no counter to publish",
+        )
+
+        after = self._published()
+        self.assertEqual(
+            _samples_by_label(after, "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 1.0},
+        )
+        self.assertEqual(after["plex_sqlite_wal_bytes"]["samples"], [({}, float(self.WAL_BYTES))])
+
+    def test_the_real_cli_publishes_the_true_wal_size_with_dry_run_not_set(self):
+        # ACCEPTANCE 9, the Demo, as a test rather than only as a transcript.
+        # `--dry-run` is NOT passed, the fixture is Step 3's own 40 MiB database
+        # beside a 43,735,168-byte -wal, and the number is read back OUT of the
+        # emitted file. Same fault the Step 3 cross-artifact join drove, so the
+        # two records compare.
+        self._sparse(self.db_path, self.DB_BYTES)
+        self._sparse(self.db_path + "-wal", self.WAL_BYTES)
+
+        cmd = [
+            sys.executable, str(WATCHDOG_SCRIPT),
+            "--log-path", self.log_path,
+            "--output-dir", self.out_dir,
+            "--db-pattern", self.db_path + "*",
+            "--textfile-dir", self.textfile_dir,
+            "--max-triggers", "1",
+        ]
+        self.assertNotIn("--dry-run", cmd, "the Demo runs the live path")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(1.0)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write("Aug 07, 2026 06:37:33.273 [1] WARN - Held transaction for too "
+                        "long (Statistics/StatisticsManager.cpp:288): 0.540000 seconds\n")
+                f.flush()
+            stdout, stderr = proc.communicate(timeout=60)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        self.assertEqual(proc.returncode, 0, f"real CLI run failed: {stderr}\n{stdout}")
+
+        document = pathlib.Path(self.target).read_text(encoding="utf-8")
+        self.assertIn(
+            f"plex_sqlite_wal_bytes {self.WAL_BYTES}\n", document,
+            "the Demo's whole claim: the pathology, at its true size, in the file "
+            "node-exporter serves",
+        )
+        families = parse_exposition(document)
+        self.assertEqual(families["plex_sqlite_wal_bytes"]["samples"], [({}, float(self.WAL_BYTES))])
+        self.assertEqual(families["plex_sqlite_db_bytes"]["samples"], [({}, float(self.DB_BYTES))])
+        self.assertEqual(
+            _samples_by_label(families, "plex_watchdog_events_total", "event_type"),
+            {"TX_HELD": 1.0},
+        )
+        self.assertEqual(
+            _samples_by_label(families, "plex_watchdog_hold_seconds_max", "hold_site"),
+            {"StatisticsManager.cpp:288": 0.54},
+        )
+        # The live path ran real probes, so every one of them must have a status.
+        self.assertEqual(
+            set(_samples_by_label(families, "plex_watchdog_probe_status", "probe")),
+            {"fuser", "lsof", "pidstat", "ps_aux_t"},
+        )
 
 
 if __name__ == "__main__":

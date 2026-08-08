@@ -11,6 +11,10 @@ SQLite WAL state rides along on three os.stat calls -- no connection and no lock
 it adds nothing to the bound above and cannot join the contention it measures.
 The snapshot is bounded, not instant: a probe that blocks is itself the signal, so
 each one is allowed to run to its timeout and report the elapsed time it burned.
+With --textfile-dir set, the same in-memory findings are also published as Prometheus
+textfile metrics by atomic write-and-rename, and the gauge block is re-stat'ed from the
+idle poll so the WAL series moves between blips. That refresh runs no probe, so the
+bound above is a bound on this module and not merely on its trigger path.
 """
 
 import argparse
@@ -283,6 +287,146 @@ def _wal_state(db_path: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def _base_db(matched_dbs: list[str]) -> Optional[str]:
+    """Pick the base database out of an already-resolved `...library.db*` match set.
+
+    Selected by NAME and by an inclusive test, both deliberate. glob order is
+    filesystem order, so `matched_dbs[0]` would be a coin flip; and excluding the
+    two sidecars by name would still admit any OTHER `.db*` neighbour the pattern
+    sweeps up -- `-journal` from a rollback-mode database, or a `.db.bak` an
+    operator left behind. The base database is the match that ends in `.db`,
+    which is the one thing only it does.
+
+    Lifted VERBATIM out of `capture_snapshot` when the textfile refresh became a
+    second caller. It is a move, not a change: same predicate, same positional
+    pick among `.db` matches, same `None` when there is no database at all. One
+    spelling is the point -- two callers deriving the same path independently is
+    how `task-1786153086-9f13` came to exist one artifact over.
+    """
+    base_dbs = [p for p in matched_dbs if p.endswith(".db")]
+    return base_dbs[0] if base_dbs else None
+
+
+# The collector file design 5.2 names. node-exporter's textfile collector reads
+# every `*.prom` in its directory and re-serves it on each scrape.
+TEXTFILE_NAME = "plex_blip.prom"
+
+# (metric name, exposition type, HELP sentence). The four names design 5.2 spells
+# out carry the design's own HELP text verbatim, so the document and the file can
+# be read side by side; the other four are authored here because 5.2 renders them
+# under a shared header block, which leaves them untyped for anything parsing it.
+_SQLITE_GAUGES = (
+    ("plex_sqlite_wal_bytes", "wal_bytes", "Size of the SQLite WAL file."),
+    ("plex_sqlite_db_bytes", "db_bytes", "Size of the Plex library SQLite database."),
+    ("plex_sqlite_shm_bytes", "shm_bytes", "Size of the SQLite shared-memory index."),
+)
+
+
+def _new_metrics_state() -> Dict[str, Any]:
+    """The engine's in-memory metric state, and the renderer's only input.
+
+    Derived from the record `capture_snapshot` builds -- never from
+    `plex_blip_diagnostics_*.jsonl` read back. A counter that resets when the
+    unit restarts is not a defect, because Prometheus handles counter resets,
+    while a reader of that artifact would have to survive a day's file mixing
+    8-key, 10-key and 11-key records.
+    """
+    return {
+        "sqlite": {"db_bytes": None, "wal_bytes": None, "shm_bytes": None, "wal_ratio": None},
+        "events": {},
+        "hold_seconds_max": {},
+        "probe_seconds": {},
+        "probe_ok": {},
+        "live_connections": None,
+    }
+
+
+def _escape_label_value(value: str) -> str:
+    """Escape the three characters the exposition format reserves in a label value.
+
+    `hold_site` is a compiler-supplied string and has never carried any of them,
+    which is precisely why an unescaped writer would ship green for months and
+    then emit one unparseable file on the day it does.
+    """
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _render_value(value: Any) -> str:
+    """Render a sample value. Bools are the 1/0 the status gauge means, ints stay
+    exact (a byte count must not gain an `.0`), floats take the shortest
+    round-tripping spelling so two renders of one measurement are one string."""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    return repr(float(value))
+
+
+def render_textfile_metrics(metrics: Dict[str, Any]) -> str:
+    """Render the metric state as Prometheus text exposition (design 5.2).
+
+    A pure function of `metrics`: no clock, no filesystem, no probe. Two calls on
+    one state are byte-identical, because node-exporter re-serves this file
+    verbatim and a set-ordered document would churn the bytes on every write for
+    no change in meaning.
+
+    A NULL MEASUREMENT OMITS ITS FAMILY -- it does not publish a zero. A zero is
+    indistinguishable from a freshly checkpointed WAL once it is a point on a
+    graph, and an orphaned WAL already records as all-null upstream of here. A
+    `# TYPE` with no sample would be the same lie one level quieter: it tells a
+    reader the series exists.
+    """
+    blocks: list[str] = []
+
+    def family(name: str, mtype: str, help_text: str, samples: list) -> None:
+        if not samples:
+            return
+        lines = [f"# HELP {name} {help_text}", f"# TYPE {name} {mtype}"]
+        for label, label_value, value in samples:
+            labels = "" if label is None else f'{{{label}="{_escape_label_value(label_value)}"}}'
+            lines.append(f"{name}{labels} {_render_value(value)}")
+        blocks.append("\n".join(lines))
+
+    def labelled(source: Dict[str, Any], label: str) -> list:
+        # Sorted by LABEL VALUE, which is the series identity Prometheus uses.
+        return [(label, key, source[key]) for key in sorted(source)]
+
+    sqlite_block = metrics.get("sqlite") or {}
+    for name, key, help_text in _SQLITE_GAUGES:
+        value = sqlite_block.get(key)
+        family(name, "gauge", help_text, [] if value is None else [(None, None, value)])
+
+    family(
+        "plex_watchdog_events_total", "counter",
+        "Watchdog trigger events by type since start.",
+        labelled(metrics.get("events") or {}, "event_type"),
+    )
+    family(
+        "plex_watchdog_hold_seconds_max", "gauge",
+        "Longest transaction hold observed, by site.",
+        labelled(metrics.get("hold_seconds_max") or {}, "hold_site"),
+    )
+    family(
+        "plex_watchdog_probe_duration_seconds", "gauge",
+        "Duration of the last diagnostic probe.",
+        labelled(metrics.get("probe_seconds") or {}, "probe"),
+    )
+    family(
+        "plex_watchdog_probe_status", "gauge",
+        "1 when the last diagnostic probe returned ok, 0 otherwise.",
+        labelled(metrics.get("probe_ok") or {}, "probe"),
+    )
+
+    live = metrics.get("live_connections")
+    family(
+        "plex_live_connections", "gauge",
+        "Concurrent Plex connections seen on the last trigger line.",
+        [] if live is None else [(None, None, live)],
+    )
+
+    return "\n\n".join(blocks) + "\n" if blocks else ""
+
+
 def get_plex_fd_count(proc_dir: str = "/proc", dry_run: bool = False) -> int:
     """Dynamically count open file descriptors for Plex Media Server processes."""
     total_fds = 0
@@ -485,7 +629,9 @@ class WatchdogEngine:
         db_pattern: str = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db*",
         debounce_sec: float = 30.0,
         threshold_ms: float = 500.0,
-        dry_run: bool = False
+        dry_run: bool = False,
+        textfile_dir: Optional[str] = None,
+        textfile_refresh_sec: float = 15.0
     ):
         self.log_path = log_path
         self.output_dir = output_dir
@@ -493,7 +639,14 @@ class WatchdogEngine:
         self.debounce_sec = debounce_sec
         self.threshold_ms = threshold_ms
         self.dry_run = dry_run
+        # Unset means nothing is written -- the deployment wiring is a separate
+        # row, and a watchdog run by hand must not scribble into a collector
+        # directory nobody asked for.
+        self.textfile_dir = textfile_dir
+        self.textfile_refresh_sec = textfile_refresh_sec
         self.last_trigger_time: Optional[float] = None
+        self._metrics = _new_metrics_state()
+        self._last_textfile_write: Optional[float] = None
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -504,6 +657,114 @@ class WatchdogEngine:
 
     def record_trigger(self, now: float):
         self.last_trigger_time = now
+
+    def _observe_record(self, record: Dict[str, Any]):
+        """Fold one snapshot record into the in-memory metric state.
+
+        Reads the RECORD, which is the same object that reached disk a moment
+        ago, so the published gauge and the captured figure cannot disagree
+        about one measurement. Probe names come off the record's own keys rather
+        than a second list here, so a probe added upstream is published without
+        this method being told about it.
+        """
+        event_type = record.get("trigger_event")
+        if event_type:
+            self._metrics["events"][event_type] = self._metrics["events"].get(event_type, 0) + 1
+
+        hold_site = record.get("hold_site")
+        delay_ms = record.get("delay_ms")
+        if hold_site and isinstance(delay_ms, (int, float)):
+            seconds = delay_ms / 1000.0
+            previous = self._metrics["hold_seconds_max"].get(hold_site)
+            if previous is None or seconds > previous:
+                self._metrics["hold_seconds_max"][hold_site] = seconds
+
+        # Absent means "this line did not say", never "there are none": the
+        # count rides on Request:/Completed: lines only, so a waiter trigger
+        # arriving after a saturated one must not zero the gauge.
+        live = record.get("live_connections")
+        if isinstance(live, int):
+            self._metrics["live_connections"] = live
+
+        for group in ("lock_holders", "process_traces"):
+            for probe, result in (record.get(group) or {}).items():
+                if not isinstance(result, dict):
+                    continue
+                elapsed_ms = result.get("elapsed_ms")
+                if isinstance(elapsed_ms, (int, float)):
+                    self._metrics["probe_seconds"][probe] = elapsed_ms / 1000.0
+                # 1 for "ok" ALONE. This is the metric that would have surfaced
+                # the absent psmisc on day one instead of at 34 failures, so a
+                # missing binary reporting as healthy is the one thing it may
+                # not do.
+                self._metrics["probe_ok"][probe] = result.get("status") == "ok"
+
+        self._metrics["sqlite"] = dict(record.get("sqlite") or {})
+
+    def write_textfile_metrics(self) -> Optional[str]:
+        """Publish the metric state atomically, or stay silent.
+
+        Silent under --dry-run and with no collector directory. The dry-run
+        silence is a correctness property rather than tidiness: `_dry_run_fallback`
+        keeps a probe's measurement but the simulated arms are reachable with a
+        FABRICATED elapsed time, and Grafana cannot tell a measurement from a
+        fabrication once it is a number on a graph.
+
+        The temporary file is a SIBLING of the target, which is not a style
+        point -- `os.replace` is atomic only within a filesystem, and a scrape
+        can land between the write and the rename. A failure here returns None
+        and leaves the previous document in place: a collector file is a
+        nice-to-have and may never cost the capture that produced it, the same
+        trade `_wal_state` makes one layer down.
+        """
+        if not self.textfile_dir or self.dry_run:
+            return None
+
+        target = os.path.join(self.textfile_dir, TEXTFILE_NAME)
+        tmp_path = target + ".tmp"
+        text = render_textfile_metrics(self._metrics)
+        try:
+            os.makedirs(self.textfile_dir, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, target)
+        except OSError:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return None
+        return target
+
+    def refresh_textfile_gauges(self) -> Optional[str]:
+        """Re-stat the database from the idle poll and re-publish.
+
+        `capture_snapshot` is reached only from the trigger branch, so a file
+        written there alone leaves node-exporter re-serving one stale sample
+        between blips -- the WAL series would move only during a stall, which is
+        the one time nobody is watching a graph to see it start.
+
+        STAT-ONLY, and that is the whole licence for putting it on the poll: no
+        probe, no process, no connection, so the module's worst-case bound stays
+        a statement about the module rather than about its trigger path. The
+        counters are carried forward untouched, because the document is rewritten
+        whole and a refresh publishing a reset would read as a unit restart.
+        """
+        if not self.textfile_dir or self.dry_run:
+            return None
+
+        now = time.monotonic()
+        if (
+            self._last_textfile_write is not None
+            and (now - self._last_textfile_write) < self.textfile_refresh_sec
+        ):
+            return None
+        self._last_textfile_write = now
+
+        self._metrics["sqlite"] = _wal_state(_base_db(glob.glob(self.db_pattern)))
+        return self.write_textfile_metrics()
 
     def capture_snapshot(self, trigger: Dict[str, Any]) -> str:
         """Execute the bounded diagnostic probes and serialize to JSONL.
@@ -550,14 +811,10 @@ class WatchdogEngine:
         # db_pattern ends in `...library.db*`, so the matches hold the db, the
         # -wal and the -shm together.
         #
-        # Selected by NAME and by an inclusive test, both deliberate. glob order
-        # is filesystem order, so `matched_dbs[0]` would be a coin flip; and
-        # excluding the two sidecars by name would still admit any OTHER `.db*`
-        # neighbour the pattern sweeps up -- `-journal` from a rollback-mode
-        # database, or a `.db.bak` an operator left behind. The base database is
-        # the match that ends in `.db`, which is the one thing only it does.
-        base_dbs = [p for p in matched_dbs if p.endswith(".db")]
-        sqlite_state = _wal_state(base_dbs[0] if base_dbs else None)
+        # `_base_db` holds the selection rule and its reasoning; it is a lift out
+        # of these two lines, unchanged, made when the idle refresh became a
+        # second caller that must not re-derive the same path independently.
+        sqlite_state = _wal_state(_base_db(matched_dbs))
 
         record = {
             "timestamp": iso_ts,
@@ -608,6 +865,13 @@ class WatchdogEngine:
             f.write(json.dumps(record) + "\n")
             f.flush()
 
+        # Metrics are a SECOND OUTPUT, not a wider record, and they are published
+        # AFTER the capture has landed: a collector directory that is full, gone
+        # or read-only must cost the run its graph and never its evidence.
+        self._observe_record(record)
+        self.write_textfile_metrics()
+        self._last_textfile_write = time.monotonic()
+
         if self.dry_run:
             print(f"[DRY-RUN] Snapshot captured for {record['trigger_event']} -> {out_path}", file=sys.stdout)
 
@@ -633,6 +897,13 @@ class WatchdogEngine:
                         else:
                             # Debounced
                             pass
+                else:
+                    # The idle poll: `read_line` came back empty after its own
+                    # kernel sleep, so this branch costs nothing that was not
+                    # already being paid. Stat-only -- it is what makes the WAL
+                    # a series an operator can watch rather than a value that
+                    # only ever moves while a stall is in progress.
+                    self.refresh_textfile_gauges()
         except KeyboardInterrupt:
             pass
         finally:
@@ -647,6 +918,7 @@ def main():
     parser.add_argument("--debounce-sec", type=float, default=30.0, help="Cooldown window between snapshots in seconds")
     parser.add_argument("--threshold-ms", type=float, default=500.0, help="Slow query latency threshold in milliseconds")
     parser.add_argument("--dry-run", action="store_true", help="Perform simulated non-destructive verification check")
+    parser.add_argument("--textfile-dir", default=None, help="Prometheus node-exporter textfile collector directory; unset writes no metrics")
     parser.add_argument("--max-triggers", type=int, default=None, help="Stop running after N triggers (useful for testing and verification)")
 
     args = parser.parse_args()
@@ -656,7 +928,8 @@ def main():
         db_pattern=args.db_pattern,
         debounce_sec=args.debounce_sec,
         threshold_ms=args.threshold_ms,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        textfile_dir=args.textfile_dir
     )
     engine.run(max_triggers=args.max_triggers)
     return 0
