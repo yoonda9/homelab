@@ -101,6 +101,7 @@
     - grafana/provisioning/dashboards
     - grafana/dashboards
     - homepage
+    - blackbox
 
 # prometheus.yml is a READ-ONLY BIND MOUNT read once at start, so rendering it is
 # not delivering it: the compose spec of the prometheus service is unchanged, and
@@ -130,6 +131,33 @@
     # alert and operator gate that queries Prometheus is dark until it runs.
     mode: "0644"
   notify: Restart prometheus
+
+# The blackbox probe modules (plex-blip-manual-triage Step 5a). Same read-once
+# `:ro` bind mount as prometheus.yml above, so the handler is again the whole
+# delivery path — `docker compose up -d` leaves a container whose spec did not
+# change, and blackbox's `--config.enable-auto-reload` is OFF by default and not
+# passed in compose.yml.j2.
+- name: Render the blackbox probe modules
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: "{{ docker_host_project_dir }}/blackbox/blackbox.yml"
+    owner: root
+    group: root
+    # 0640, NOT the 0644 the prometheus render above uses, and the difference is
+    # measured rather than stylistic: `prom/*` is not one identity.
+    # prom/prometheus:v3.12.0 declares `USER nobody` and runs as uid 65534, which
+    # is why a group-only-readable config there was a crash loop. This image
+    # declares NO user — `docker inspect prom/blackbox-exporter:v0.28.0` gives
+    # `Config.User` "" and `id` inside it reports uid=0(root) — so root:root 0640
+    # is readable to the process exactly as traefik.yml's is.
+    #
+    # AND IT IS THE MODE THIS FILE WILL NEED. Step 5b adds the /status/sessions
+    # module, which must carry a live Plex API token; the sentence above the
+    # prometheus render — that its 0644 "carries no credential, so world-read
+    # costs nothing" — must stay true THERE, and it is false here the moment 5b
+    # lands. Choosing 0640 now means that row changes a module and not a mode.
+    mode: "0640"
+  notify: Restart blackbox-exporter
 
 # THE GRAFANA RENDERS STAY 0640 (and their dirs 0750) — that is a MEASUREMENT,
 # not an oversight, and it is recorded here because the 0644 above invites the

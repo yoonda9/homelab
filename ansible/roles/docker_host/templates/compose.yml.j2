@@ -268,6 +268,33 @@ services:
       - METRICS_PREFIX=plex
       - METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS=1800
 
+  # blackbox-exporter (plex-blip-manual-triage Step 5a): synthetic HTTP probes of
+  # Plex, independent of plex-exporter's expensive library sweep. Scrape-only
+  # like the four above, and here that is not a habit — /probe takes the URL it
+  # dials from a caller-supplied `target` query parameter, so a Traefik router in
+  # front of this container is an open HTTP client on the internal network, not
+  # just an exposed page.
+  #
+  # THE PROBED URLS ARE NOT HERE. They are the scrape jobs' `__param_target`
+  # (prometheus.yml.j2, row 5c); this file supplies only the process and its
+  # config. Prometheus reaches it at blackbox-exporter:9115 over the internal
+  # compose network — the port is the image's EXPOSE and needs no `ports:`.
+  blackbox-exporter:
+    image: {{ docker_host_blackbox_exporter_image }}
+    restart: unless-stopped
+    # THE FLAG IS NOT DECORATION. This image's own CMD is
+    # `--config.file=/etc/blackbox_exporter/config.yml`, so a service block with
+    # no `command:` boots happily on the image's built-in modules while the mount
+    # below sits at a path nothing reads — a live exporter serving the wrong
+    # config, which is the silent class scripts/test_traefik_config_shape.py's
+    # RELOAD_CONTRACT exists to catch. The flag and the mount target are one
+    # decision and that guard reads them as an agreement, so moving the
+    # container-side path on BOTH lines stays green and moving one reddens.
+    command:
+      - --config.file=/etc/blackbox_exporter/blackbox.yml
+    volumes:
+      - {{ docker_host_project_dir }}/blackbox/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+
 volumes:
   uptime-kuma-data:
   grafana-data:

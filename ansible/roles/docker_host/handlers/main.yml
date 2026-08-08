@@ -43,3 +43,17 @@
     chdir: "{{ docker_host_project_dir }}"
   register: docker_host_grafana_restart
   changed_when: docker_host_grafana_restart.rc == 0
+
+# Fourth service, same invariant, and the delivery path is the ONLY one this
+# container has (plex-blip-manual-triage Step 5a): blackbox.yml is a `:ro` bind
+# mount parsed at start, and the auto-reload this exporter does support
+# (`--config.enable-auto-reload`, off by default) is deliberately not passed in
+# compose.yml.j2 — so a rendered module reaches the running process through this
+# restart and nothing else. A new PROBE MODULE changes no compose spec, which is
+# what makes `docker compose up -d` a no-op over it.
+- name: Restart blackbox-exporter
+  ansible.builtin.command:
+    cmd: docker compose restart blackbox-exporter
+    chdir: "{{ docker_host_project_dir }}"
+  register: docker_host_blackbox_restart
+  changed_when: docker_host_blackbox_restart.rc == 0

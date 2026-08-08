@@ -26,8 +26,22 @@ Cloudflare DNS-01 defined) with a LAN-only `whoami` smoke route:
 - no plaintext secret literals (the Cloudflare token is a var/env reference);
 - site.yml applies docker_host to the docker_host group.
 
-Dual-mode (module-level test_*()->bool + main()->int), stdlib only, mirroring
-scripts/test_ansible_layout_shape.py (mem-1781891042-4495). Per mem-1781892715-142d
+Dual-mode (module-level test_*()->bool + main()->int), mirroring
+scripts/test_ansible_layout_shape.py (mem-1781891042-4495).
+
+STDLIB PLUS `yaml`, and the qualifier is Step-5a's — this header said "stdlib
+only" while it was true and is corrected here rather than left to read as a
+promise. `test_blackbox_modules_are_the_two_token_free_probes` asks whether a
+rendered config PARSES, and no regex answers that question; a document blackbox
+refuses to load is a crash loop, not a shape defect. The import is unconditional,
+never a `try/except ImportError` skip, which would be the vacuous green this repo
+has already paid for twice. It widens nothing: `test_plex_watchdog_unit_shape.py`,
+`test_plex_node_exporter_shape.py` and `test_plex_watchdog_deps_shape.py` already
+import it the same way, so the gate as a whole has depended on PyYAML since Step
+4 — measured present (6.0.3) under BOTH interpreters that can run this file,
+`.venv/bin/python` (which is `sys.executable` for `run_gate.py`) and `python3`.
+
+Per mem-1781892715-142d
 the regexes anchor on the inner attribute (the actual key/value), not just a
 section opener, so an empty stub could not satisfy the check. The real gate is
 the standalone exit code.
@@ -38,6 +52,8 @@ import inspect
 import pathlib
 import re
 import sys
+
+import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ANSIBLE = REPO_ROOT / "ansible"
@@ -1724,6 +1740,156 @@ PLEX_WATCHDOG_REFRESH_PARAM = "textfile_refresh_sec"
 # the neighbouring job is a 404 whose target reads DOWN with the series nowhere.
 PLEX_NODE_JOB_KEYS = ("scrape_interval", "scrape_timeout", "static_configs")
 
+# --- plex-blip-manual-triage Step 5a: the blackbox-exporter ------------------
+# Named once and consumed on BOTH sides, the `PLEX_EXPORTER_ADDRESS` shape: this
+# row defines the modules, and row `5c`'s scrape jobs carry them as a `module=`
+# query parameter. That parameter is a JOIN NO PROCESS CHECKS — a job naming a
+# module `blackbox.yml` does not define gets HTTP 400 from `/probe` and the
+# target reads DOWN with no series and nothing erroring in either config — so
+# `5c` must read its `params.module` values against THIS tuple rather than
+# against literals of its own, exactly as `PLEX_EXPORTER_ADDRESS` is read on both
+# the compose and the prometheus.yml side.
+BLACKBOX_SERVICE = "blackbox-exporter"
+BLACKBOX_CONFIG = TEMPLATES / "blackbox.yml.j2"
+# Two modules and no more, because this row is TOKEN-FREE by construction: the
+# `/status/sessions` probe of design §4.6 must send `vault_plex_token` and is row
+# `5b`. `5b` therefore ADDS a member here — set equality below means the tuple
+# and the template move together, which is the point.
+BLACKBOX_DIRECT_MODULE = "plex_identity_direct"
+BLACKBOX_PROXIED_MODULE = "plex_identity_proxied"
+BLACKBOX_MODULES = (BLACKBOX_DIRECT_MODULE, BLACKBOX_PROXIED_MODULE)
+# The compose service is scrape-only like `pve-exporter`/`plex-exporter`, plus
+# the ONE key those two do not have: it is the first scrape target in this stack
+# that reads a rendered config, so it carries `volumes:`. Spelled as its own
+# constant rather than by widening `SCRAPE_ONLY_KEYS`, which would hand a bind
+# mount to two services that must not have one.
+BLACKBOX_SERVICE_KEYS = SCRAPE_ONLY_KEYS | {"volumes"}
+# THE MODE IS A MEASUREMENT AND IT CONTRADICTS THE ROUTING THAT ORDERED IT.
+# The row was cut saying "prom/blackbox-exporter runs as nobody (uid 65534)
+# exactly like prom/prometheus, so 0644 is correct here for the same reason".
+# Measured at this row's own parent (logs/builder-5a-image-identity.log) against
+# the pinned images themselves:
+#
+#     prom/prometheus:v3.12.0         Config.User "nobody"   id -> uid=65534
+#     prom/blackbox-exporter:v0.28.0  Config.User ""         id -> uid=0(root)
+#
+# `prom/*` is not one identity. Blackbox declares NO `USER`, so it runs as root
+# like `traefik:v3.7.5` and 0640 root:root is readable to it — the mode that
+# publishes nothing. 0644 here would be a world-readable file chosen for a reason
+# that is false of this image, and it would prejudge `5b`, which adds a live Plex
+# token to THIS FILE. That collision is dissolved rather than deferred: root
+# reads 0640, so `5b` needs no `owner: 65534` / `0600` pair and no exemption --
+# it inherits a mode that already withholds the token from every other user on
+# the docker host.
+#
+# WHAT THIS RESTS ON, so a later edit knows what it is breaking: the compose
+# service must not override `user:`. That is not asserted here; it is held by
+# `keys_allowed` in `test_blackbox_exporter_service_block`, whose allow-list
+# fails closed on `user:` like on any other unenumerated key — the same standing
+# the grafana modes have through `test_grafana_provisioning_shape.py`.
+BLACKBOX_MODE = "0640"
+# --- the field census, and it is LOAD-BEARING rather than prose ---------------
+# `prom/blackbox-exporter:v0.28.0` unmarshals its config STRICTLY: a field it
+# does not know is `Error loading config` and exit 1, which `restart:
+# unless-stopped` turns into the crash loop this role has already served once.
+# A Python YAML parser accepts every one of those documents, so the reading
+# clause's `parses=True` was GREEN over a config that cannot start — measured on
+# the pinned binary at logs/critic-5a-r2-parser-vs-process.log and, unfakeably,
+# at logs/critic-5a-r2-gate-under-typo.log, where a ONE-CHARACTER typo
+# (`valid_status_code`) leaves the WHOLE GATE reading `43/43`.
+#
+# A KNOWN FIELD WITH A WRONG-TYPED VALUE IS THE SAME rc=1, and scoring only the
+# NAMES left that half open for a whole round (DEC-291 charge 1). `timeout: 5s`
+# -> `timeout: 5` is ONE DELETED CHARACTER; the binary answers `cannot unmarshal
+# !!int 5 into time.Duration` and exits, and the WHOLE GATE printed `43/43` over
+# it (logs/critic-5a-r3-gate-under-timeout.log). So each name below carries the
+# VALUE SHAPE this document gives it, and the census is a name -> predicate map
+# rather than a set.
+#
+# EVERY PREDICATE IS A MEASUREMENT OF THE PINNED BINARY, NOT A READING OF GO'S
+# TYPE SYSTEM, and that is not pedantry — three of the obvious ones are traps
+# (logs/builder-5a-r4-binary-probe{,2}.log, 49 documents at `--config.check`):
+#
+#     prober: 3 / method: 7 / preferred_ip_protocol: 4      LOADS
+#     method: {a: b} / prober: {a: b} / …: [a]              REFUSES
+#         -> go-yaml v3 fills a Go string field from the RAW SCALAR whatever its
+#            tag is, and refuses only a container. So `_bb_scalar`, and an
+#            `isinstance(v, str)` predicate would false-RED on all three.
+#     ip_protocol_fallback: on / True                       LOADS
+#     ip_protocol_fallback: 'false' / 0 / 1 / [] / maybe    REFUSES
+#         -> PyYAML's `bool` is exactly this line, on all seven rows.
+#     timeout: 1m30s / .5s / -5s / 100us / '5s'             LOADS
+#     timeout: 5 / 0 / 5sec / [5s]                          REFUSES
+#         -> Go durations CONCATENATE, so the quantifier goes round the whole
+#            group; `^\d+(\.\d+)?(ms|s|m|h)$` false-REDs on `1m30s`.
+#     valid_status_codes: [] / [200, 204]                   LOADS
+#     valid_status_codes: 200 / {} / [true] / ['200']       REFUSES
+#         -> a possibly-EMPTY list of non-bool ints. `[]` loading is why the
+#            predicate does not require a member.
+#
+# THESE MAPS ARE THIS DOCUMENT'S VOCABULARY, NOT A COPY OF BLACKBOX'S SCHEMA,
+# and that distinction is the whole design. Each is the fields the row PINS plus
+# the ones its reading clause declares "NOT PINNED, deliberately" — the same
+# allow-list idiom as `BLACKBOX_SERVICE_KEYS` two constants up, which does not
+# enumerate every legal compose key either. So the census in that docstring is
+# now the thing the test reads, and a partial list stops being a claim about the
+# fields it omits.
+#
+# THE DIRECTION IT FAILS IS DECLARED. A field blackbox accepts but this census
+# has not learned REDS: `min_version` under `tls_config` LOADS on the binary and
+# reds here (logs/builder-5a-r3-{red,green}.log, D6), as does the `headers:` that
+# row `5b` must add. That is a one-line edit to the map below, in the same commit
+# that turns the knob — the identical cost `BLACKBOX_MODULES` already imposes on
+# `5b` for its module NAME, and it fails closed.
+_GO_DURATION = re.compile(r"^[+-]?((\d+(\.\d*)?|\.\d+)(ns|us|µs|ms|s|m|h))+$")
+
+
+def _bb_mapping(value) -> bool:
+    """A block, not a scalar: `http: yes` is `cannot unmarshal !!str into
+    config.plain`, rc=1."""
+    return isinstance(value, dict)
+
+
+def _bb_bool(value) -> bool:
+    """A YAML bool. PyYAML's boundary IS the binary's, measured on all seven
+    spellings: `on`/`True`/`yes`/`false` load, `'false'`/`0`/`[]` refuse."""
+    return isinstance(value, bool)
+
+
+def _bb_scalar(value) -> bool:
+    """Anything that is not a container. go-yaml v3 fills a string field from
+    the raw scalar text, so `prober: 3` LOADS and only `!!map`/`!!seq` refuse."""
+    return not isinstance(value, (dict, list))
+
+
+def _bb_duration(value) -> bool:
+    """A Go `time.Duration` STRING. Concatenated components and a leading sign
+    are legal (`1m30s`, `-5s`, `.5s`); a bare int is not, and that is the
+    one-character edit the whole gate used to read `43/43` over."""
+    return isinstance(value, str) and bool(_GO_DURATION.match(value))
+
+
+def _bb_int_list(value) -> bool:
+    """A `[]int`, possibly EMPTY — `valid_status_codes: []` loads. `bool` is
+    excluded because it is an `int` in Python and `!!bool` into `int` is rc=1."""
+    return isinstance(value, list) and all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value)
+
+
+BLACKBOX_TOP_FIELDS = {"modules": _bb_mapping}
+BLACKBOX_MODULE_FIELDS = {
+    "prober": _bb_scalar, "timeout": _bb_duration, "http": _bb_mapping,
+}
+BLACKBOX_HTTP_FIELDS = {
+    # pinned by the reading clause
+    "fail_if_not_ssl": _bb_bool, "tls_config": _bb_mapping,
+    # declared unpinned: meaning vs tuning, see that clause's census
+    "method": _bb_scalar, "valid_status_codes": _bb_int_list,
+    "preferred_ip_protocol": _bb_scalar, "ip_protocol_fallback": _bb_bool,
+    "follow_redirects": _bb_bool,
+}
+BLACKBOX_TLS_FIELDS = {"insecure_skip_verify": _bb_bool}
+
 
 def _indented_key_lines(body: str, key: str) -> list:
     """Every line in `body` that opens a block under a key named `key`.
@@ -2155,6 +2321,31 @@ RELOAD_CONTRACT = {
         "default_path": None,
         "default_dir": "/etc/grafana/provisioning/dashboards",
     },
+    # plex-blip-manual-triage Step 5a — the FIFTH row, and it is here because the
+    # paragraph above says it should be: this table exists "so the next render
+    # task added to this role has a check that already names the invariant", and
+    # the blackbox config is the next render task this role has gained.
+    #
+    # `--config.file` and not a `default_path`, which is a MEASUREMENT of the
+    # image rather than a copy of the prometheus row: `docker inspect
+    # prom/blackbox-exporter:v0.28.0` shows `Cmd` = `["--config.file=/etc/
+    # blackbox_exporter/config.yml"]`, i.e. the container-side path is supplied by
+    # a FLAG the compose `command:` overrides, so the flag must agree with the
+    # mount's own target and the literal `/etc/blackbox_exporter/config.yml` is
+    # this repo's to move. Pinning that literal would have reddened a rename that
+    # works on both sides — the "guard forbids the real answer" failure the
+    # grafana rows were written to avoid one step earlier.
+    #
+    # THE MODE IS THE ONE FIELD THAT IS NOT COPIED FROM ANY ROW ABOVE. See
+    # `BLACKBOX_MODE`: this image runs as ROOT (measured, and the routing that
+    # ordered this row said the opposite), so 0640 root:root is readable AND
+    # withholds the token row `5b` puts in this same file.
+    "blackbox.yml.j2": {
+        "service": BLACKBOX_SERVICE,
+        "mode": BLACKBOX_MODE,
+        "config_flag": "--config.file",
+        "default_path": None,
+    },
 }
 
 
@@ -2394,7 +2585,141 @@ _WS_CONTROL_MARKER = re.compile(r'^[-+]|[-+]$')
 # `tasks` and `handlers` carry Jinja too and are deliberately absent: YAML parses
 # THEM before Ansible evaluates the expression, so a newline in a value lands
 # inside a scalar and cannot manufacture a key.
-LINE_READ_TEMPLATES = (COMPOSE, STATIC, DYNAMIC, PROM_SCRAPE, ENV, HOMEPAGE_SERVICES)
+LINE_READ_TEMPLATES = (
+    COMPOSE, STATIC, DYNAMIC, PROM_SCRAPE, ENV, HOMEPAGE_SERVICES, BLACKBOX_CONFIG
+)
+
+
+def _neutralise_refs(text: str) -> str:
+    """`text` with every Jinja reference replaced by a placeholder SCALAR.
+
+    Step-5a. The gate cannot render: `jinja2` is `ModuleNotFoundError` under both
+    interpreters that run these files (re-measured at this row's parent, and the
+    reason `test_plex_watchdog_unit_shape.py` pins a reference CHAIN rather than a
+    rendered equality). A parser, though, only needs the document's STRUCTURE, and
+    substituting a scalar for each reference preserves it exactly when every
+    construct is a line-bounded reference expanding to one scalar — which is not
+    an assumption about this template but a property `LINE_READ_TEMPLATES`
+    membership already enforces on it.
+
+    Quoted deliberately: a bare `{{ x }}` at a value position is already valid
+    YAML (a flow mapping), so an unquoted substitution would parse either way and
+    the placeholder would be doing nothing. `{{ x }}:{{ y }}` at a KEY position is
+    not, and that is the shape a URL or a `host:port` value takes here.
+    """
+    return re.sub(r'\{\{.*?\}\}', "'<REF>'", text)
+
+
+# The tag PyYAML resolves a plain `<<` key to. Named rather than spelled inline
+# because `_no_duplicate_keys` is the only reader and its two uses of the concept
+# — do not construct it, do still count it — must not drift apart.
+_YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """`yaml.SafeLoader` that REFUSES a duplicate — or unhashable — mapping key.
+
+    Step-5a, and it is a repair of this row's own first cut rather than a
+    precaution. `yaml.safe_load` accepts a duplicated key and silently keeps the
+    LAST one, so the mutant that duplicates `prober:` was GREEN through a clause
+    whose whole claim is that the document PARSES. The runtime disagrees, and
+    measured on the pinned image rather than argued from the spec:
+
+        prom/blackbox-exporter:v0.28.0 --config.check on those same bytes
+        level=ERROR msg="Error loading config" err="error parsing config file:
+        yaml: unmarshal errors: line 58: mapping key \\"prober\\" already
+        defined at line 57"                     (logs/builder-5a-mutants.log, M19)
+
+    That is a non-zero exit at start, which `restart: unless-stopped` turns into
+    the crash loop this role has already served for two weeks over a config the
+    process could not read. A parser that accepts documents the process refuses
+    is not modelling the process — so the gate's reader is the strict one, and
+    the duplicate is a `yaml.YAMLError` here exactly as it is there.
+
+    AND THE SENTENCE ABOVE IS SYMMETRIC, which cost this row a round (DEC-294
+    charge 1): a parser that REFUSES documents the process ACCEPTS is not
+    modelling it either, and the first cut of `_no_duplicate_keys` did exactly
+    that to every `<<:` merge key — a refusal `yaml.safe_load` never had. Both
+    directions are now scored as a table rather than as this prose, in
+    `test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses`, with
+    every verdict measured on the pinned binary.
+
+    WHAT THIS CLASS DOES *NOT* CLOSE, said here because its own sentence above is
+    wider than its code: strictness of the SYNTAX is not strictness of the
+    FIELDS. `prom/blackbox-exporter:v0.28.0` unmarshals into a Go struct and
+    exits 1 on a field it does not know — a one-character typo
+    (`valid_status_code`) is `Error loading config` at rc=1 while every YAML
+    parser in existence reads that document happily. That half is closed at the
+    READING CLAUSE, by `_blackbox_field_defects` against a per-level allow-list,
+    and not here: it is a fact about blackbox's schema rather than about YAML.
+    """
+
+
+def _no_duplicate_keys(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        if key_node.tag == _YAML_MERGE_TAG:
+            # A `<<:` MERGE KEY IS NOT CONSTRUCTED HERE, AND IT IS STILL COUNTED
+            # — DEC-294 charge 1, and the two halves are two different defects.
+            #
+            # CONSTRUCTED: `SafeConstructor` has no constructor for the merge
+            # tag, because `construct_mapping` FLATTENS the key away before it
+            # would ever reach one. Scanning ahead of that flattening reversed
+            # the order, so `construct_object` raised "could not determine a
+            # constructor" and the clause printed `parses=False` about a document
+            # `--config.check` exits 0 on — the mirror image of the sentence this
+            # loader exists to keep, and a regression against the `safe_load` it
+            # replaced. Stepping over the node hands the flattening back to
+            # `construct_mapping`, which already does it correctly: flattening
+            # HERE instead is the door that looks obvious and is a trap, because
+            # PyYAML PREPENDS the merged pairs, so a merged-and-overridden key —
+            # what a merge key is FOR — is then seen twice and reds as a
+            # duplicate (measured 5/5, logs/builder-5a-r5-merge-door.log).
+            #
+            # COUNTED: `<<` is still a mapping key, and go-yaml v3 refuses a
+            # mapping that carries it twice — `mapping key "<<" already defined
+            # at line 7`, rc=1, the crash loop. A skip that also skipped the
+            # bookkeeping would give up this class's own refusal for exactly the
+            # key it is reaching over. The literal is the spelling the binary's
+            # refusal prints, and it collides only with a QUOTED `'<<'`, which
+            # that same binary refuses as an unknown field anyway.
+            key = "<<"
+        else:
+            key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in seen
+        except TypeError:
+            # A YAML COMPLEX KEY (`? [a, b]` / `? {a: b}`) IS UNHASHABLE, and
+            # membership on it raises `TypeError` — which is NOT a
+            # `yaml.YAMLError`, so it would walk straight past the reading
+            # clause's own `except` and take the suite out with a traceback:
+            # rc=1 with ZERO `FAIL` lines, the crashed-reader shape this loader
+            # was written to repair (DEC-286 charge 2, measured at
+            # logs/critic-5a-r2-crashed-reader.log). The process refuses the
+            # same bytes — `cannot unmarshal !!seq into string`, rc=1 — so the
+            # reader refuses them too, and in the currency the clause catches.
+            # Caught by BEHAVIOUR rather than by an isinstance list of the
+            # unhashable types, so a shape nobody enumerated still fails closed.
+            raise yaml.constructor.ConstructorError(
+                None, None,
+                # The TAG and not `repr(key)`: an unfilled deep=False sequence
+                # reprs as `[]`, which names nothing. `!!seq` is also the noun
+                # the binary's own refusal uses.
+                f"unhashable key of type {key_node.tag} at line "
+                f"{key_node.start_mark.line + 1}",
+                key_node.start_mark,
+            ) from None
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        seen.add(key)
+    return yaml.constructor.SafeConstructor.construct_mapping(loader, node, deep)
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
+)
 
 
 def _unbounded_block_tag(text: str, start: int, end: int, body: str) -> str:
@@ -4742,6 +5067,584 @@ def test_plex_node_exporter_scrape_job() -> bool:
     return ok
 
 
+def test_blackbox_exporter_service_block() -> bool:
+    """Step-5a: compose defines `blackbox-exporter` as a scrape-only service.
+
+    The third service of the `pve-exporter` / `plex-exporter` class and the first
+    one that READS A RENDERED CONFIG, so it is that shape plus exactly one key.
+    Only the clauses that differ from those two are argued here; for
+    `keys_allowed` and `no_ports` — what each half closes, and which spellings
+    were measured green through earlier versions of them — see
+    `test_pve_exporter_service_block`, which is where those rows were won.
+
+    * `keys_allowed` — the allow-list is `BLACKBOX_SERVICE_KEYS`, i.e.
+      `SCRAPE_ONLY_KEYS` plus `volumes`, spelled as its own constant so the bind
+      mount is granted to THIS service and not to the two that must never have
+      one. It carries a second job here that it does not carry there: it is what
+      holds the 0640 mode of `BLACKBOX_MODE` up. That mode is correct because the
+      image declares no `USER` and the process runs as root, and `user: "65534"`
+      on this service would make the same file unreadable — an unenumerated key,
+      so this clause reddens on it. The mode's rationale and its guard are
+      therefore in different places on purpose, and each says so.
+    * `no_traefik_labels` — a `/probe` endpoint takes its TARGET from a caller
+      -supplied query parameter, so a router in front of it is an open HTTP
+      client on the internal network, not merely an exposed dashboard. This is
+      the `pve-exporter` argument one notch sharper, and it is why the service
+      mirrors the node-exporter block (compose.yml.j2's "Scrape targets only"
+      group) rather than the prometheus one.
+    * `config_flag` — the compose `command:` names the container-side path
+      through `--config.file`. Read here as PRESENCE of the flag only; the
+      AGREEMENT between that flag's value and the mount's own target is the
+      `reads_it` hop of `test_rendered_configs_reach_the_service_that_reads_them`
+      and is not restated (two guards over one fact is `task-1786153086-9f13`'s
+      class). What this adds that the walk cannot: the image supplies its own
+      `--config.file=/etc/blackbox_exporter/config.yml` in `Cmd`, so a compose
+      block with NO `command:` at all still boots and reads the image's default
+      path — with the mount landing somewhere else entirely and the exporter
+      serving its built-in modules. That is a live state, not a crash, and the
+      walk's `reads_it` sees it only because this flag is absent.
+    """
+    block = _strip_comments(_compose_service_block(_read(COMPOSE), BLACKBOX_SERVICE))
+    present = bool(block.strip())
+    image_var = re.search(
+        r'(?m)^\s*image:\s*\{\{\s*docker_host_blackbox_exporter_image\s*\}\}', block
+    ) is not None
+    no_traefik_labels = re.search(r'traefik\.', block) is None
+    keys, unreadable_keys = _service_key_lines(block)
+    extra_keys = sorted(set(keys) - BLACKBOX_SERVICE_KEYS)
+    keys_allowed = not extra_keys and not unreadable_keys
+    published = _service_published_ports(block)
+    no_ports = published is None
+    restart = re.search(r'(?m)^\s*restart:\s*unless-stopped\s*$', block) is not None
+    config_flag = _last_flag_value(_service_command_args(block), "--config.file")
+    flag_present = config_flag is not None
+    ok = (
+        present and image_var and no_traefik_labels and keys_allowed and no_ports
+        and restart and flag_present
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: {BLACKBOX_SERVICE} compose service is scrape-only "
+        f"(present={present}, image_var={image_var}, "
+        f"no_traefik_labels={no_traefik_labels}, "
+        f"keys_allowed={keys_allowed} (keys={keys}, unexpected={extra_keys}, "
+        f"unreadable={unreadable_keys}), "
+        f"no_ports={no_ports} (published={published!r}), "
+        f"restart={restart}, config_flag={flag_present} (value={config_flag!r}))"
+    )
+    return ok
+
+
+def _blackbox_field_defects(doc) -> tuple:
+    """`(unknown names, mistyped values)` in `doc`, both as dotted paths.
+
+    Step-5a, DEC-286 and DEC-291. One walk, four levels, each scored against the
+    map that names what may live there and WHAT SHAPE IT MUST HAVE — the
+    `keys_allowed` idiom of `test_blackbox_exporter_service_block` one axis over,
+    applied to the config document instead of the compose service.
+
+    TWO LISTS AND NOT ONE, because they are two different sentences about the
+    document: `plex_identity_direct.retries` is a field blackbox has never heard
+    of, and `plex_identity_direct.timeout=5` is a field it knows given something
+    it cannot unmarshal. Both are `Error loading config`, rc=1 and a crash loop
+    under `restart: unless-stopped`; merging them would make the clause print
+    `unknown=[…timeout…]` about a field this row PINS BY NAME, which is a red
+    that lies about what broke.
+
+    EVERY PATH LEAVES THROUGH ONE f-STRING, and that is the repair rather than a
+    style choice. DEC-291 charge 2 was the TOP level taking a different code
+    path from the three below it (`sorted(set(doc) - …)` against
+    `f"{name}.{k}"`): PyYAML is YAML 1.1, so `on`/`no`/`yes` and bare numbers at
+    a KEY position resolve to `bool`/`int`, and one such key beside any other
+    unknown field made `sorted` compare `str` with `bool` — `TypeError`, rc=1,
+    ZERO `FAIL` lines, the crashed-reader shape this row has now grown three
+    times. A `str()` at that one site would have closed the instance; scoring
+    every level through the SAME helper closes the class, because there is no
+    longer a level that can diverge. `no:` is the row that proves it matters in
+    both directions: go-yaml v3 reads it as the STRING, so the BINARY ACCEPTS a
+    document PyYAML hands this walk as `False` (logs/builder-5a-r4-census.log,
+    X4) — the two parsers disagree and it was the guard that broke.
+
+    THE PATH THEREFORE NAMES THE RESOLVED KEY, NOT THE SOURCE SPELLING, and that
+    is worth knowing before reading a red at 07:00: `on: 1` in the file prints as
+    `unknown=['True']`, because PyYAML resolved the scalar and threw the spelling
+    away long before this walk saw it. The line number is not recoverable here
+    either; the field IS, which is what the red is for.
+
+    TOTAL OVER MALFORMED DOCUMENTS, like the reading clause it serves: a level
+    that is not a mapping is SKIPPED rather than walked, because a module whose
+    `http:` is a scalar is already the subject of `probers`/`tls_differential`
+    and a second reader crashing on it would be that same shape again.
+
+    The paths are returned rather than a bool so the clause can PRINT the
+    offending field, which is this suite's standing rule: a red names what broke.
+    """
+    unknown, mistyped = [], []
+
+    def _score(prefix, level, census):
+        for key, value in level.items():
+            path = f"{prefix}{key}"
+            shape = census.get(key)
+            if shape is None:
+                unknown.append(path)
+            elif not shape(value):
+                mistyped.append(f"{path}={value!r}")
+
+    if not isinstance(doc, dict):
+        return [], []
+    _score("", doc, BLACKBOX_TOP_FIELDS)
+    modules = doc.get("modules")
+    if not isinstance(modules, dict):
+        return sorted(unknown), sorted(mistyped)
+    for name, mod in modules.items():
+        if not isinstance(mod, dict):
+            continue
+        _score(f"{name}.", mod, BLACKBOX_MODULE_FIELDS)
+        http = mod.get("http")
+        if not isinstance(http, dict):
+            continue
+        _score(f"{name}.http.", http, BLACKBOX_HTTP_FIELDS)
+        tls = http.get("tls_config")
+        if isinstance(tls, dict):
+            _score(f"{name}.http.tls_config.", tls, BLACKBOX_TLS_FIELDS)
+    return sorted(unknown), sorted(mistyped)
+
+
+def test_blackbox_modules_are_the_two_token_free_probes() -> bool:
+    """Step-5a: the blackbox config PARSES and defines exactly `BLACKBOX_MODULES`.
+
+    THE JOIN NOTHING ELSE CHECKS. Row `5c` writes three scrape jobs whose
+    `params.module` values are the names defined here, and no process reconciles
+    the two: blackbox answers `/probe?module=<unknown>` with HTTP 400, so
+    Prometheus records the target DOWN and both files stay individually valid.
+    The names therefore live in ONE tuple that both sides read (`BLACKBOX_MODULES`)
+    and this clause pins that tuple against the template as a SET EQUALITY — a
+    module defined but unnamed by the tuple reddens as loudly as one named and
+    undefined, because a name added here without `5c` is the same broken join
+    seen from the other end.
+
+    PARSED, NOT GREPPED, and that is the acceptance criterion this row was cut
+    with. A regex over `^  (\\w+):` reads a module name out of a document blackbox
+    itself refuses to load — a duplicated key, a tab, a mis-indented `prober` —
+    and the exporter exits non-zero at start, which `restart: unless-stopped`
+    turns into the crash loop this repo has already paid for once. So the text
+    goes through a YAML parser — `_StrictLoader`, for the reason two paragraphs
+    down — and its FIELDS through the census `fields_known` reads.
+
+    THE PARSE IS OF THE RENDERED DOCUMENT, and the two halves that make that true
+    rather than merely intended:
+
+    * `jinja2 is ModuleNotFoundError under both gate interpreters` (measured
+      again at this row's parent, `.venv/bin/python` and `python3`), so this
+      cannot render and then parse. `_neutralise_refs` substitutes each `{{ … }}`
+      for a placeholder SCALAR instead, which models the render exactly when
+      every construct is a line-bounded reference whose output is one scalar.
+    * that precondition is not assumed: `BLACKBOX_CONFIG` is a member of
+      `LINE_READ_TEMPLATES`, so `test_templates_render_line_for_line` already
+      refuses every construct that could do anything else — a filter, a call, a
+      `{% for %}`, a multi-line expression — for this file as for the other six.
+
+    Today the substitution is a NO-OP: this row's config is token-free and
+    carries no Jinja at all. It is written anyway, and it is the reason row `5b`
+    can add `{{ vault_plex_token }}` to the sessions module without a guard
+    standing in its way — a flipped clause in the next row is a cost this one can
+    just decline to impose. Row S1 of this row's mutation battery is the control
+    that says the substitution works rather than merely existing.
+
+    THE LOADER IS `_StrictLoader` AND NOT `yaml.safe_load`, which is this row's
+    own first cut being repaired: `safe_load` takes a DUPLICATED key and keeps
+    the last one, while the pinned exporter refuses the same bytes at config load
+    and exits — see that class for the measurement.
+
+    `prober` IS PINNED HERE BECAUSE NOTHING AT RUNTIME PINS IT, and the sentence
+    this paragraph replaces (DEC-294 charge 2) said the opposite: that blackbox
+    "refuses a module without one at config-load", i.e. the loud rc=1 crash loop
+    the census below exists for. That is FALSE, and filing the defect in the
+    wrong bucket is the whole harm — it licenses a later reader to drop `probers`
+    as redundant with a binary that checks nothing. Driven on the pinned image,
+    each row a config and a live container (logs/builder-5a-r5-prober-premise.log):
+
+        no `prober` key at all   --config.check rc=0   Running=true Restarts=0
+        `prober: ""`             rc=0                  Running=true Restarts=0
+        `prober: nonsense`       rc=0                  Running=true Restarts=0
+
+    What breaks is the PROBE. `/probe?module=…` on those three answers HTTP 400
+    `Unknown prober ""` with no `probe_*` series at all, so Prometheus records
+    the target DOWN while both configs are valid and both processes are healthy
+    — the SILENT join the paragraph above describes for module NAMES, one field
+    down, and `probers` is its only reader. The control is what makes that
+    readable rather than an everything-is-broken artefact: the same dead target
+    under `prober: http` answers HTTP 200 and `probe_success 0`, a probe that RAN
+    and failed, which is a different fact from one that could not be dispatched.
+
+    THE OTHER HALF OF THE PIN IS SEMANTIC AND WAS ALWAYS TRUE. A module whose
+    `prober` says `tcp` loads, dispatches, and answers 200 — a connect test that
+    reports `probe_success 1` against a Plex that is listening and 500ing, green
+    metrics for a broken server, which is the exact failure mode design §4.6
+    exists to rule out. Nothing above touches that; `tcp` is a working module
+    measuring the wrong thing, and `<absent>` is a module that cannot run.
+
+    THE TLS DIFFERENTIAL IS THREE FIELDS AND NOT ONE, and this row's first cut
+    got the reason wrong rather than merely getting the coverage short. It pinned
+    `fail_if_not_ssl` alone and said that field protects certificate RENEWAL.
+    That sentence is measurably FALSE on the pinned binary, driven against a
+    CA-minted leaf whose `notAfter` is 2026-06-01
+    (logs/critic-5a-tls-differential.log, re-run at this parent as
+    logs/builder-5a-r2-tls-differential.log): against the expired host the
+    proxied module reports `probe_success 0` WITH the field (E1) and equally 0
+    WITHOUT it (E2), while `insecure_skip_verify: true` reports 1 (E3) — and all
+    three report 1 against a valid cert (F1-F3), so E is a differential and not
+    an everything-is-zero artefact. Renewal is therefore carried by
+    `tls_config.insecure_skip_verify` and by nothing else.
+
+    So each field is pinned for what it actually buys, and the third arm is a
+    NEGATIVE:
+
+    * `proxied_refuses_plain` — `fail_if_not_ssl: true` on the proxied module.
+      What this really buys is the PLAIN-HTTP refusal: against `http://` the
+      proxied module reads 0 with the field and 1 without it (G1/G2). Traefik
+      carries a per-router http->https upgrade, so without it a probe would
+      report the redirect target's health and call the TLS path green.
+    * `cert_verified` — `tls_config.insecure_skip_verify` present and explicitly
+      `False`. Present AND explicit, because the template spends four lines
+      making this field load-bearing for renewal and a claim whose subject is a
+      default has no line to red on: deleting the block (H2) is scored exactly
+      like flipping it (H1).
+    * `direct_accepts_plain` — the DIRECT module must NOT carry
+      `fail_if_not_ssl` at all. This is the same differential killed from the
+      other end and it is the arm nothing would have thought to write: the direct
+      module probes `http://<plex>:32400/identity`, so the field that is correct
+      one module down makes this one report `probe_success 0` FOR EVER (H3a=1,
+      H3b=0) — a permanent "the origin is down" that no certificate, restart or
+      Plex fix can clear.
+
+    NOT PINNED, deliberately, and the line is meaning vs tuning. The census is
+    complete rather than illustrative, because a partial list reads as a claim
+    about the fields it omits: `timeout`, `method`, `valid_status_codes`,
+    `preferred_ip_protocol`, `ip_protocol_fallback` and `follow_redirects` are
+    every remaining field either module carries, and each one changes how
+    expensive or how strict a probe is — knobs the operator may legitimately turn
+    once real probe latency is on a graph (5e). Losing one changes a NUMBER;
+    losing `prober`, or any of the three TLS arms above, changes what the number
+    MEANS.
+
+    THAT CENSUS IS NOW READ BY THE TEST — `fields_known`, DEC-286, and it is the
+    half of "parses" this clause used to only claim. Two sentences above promise
+    the reader models the process: that a document blackbox refuses at config
+    load is a non-zero exit at start and, under `restart: unless-stopped`, the
+    crash loop this repo has already paid for. `_StrictLoader` made that true of
+    the SYNTAX. It is false of the FIELDS, because
+    `prom/blackbox-exporter:v0.28.0` unmarshals into a Go struct and refuses a
+    field it does not know, and no YAML parser refuses anything of the sort —
+    driven against the pinned binary, each row the shipped bytes with one edit
+    (logs/critic-5a-r2-parser-vs-process.log, re-driven here as
+    logs/builder-5a-r3-{red,green}.log):
+
+        `valid_status_code`, one character      rc=1  <- was GREEN at 45/45
+        `tls_config` at MODULE level            rc=1  <- was GREEN at 45/45
+        an unknown module field (`retries`)     rc=1  <- was GREEN at 45/45
+
+    and under the first of those the WHOLE GATE printed `43/43` over a config
+    that cannot start (logs/critic-5a-r2-gate-under-typo.log). So the pinned
+    fields plus the census above are now a per-level allow-list
+    (`BLACKBOX_{TOP,MODULE,HTTP,TLS}_FIELDS`, walked by
+    `_blackbox_field_defects`), scored exactly like `keys_allowed` 40 lines up
+    and `names_exact` in this very clause. A typo reds where the process would
+    refuse to start, and it reds NAMING THE FIELD.
+
+    AND `values_typed` IS THE OTHER HALF OF THAT SAME SENTENCE — DEC-291 charge
+    1, and scoring only the NAMES left it open for a round. `unmarshals into a Go
+    struct` is a claim about VALUES as much as about fields: a name the struct
+    knows, given something it cannot decode, is the identical `Error loading
+    config` and the identical crash loop. Measured on the same binary
+    (logs/builder-5a-r4-census.log), each row the shipped bytes with one edit:
+
+        `timeout: 5s` -> `5`, ONE CHARACTER          rc=1  <- was GREEN at 45/45
+        `valid_status_codes: [200]` -> `200`         rc=1  <- was GREEN at 45/45
+        `ip_protocol_fallback: maybe`                rc=1  <- was GREEN at 45/45
+        `valid_status_codes: ["two hundred"]`        rc=1  <- was GREEN at 45/45
+        `follow_redirects: 0`                        rc=1  <- was GREEN at 45/45
+
+    and under the FIRST of those the whole gate printed `43/43` all over again
+    (logs/critic-5a-r3-gate-under-timeout.log) — the same size of edit, and the
+    same outage, as the typo that bought the census in the first place.
+
+    THE PREDICATES ARE MEASUREMENTS AND NOT TYPE-SYSTEM REASONING, which is
+    stated at the constants and repeated here because it is the part a later
+    reader will be tempted to "tidy": `prober: 3`, `method: 7` and
+    `preferred_ip_protocol: 4` all LOAD on the pinned binary, so the obvious
+    `isinstance(v, str)` is a FALSE-RED three times over and the honest predicate
+    only excludes containers. 49 documents at `--config.check`, both directions,
+    at logs/builder-5a-r4-binary-probe{,2}.log.
+
+    THE COST IS DECLARED, BECAUSE IT IS PAID BY THE NEXT ROW. This allow-list is
+    the vocabulary of THIS document, not a copy of blackbox's schema, so a field
+    the binary accepts and the census has not learned reds too: `min_version:
+    TLS12` under `tls_config` LOADS on the pinned binary and reds here (D6), and
+    so does the `headers:` that row `5b` must add to send `vault_plex_token`
+    (L1). Neither is a trap — `5b` is already adding a member to
+    `BLACKBOX_MODULES` for its module name, and this is the same one-line edit
+    in the same commit, in the same direction: fail-closed, and it makes the
+    census the thing that must move when the document does. A legal knob turned
+    WITHIN the census stays green, and the value half is held to the same
+    standard: `valid_status_codes: [200, 204]` (L2), `timeout: 1m30s`,
+    `preferred_ip_protocol: ip5`, `method: GETT` and `valid_status_codes: []`
+    all LOAD and all stay GREEN. That is what says this is a vocabulary and not
+    a freeze — and `1m30s` is there because Go durations CONCATENATE, so the
+    first predicate anyone writes reds a document the binary accepts.
+
+    THE PRINT IS TOTAL OVER MALFORMED DOCUMENTS, which is a property of this
+    clause and not a style note. Every field above is read through an
+    `isinstance` gate and reported with an explicit `<absent>` /
+    `<not a mapping>` sentinel, because a module whose `http:` is a SCALAR used
+    to raise `AttributeError` out of the f-string — rc=1 with ZERO `FAIL` lines,
+    the crashed-reader shape, which defeats this row's own promise that a red
+    names the failing FIELD. Row P1 of the battery is that document.
+    """
+    text = _read(BLACKBOX_CONFIG)
+    present = bool(text.strip())
+    try:
+        doc = yaml.load(_neutralise_refs(text), Loader=_StrictLoader)
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
+    parses = isinstance(doc, dict)
+    modules = doc.get("modules") if parses else None
+    mapping = isinstance(modules, dict)
+    # `key=str` ON BOTH SORTS, for the reason `_blackbox_field_defects` states
+    # at length: PyYAML hands back a `bool` for a module named `no:` and a
+    # bare-`sorted` over mixed types is a `TypeError` — rc=1 naming nothing.
+    # `not_http` needs it as much as `names` does, and nothing charged that one:
+    # it is only silent today because the module that reproduces it happens to
+    # carry `prober: http`.
+    names = sorted(modules, key=str) if mapping else []
+    names_exact = names == sorted(BLACKBOX_MODULES)
+    not_http = sorted((
+        name for name, mod in (modules or {}).items()
+        if not isinstance(mod, dict) or mod.get("prober") != "http"
+    ), key=str) if mapping else []
+    probers = mapping and not not_http
+    def _field(mapping_or_not, key):
+        """Report `key` without ever assuming the container is a mapping.
+
+        The sentinels are the point: `<absent>` and `<not a mapping>` are the two
+        states a bare `.get()` chain collapses into `None` on its way to an
+        `AttributeError`, and they are exactly what the reader needs to tell a
+        deleted field from a malformed document.
+        """
+        if not isinstance(mapping_or_not, dict):
+            return "<not a mapping>"
+        return mapping_or_not.get(key, "<absent>")
+
+    proxied = (modules or {}).get(BLACKBOX_PROXIED_MODULE) if mapping else None
+    direct = (modules or {}).get(BLACKBOX_DIRECT_MODULE) if mapping else None
+    proxied_http = proxied.get("http") if isinstance(proxied, dict) else None
+    direct_http = direct.get("http") if isinstance(direct, dict) else None
+    proxied_tls = proxied_http.get("tls_config") if isinstance(proxied_http, dict) else None
+    proxied_refuses_plain = _field(proxied_http, "fail_if_not_ssl") is True
+    cert_verified = _field(proxied_tls, "insecure_skip_verify") is False
+    direct_accepts_plain = _field(direct_http, "fail_if_not_ssl") == "<absent>"
+    tls_differential = proxied_refuses_plain and cert_verified and direct_accepts_plain
+    unknown_fields, mistyped_fields = _blackbox_field_defects(doc)
+    fields_known = not unknown_fields
+    values_typed = not mistyped_fields
+    ok = (
+        present and parses and mapping and names_exact and probers
+        and tls_differential and fields_known and values_typed
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: {BLACKBOX_CONFIG.name} defines exactly the "
+        f"token-free probe modules (present={present}, parses={parses} "
+        f"(error={parse_error!r}), modules_mapping={mapping}, "
+        f"names_exact={names_exact} (found={names}, want={sorted(BLACKBOX_MODULES)}), "
+        f"probers={probers} (not_http={not_http}), "
+        f"proxied_refuses_plain={proxied_refuses_plain} "
+        f"({BLACKBOX_PROXIED_MODULE}.http.fail_if_not_ssl="
+        f"{_field(proxied_http, 'fail_if_not_ssl')!r}), "
+        f"cert_verified={cert_verified} "
+        f"({BLACKBOX_PROXIED_MODULE}.http.tls_config.insecure_skip_verify="
+        f"{_field(proxied_tls, 'insecure_skip_verify')!r}), "
+        f"direct_accepts_plain={direct_accepts_plain} "
+        f"({BLACKBOX_DIRECT_MODULE}.http.fail_if_not_ssl="
+        f"{_field(direct_http, 'fail_if_not_ssl')!r}), "
+        f"fields_known={fields_known} (unknown={unknown_fields}), "
+        f"values_typed={values_typed} (mistyped={mistyped_fields}))"
+    )
+    return ok
+
+
+# The document a merge-key refactor of THIS row's two modules actually produces.
+# Held as a constant because two clauses read it: the table below scores whether
+# it is accepted, and `merge_resolves` scores what it RESOLVES TO.
+BLACKBOX_MERGE_OVERRIDE = """modules:
+  plex_identity_direct: &common
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+  plex_identity_proxied:
+    <<: *common
+    timeout: 9s
+    http:
+      method: GET
+"""
+
+# (label, document, the PINNED BINARY's verdict, which half must refuse it).
+#
+# The verdict column is a MEASUREMENT and never a reading of the YAML spec: each
+# row was driven through `prom/blackbox-exporter:v0.28.0 --config.check` at
+# logs/builder-5a-r5-merge-door.log, and the `<<` rows disagree with what any of
+# the three obvious implementations would predict.
+BLACKBOX_READER_ROWS = (
+    ("R1 plain document, no merge key",
+     "modules:\n  plex_identity_direct:\n    prober: http\n    timeout: 5s\n",
+     True, None),
+    ("R2 the idiomatic dedup: an anchor and `<<:`",
+     "modules:\n  plex_identity_direct: &c\n    prober: http\n    timeout: 5s\n"
+     "  plex_identity_proxied:\n    <<: *c\n",
+     True, None),
+    ("R3 `<<:` plus an explicit override of a merged key",
+     BLACKBOX_MERGE_OVERRIDE, True, None),
+    ("R4 `<<: [*a, *b]`, a sequence of anchors",
+     "modules:\n  a: &one\n    prober: http\n  b: &two\n    timeout: 5s\n"
+     "  plex_identity_direct:\n    <<: [*one, *two]\n",
+     True, None),
+    ("R5 TWO `<<:` keys in one mapping",
+     "modules:\n  a: &one\n    prober: http\n  b: &two\n    timeout: 5s\n"
+     "  plex_identity_direct:\n    <<: *one\n    <<: *two\n",
+     False, "loader"),
+    ("R6 `<<:` beside a duplicated explicit key",
+     "modules:\n  plex_identity_direct: &c\n    prober: http\n"
+     "  plex_identity_proxied:\n    <<: *c\n    timeout: 5s\n    timeout: 9s\n",
+     False, "loader"),
+    ("R7 a duplicate INSIDE the merged anchor",
+     "modules:\n  plex_identity_direct: &c\n    prober: http\n    prober: tcp\n"
+     "  plex_identity_proxied:\n    <<: *c\n",
+     False, "loader"),
+    ("R8 `<<: 5`, a merge that cannot resolve",
+     "modules:\n  plex_identity_direct:\n    <<: 5\n    prober: http\n",
+     False, "loader"),
+    ("R9 a duplicated key, no merge in sight",
+     "modules:\n  plex_identity_direct:\n    prober: http\n    prober: tcp\n",
+     False, "loader"),
+    ("R10 an unhashable `? [a, b]` key",
+     "? [a, b]\n: 1\nmodules:\n  plex_identity_direct:\n    prober: http\n",
+     False, "loader"),
+    ("R11 `<<:` at the top level, pulling in an unknown field",
+     "x_defaults: &top\n  modules:\n    plex_identity_direct:\n"
+     "      prober: http\n<<: *top\n",
+     False, "census"),
+)
+
+
+def _blackbox_reader_verdict(text: str):
+    """`None` if the gate's reader accepts `text`, else WHICH HALF refused it.
+
+    The reader is the two steps `test_blackbox_modules_are_the_two_token_free_
+    probes` performs on the rendered config, in that order and with the same
+    `_neutralise_refs` in front, because a reader assembled differently here
+    would be a third parser of the same document rather than a test of the one
+    that ships.
+    """
+    try:
+        doc = yaml.load(_neutralise_refs(text), Loader=_StrictLoader)
+    except yaml.YAMLError:
+        return "loader"
+    if not isinstance(doc, dict):
+        return "not a mapping"
+    unknown, mistyped = _blackbox_field_defects(doc)
+    return "census" if (unknown or mistyped) else None
+
+
+def test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses() -> bool:
+    """Step-5a, DEC-294 charge 1: the gate's reader, scored in BOTH directions.
+
+    `_StrictLoader` exists because `yaml.safe_load` ACCEPTS documents the pinned
+    exporter refuses, and its own docstring states the rule it was built to keep:
+    a parser that accepts documents the process refuses is not modelling the
+    process. THE CONVERSE BREAKS THE SAME SENTENCE, and it broke it here. The two
+    modules share five of seven `http` fields, so the idiomatic dedup is an
+    anchor and a `<<:` merge key — `--config.check` rc=0, the exporter starts on
+    it — and the shipped loader printed `parses=False (error="could not determine
+    a constructor for the tag 'tag:yaml.org,2002:merge'")`. A REGRESSION against
+    the loader it replaced, since `yaml.safe_load` takes that document, and a red
+    that lies about what broke: it names the document when the reader is what is
+    wrong. Row `5b` adds a THIRD module sharing these fields, which is exactly
+    when someone reaches for an anchor.
+
+    So this clause is not "test the test". It is the ROUND'S OWN GENERALISATION
+    applied to its own reader — *a door proved against a REFUSES list is half a
+    door* — turned into the thing that reds when the next tightening forgets it.
+    Every verdict below was driven through `prom/blackbox-exporter:v0.28.0
+    --config.check` (logs/builder-5a-r5-merge-door.log); none of it is a reading
+    of the YAML spec, and three rows are why that distinction is not pedantry.
+
+    THE REPAIR IS ONE `continue` AND THE OBVIOUS ONE IS A TRAP, measured before
+    it was written. `loader.flatten_mapping(node)` ahead of the scan is what
+    anyone writes first; PyYAML PREPENDS the merged pairs to `node.value`, so a
+    key that is both merged AND explicitly overridden — the entire point of a
+    merge key — is seen twice and reds as `duplicate key 'timeout'`. R3 is that
+    document. The door that holds is to step over the merge-TAGGED key node and
+    let `SafeConstructor.construct_mapping` do the flattening it already does.
+
+    R5 IS THE ROW THAT PROVED THE PROVED DOOR SHORT, and it is the reason this
+    table has ten rows rather than the five that came with the charge. `<<` is
+    still a mapping KEY, so a mapping carrying it twice is
+    `mapping key "<<" already defined at line 7` on the binary — rc=1, the crash
+    loop — while a door that merely skips every merge-tagged node parses it
+    happily. The duplicate refusal this whole class exists for was about to be
+    given up for exactly the key the repair was reaching over. So the scan skips
+    the merge node's CONSTRUCTION and not its BOOKKEEPING: `<<` enters `seen`
+    under the spelling the binary's own refusal prints.
+
+    R6-R10 ARE THE REFUSALS THE CLASS WAS WRITTEN FOR, kept: a duplicate beside a
+    merge, a duplicate inside the merged anchor, an unresolvable `<<: 5` (which
+    `flatten_mapping` raises as a `ConstructorError`, i.e. still a
+    `yaml.YAMLError`, so the reader fails CLOSED and in the currency the reading
+    clause catches), a duplicate with no merge in sight, and the unhashable
+    complex key.
+
+    AND THE SOURCE COLUMN IS LOAD-BEARING, not decoration. R11 is refused by the
+    binary too, and for a reason that has nothing to do with merges: the merged
+    document carries `x_defaults` at the top level and this exporter unmarshals
+    strictly. `_blackbox_field_defects` is what must red it, NOT the loader —
+    scoring only "did something refuse" would let the two halves swap roles
+    silently, which is the way a tightening of one usually quietly loosens the
+    other. That is the same both-halves discipline `_StrictLoader`'s own closing
+    paragraph draws between SYNTAX and FIELDS.
+
+    `merge_resolves` is the last arm and it is about SEMANTICS rather than
+    acceptance: a door that skipped merges without flattening them would parse
+    R3 and hand the reading clause a module with no `prober` at all. So the
+    resolved module is asserted whole — the merged key present, the overridden
+    one taking the EXPLICIT value, which is the precedence go-yaml applies too.
+    """
+    offenders = []
+    for label, text, loads, refused_by in BLACKBOX_READER_ROWS:
+        got = _blackbox_reader_verdict(text)
+        if (got is None) != loads:
+            offenders.append(
+                f"{label}: binary={'LOADS' if loads else 'REFUSES'}, "
+                f"reader={got or 'accepts'}")
+        elif got is not None and got != refused_by:
+            offenders.append(f"{label}: refused by {got!r}, want {refused_by!r}")
+    try:
+        resolved = yaml.load(BLACKBOX_MERGE_OVERRIDE, Loader=_StrictLoader)
+        merged_module = resolved["modules"][BLACKBOX_PROXIED_MODULE]
+    except Exception as exc:                       # noqa: BLE001 - reported, not raised
+        merged_module = f"<{type(exc).__name__}>"
+    merge_resolves = merged_module == {
+        "prober": "http", "timeout": "9s", "http": {"method": "GET"},
+    }
+    ok = not offenders and merge_resolves
+    print(
+        f"{'OK' if ok else 'FAIL'}: the gate's {BLACKBOX_CONFIG.name} reader "
+        f"refuses exactly what the pinned exporter refuses "
+        f"(rows={len(BLACKBOX_READER_ROWS)}, offenders={offenders}, "
+        f"merge_resolves={merge_resolves} (resolved={merged_module}))"
+    )
+    return ok
+
+
 def test_homepage_allowed_hosts() -> bool:
     """Step-10: homepage sets HOMEPAGE_ALLOWED_HOSTS=home.{{ domain }}.
 
@@ -5880,6 +6783,9 @@ def main() -> int:
         test_plex_exporter_service_block(),
         test_plex_token_sourced_from_vault(),
         test_plex_node_exporter_scrape_job(),
+        test_blackbox_exporter_service_block(),
+        test_blackbox_modules_are_the_two_token_free_probes(),
+        test_the_blackbox_reader_refuses_exactly_what_the_exporter_refuses(),
         test_homepage_allowed_hosts(),
         test_internal_services_lists_all_internal(),
         test_homepage_monitors_target_internal_urls(),

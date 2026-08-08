@@ -31,6 +31,20 @@ docker_host_pve_exporter_image: prompve/prometheus-pve-exporter:3.9.0
 # decided the choice. Staleness recorded rather than discovered later: MIT, not
 # archived, last release AND last push both 2024-12-22.
 docker_host_plex_exporter_image: ghcr.io/axsuul/plex-media-server-exporter:2.1.0
+# Synthetic probes (plex-blip-manual-triage Step 5). Verified against the
+# registry the same way as the exporter above rather than taken from a research
+# doc: v0.28.0 (2025-12-06) is the newest release tag Docker Hub carries for
+# prom/blackbox-exporter and it is the tag `latest` currently points at — the
+# three floating `master*` tags are the only newer things published, and they are
+# not releases. Three-part pin, per test_no_floating_service_image_tags.
+#
+# THIS IMAGE RUNS AS ROOT, WHICH IS NOT TRUE OF ITS SIBLINGS AND DECIDES A MODE.
+# `docker inspect` reports `Config.User` "" here against "nobody" for
+# prom/prometheus:v3.12.0, and `id` in each confirms it (uid 0 vs uid 65534) —
+# so the rendered blackbox.yml is 0640 root:root, readable to the process and
+# published to nobody, while prometheus.yml two files over must stay 0644 for the
+# opposite and equally measured reason (tasks/main.yml).
+docker_host_blackbox_exporter_image: prom/blackbox-exporter:v0.28.0
 
 # Proxmox VE exporter coordinates (plex-monitoring Step 2). All NON-SECRET, so
 # they live here rather than in the vault — only the token VALUE is a secret and

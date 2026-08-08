@@ -1,0 +1,104 @@
+# blackbox-exporter modules — plex-blip-manual-triage Step 5a.
+# Managed by ansible (roles/docker_host/templates/blackbox.yml.j2). Do not edit
+# on the host: the render is the source and a hand edit is lost at `just play`.
+#
+# A MODULE IS A HOW, NOT A WHAT. The URL is the scrape job's `__param_target`
+# (prometheus.yml.j2, row 5c); what lives here is the probe's method, what counts
+# as success, and which IP family to use. Design §4.6 wants three probes and this
+# file carries the TWO THAT NEED NO CREDENTIAL — `/identity` direct and
+# `/identity` through Traefik. The `/status/sessions` probe must send a live Plex
+# token and is row 5b; it lands here, in this file, which is why the file's mode
+# is already the one a secret needs (0640 root:root, readable to a process this
+# image runs as root — see tasks/main.yml).
+#
+# THE MODULE NAMES ARE A JOIN NOTHING AT RUNTIME CHECKS. A scrape job whose
+# `module=` parameter names a module this file does not define gets HTTP 400 from
+# /probe: the target reads DOWN, no `probe_*` series exist, and neither config is
+# invalid. scripts/test_traefik_config_shape.py holds both ends against one
+# tuple (`BLACKBOX_MODULES`) so a rename here cannot land without 5c's jobs.
+#
+# EVERY FIELD BELOW IS ENUMERATED IN THAT SAME FILE, WITH THE VALUE SHAPE IT
+# MUST HAVE, and a field it has not learned REDS THE GATE —
+# `BLACKBOX_{TOP,MODULE,HTTP,TLS}_FIELDS`. That is not pedantry: this exporter
+# unmarshals STRICTLY, so `valid_status_code` (one character) is `Error loading
+# config` + exit 1, and so is `timeout: 5` for the `timeout: 5s` below (one
+# DELETED character) — and `restart: unless-stopped` turns either into the crash
+# loop this role served for two weeks. The allow-list is this document's
+# vocabulary rather than a copy of blackbox's schema, so adding a LEGAL field —
+# `headers:` for row 5b's token, a `min_version:` — is a one-line edit to that
+# map in the same commit. Fail-closed, and deliberate.
+modules:
+  # /identity direct to the Plex container. Unauthenticated — it is Plex's own
+  # healthcheck endpoint — and it does no database work, which is exactly why
+  # design §4.6 polls it at 15 s and why it is NOT sufficient on its own: on
+  # 2026-08-07 it answered HTTP 200 through the whole five-minute outage.
+  plex_identity_direct:
+    prober: http
+    # Below the 15 s scrape interval 5c sets, so a hung probe is reported as a
+    # failure rather than colliding with the next scrape. blackbox additionally
+    # clamps to Prometheus's own timeout header minus --timeout-offset (0.5 s),
+    # so this is a ceiling and not a floor.
+    timeout: 5s
+    http:
+      method: GET
+      # 200 only. blackbox's default accepts any 2xx, and Plex answering 204 on
+      # /identity would be a state worth seeing rather than one to smooth over.
+      valid_status_codes: [200]
+      # ip4 with fallback OFF, deliberately. The default tries IPv6 first and
+      # falls back, which turns a broken AAAA into added probe LATENCY rather
+      # than a failure — and this probe exists to MEASURE latency, so a
+      # resolution artefact would land in the series as a Plex stall.
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      # A redirect is not a healthy /identity. Following one would let a captive
+      # portal or a misrouted proxy answer 200 for a Plex that is down.
+      #
+      # `follow_redirects: false` and NOT the `no_follow_redirects: true` that
+      # every blackbox example on the internet still shows: the pinned binary
+      # accepts that spelling and WARNS on it at config load — "deprecated and
+      # will be removed in the next release" — so the older spelling is a config
+      # this image's successor rejects outright. Measured on v0.28.0 itself
+      # (logs/builder-5a-live-A-C.log), not read off a changelog.
+      follow_redirects: false
+      # NO `fail_if_not_ssl` HERE, AND ITS ABSENCE IS PINNED. This probe's target
+      # is plain HTTP on the compose network, so the field that is correct one
+      # module down would make this one report `probe_success 0` for ever — a
+      # permanent "the origin is down" that no certificate, restart or Plex fix
+      # can clear. Measured on v0.28.0 against a plain-HTTP target: 1 as shipped,
+      # 0 with the field added (logs/builder-5a-r2-tls-differential.log, H3).
+
+  # /identity through Traefik: same endpoint, the whole public path. The pair is
+  # the diagnosis — identity fast + proxied slow is a proxy/TLS fault, both slow
+  # is the host or the database (design §4.6's differential table).
+  plex_identity_proxied:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      follow_redirects: false
+      # WHAT THIS FIELD BUYS IS THE PLAIN-HTTP REFUSAL, AND ONLY THAT. Traefik
+      # carries a per-router http->https upgrade, so without it a probe that
+      # silently accepted a plain-HTTP answer would report the redirect target's
+      # health and call the TLS path green. Measured on v0.28.0 against a
+      # plain-HTTP target: 0 as shipped, 1 with the field deleted
+      # (logs/builder-5a-r2-tls-differential.log, G1/G2).
+      #
+      # IT DOES NOT PROTECT THE CERTIFICATE, and this comment used to say it did.
+      # Against a leaf expired on 2026-06-01 the module reports 0 with the field
+      # AND 0 without it (E1/E2) — that whole claim belongs to the field below.
+      fail_if_not_ssl: true
+      tls_config:
+        # THIS IS THE RENEWAL CHECK, measured rather than assumed: with
+        # `insecure_skip_verify: true` the same expired leaf reads
+        # `probe_success 1` (E3), while all three spellings read 1 against a
+        # valid cert (F1-F3). The wildcard is a real Let's Encrypt production
+        # certificate (acme_resolver le-dns-cf), so leaving verification ON is a
+        # live check of the thing most likely to break silently.
+        #
+        # SPELLED EXPLICITLY THOUGH `false` IS ALSO THE DEFAULT: the guard scores
+        # this key's presence, so the sentence above has a line to red on and
+        # deleting the block is caught exactly like flipping it.
+        insecure_skip_verify: false
