@@ -1684,18 +1684,31 @@ PLEX_NODE_TARGET_EXPR = f"{{{{ hostvars['{PLEX_INVENTORY_HOST}'].ansible_host }}
 # must not make it twice. `0.0.0.0` is a bind wildcard and not a scrape host, so
 # only the PORT half relates; comparing the addresses whole can only ever be red.
 PLEX_ROLE_DEFAULTS = PLEX_ROLE / "defaults" / "main.yml"
-PLEX_NODE_EXPORTER_DROPIN = (
-    PLEX_ROLE / "templates" / "prometheus_node_exporter_override.conf.j2"
-)
 PLEX_NODE_LISTEN_VAR = "plex_node_exporter_listen_address"
-# `task-1786167365-e571` is why the drop-in is read at all. A guard that compares
-# a render against the variable it rendered FROM is a tautology — that row left
-# its suite 9/9 GREEN over a 203/EXEC crash loop — so the second end here is this
-# template's own literal port, never a second read of the plex default. What the
-# drop-in supplies instead is the REFERENCE: the variable is only worth following
-# if something still passes it to the exporter, and a `--web.listen-address` that
-# stopped dereferencing it would leave the port relation nominal.
-PLEX_NODE_LISTEN_REF = f"{{{{ {PLEX_NODE_LISTEN_VAR} }}}}"
+# `task-1786167365-e571` is why only ONE end of the port relation is read out of
+# the plex role. A guard that compares a render against the variable it rendered
+# FROM is a tautology — that row left its suite 9/9 GREEN over a 203/EXEC crash
+# loop — so the second end here is this template's own literal port, never a
+# second read of the plex default.
+#
+# THE OTHER HALF OF THE RELATION — that something in the plex role still PASSES
+# that variable to `--web.listen-address`, or the default is a value nothing
+# reads — IS NOT CHECKED HERE, AND THAT IS DELIBERATE. It is already held by the
+# clause named below, which shipped one wave earlier and names this row by task
+# key in its own docstring. Two guards over one fact is `task-1786153086-9f13`'s
+# class one level up, and it was measured to be worse in BOTH directions: a
+# file-wide substring here goes GREEN when the flag is hardcoded and the variable
+# survives in a comment / on an `Environment=` line / on a different flag, and it
+# goes RED on `{{var}}` and `{{  var  }}` — legal Jinja reformats the cited clause
+# deliberately normalises (`_normalise_refs`, with a comment saying why).
+#
+# A citation is only worth one parser while the cited clause EXISTS and RUNS, so
+# `far_end_is_held` reads that module with `ast`: the function must be defined
+# and must be reached by that module's own code — which in a `scripts/test_*.py`
+# file is what puts it in the gate (`run_gate.py` globs this directory and runs
+# each file's `__main__`).
+PLEX_NODE_FAR_END_SUITE = REPO_ROOT / "scripts" / "test_plex_node_exporter_shape.py"
+PLEX_NODE_FAR_END_CLAUSE = "test_the_listen_address_is_a_variable_the_scrape_job_can_pin"
 # The watchdog writes the `.prom` this job exists to collect, and its refresh
 # cadence is a plain keyword default with no CLI flag in the shipped unit — so
 # 15.0 s is what actually runs. Design §4.5 sets the scrape at 15 s: one decision
@@ -4421,6 +4434,47 @@ def _signature_default_number(source: str, param: str) -> float | None:
     return found[0] if len(found) == 1 else None
 
 
+def _defines_and_references(source: str, name: str) -> tuple[bool, bool]:
+    """Does `source` define a module-level `name`, and does its CODE use it?
+
+    What arms a citation to another guard. `run_gate.py` globs
+    `scripts/test_*.py` and runs each file's `__main__`, so a shape-test clause
+    reaches the gate only by being defined AND reached from that module's own
+    `main()`; a function that is merely defined is dead code the gate never
+    scores, and a citation to dead code is a fact nothing holds.
+
+    THE SECOND HALF IS SCORED AS A `Name` LOAD, NOT AS A CALL, and the
+    difference is measured rather than guessed: this file registers its checks
+    by CALLING them in `main()`, while `test_plex_node_exporter_shape.py`
+    registers them as REFERENCES in a `TESTS` tuple that `main()` then maps over
+    (which is also what its own `test_every_test_function_is_registered_in_tests`
+    scores). A reader that demanded `ast.Call` would red on the second spelling
+    with the clause fully live — a false-RED of exactly the kind this clause
+    replaced. A `Name` load covers both, because `f()` loads `f` too.
+
+    Read with `ast` and not by substring FOR THE SAME REASON THIS CLAUSE
+    REPLACED A SUBSTRING: `name in source` is satisfied by the function's name
+    appearing in a comment, or in a docstring that describes deleting it. The
+    definition is required at module level because a nested `def` is not what
+    `main()` can reach.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False, False
+    defined = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        for node in tree.body
+    )
+    referenced = any(
+        isinstance(node, ast.Name)
+        and node.id == name
+        and isinstance(node.ctx, ast.Load)
+        for node in ast.walk(tree)
+    )
+    return defined, referenced
+
+
 def test_plex_node_exporter_scrape_job() -> bool:
     """Step-4d: CT 110's node-exporter is scraped, with its PORT read off the role.
 
@@ -4451,20 +4505,40 @@ def test_plex_node_exporter_scrape_job() -> bool:
       `inventory/hosts.yml` whether a host of that name really sits under that
       group WITH an `ansible_host`: a tofu rename reds the gate here instead of
       rendering a target Ansible cannot resolve.
-    * `port_follows_exporter` / `reference_chain_live` — LOAD-BEARING, and the
-      whole reason this row exists. The target's port is compared against the
-      port half of `plex_node_exporter_listen_address` read out of the plex
-      role's defaults, so the port the exporter BINDS and the port this job DIALS
-      cannot move apart. `reference_chain_live` is the other half of that: the
-      role's drop-in must still pass `{{ plex_node_exporter_listen_address }}` to
-      `--web.listen-address`, or the default is a value nothing reads and the
-      relation is nominal.
+    * `port_follows_exporter` — LOAD-BEARING, and the whole reason this row
+      exists. The target's port is compared against the port half of
+      `plex_node_exporter_listen_address` read out of the plex role's defaults,
+      so the port the exporter BINDS and the port this job DIALS cannot move
+      apart.
 
       THE SECOND END IS THIS TEMPLATE'S OWN LITERAL, NEVER THE SAME VARIABLE
       TWICE. `task-1786167365-e571` is that mistake one file over — `runs_exporter`
       compared a rendered argv against the variable it rendered FROM, which is a
       tautology, and retargeting the variable left the suite 9/9 GREEN over a
       203/EXEC crash loop.
+    * `far_end_is_held` — the OTHER half of that relation, held by CITATION
+      rather than re-checked here. That the plex role still passes the variable
+      to `--web.listen-address` (without which the default is a value nothing
+      reads and the port relation is nominal) is asserted by
+      `test_plex_node_exporter_shape.py::test_the_listen_address_is_a_variable_the_scrape_job_can_pin`,
+      which names THIS row by task key in its own docstring.
+
+      A SECOND SPELLING WAS MEASURED WORSE IN BOTH DIRECTIONS, which is why this
+      is a citation and not a check. `PLEX_NODE_LISTEN_REF in <drop-in>` — a
+      file-wide substring — goes GREEN on the flag hardcoded with the variable
+      kept in a comment, on an `Environment=` line, or passed to a DIFFERENT
+      flag, all three of which the cited clause reds; and it goes RED on the
+      legal Jinja reformats `{{var}}` and `{{  var  }}`, which the cited clause
+      tolerates on purpose (`_normalise_refs`). Weaker AND more brittle at once,
+      and the brittle half is the live one — a false-RED tripwire in the gate on
+      a spelling the repo has a commented decision to accept.
+
+      SO WHAT IS CHECKED HERE IS THE CITATION ITSELF: `_defines_and_references`
+      reads that module with `ast` and requires the clause to be DEFINED and
+      REACHED BY CODE, because `run_gate.py` globs `scripts/test_*.py` and runs
+      each file's `__main__` — a clause that drops out of that module's `TESTS`
+      tuple stops being in the gate, and this docstring would then cite a fact
+      nothing holds.
     * `no_multi_target_shape` — the job's OWN key column may hold only
       `PLEX_NODE_JOB_KEYS`, the allow-list shape `test_plex_scrape_job_is_single_target`
       established (an absence pin fails open one key past its edge, and
@@ -4487,8 +4561,18 @@ def test_plex_node_exporter_scrape_job() -> bool:
       as the honest inequality (over-scraping only wastes samples) and leaves
       184b's own mutation GREEN, since 15 <= 86400. The interval is read
       EFFECTIVELY — the job's own `scrape_interval` if it sets one, otherwise the
-      file's `global` — so the pin does not legislate which of the two spellings
-      the template uses.
+      file's `global` — because that is what Prometheus scrapes at, and a
+      template that only inherited would still be pinned to the refresh.
+    * `interval_is_job_local` — the job carries its OWN `scrape_interval` key.
+      SEPARATE FROM THE CLAUSE ABOVE, and one of them cannot do the other's job:
+      `global` is also 15s today, so DELETING the job's key leaves the effective
+      read at 15.0 and `interval_follows_refresh` GREEN. The template says the
+      interval is "job-local rather than inherited so that this job's cadence is
+      a property of this job" and that "a change to the global interval must not
+      coarsen it silently" — a mechanism sentence a value-preserving mutant walks
+      straight past, which is `task-1786170786-3fb1`. An allow-list of key names
+      (`no_multi_target_shape`) cannot close it either: it says which keys MAY
+      appear, never which MUST.
     * `timeout_fits` — the effective timeout does not exceed the effective
       interval. Prometheus REFUSES to load a config that gets this backwards, so
       the whole file stops scraping rather than this job alone, and nothing in
@@ -4518,7 +4602,10 @@ def test_plex_node_exporter_scrape_job() -> bool:
         bool(targets) and exporter_port is not None
         and all(p == exporter_port for p in port_halves)
     )
-    reference_chain_live = PLEX_NODE_LISTEN_REF in _read(PLEX_NODE_EXPORTER_DROPIN)
+    far_end_defined, far_end_referenced = _defines_and_references(
+        _read(PLEX_NODE_FAR_END_SUITE), PLEX_NODE_FAR_END_CLAUSE
+    )
+    far_end_is_held = far_end_defined and far_end_referenced
     host_block = _yaml_block_by_key(
         _yaml_block_by_key(_yaml_block_by_key(_read(INVENTORY), PLEX_INVENTORY_GROUP), "hosts"),
         PLEX_INVENTORY_HOST,
@@ -4544,11 +4631,12 @@ def test_plex_node_exporter_scrape_job() -> bool:
     interval_follows_refresh = (
         interval is not None and refresh is not None and interval == refresh
     )
+    interval_is_job_local = job_interval is not None
     timeout_fits = interval is not None and timeout <= interval
     ok = (
         present and single_target and host_is_inventory_ref and inventory_has_host
-        and port_follows_exporter and reference_chain_live and no_multi_target_shape
-        and interval_follows_refresh and timeout_fits
+        and port_follows_exporter and far_end_is_held and no_multi_target_shape
+        and interval_follows_refresh and interval_is_job_local and timeout_fits
     )
     print(
         f"{'OK' if ok else 'FAIL'}: {PLEX_NODE_JOB} scrape job follows the plex role "
@@ -4558,12 +4646,15 @@ def test_plex_node_exporter_scrape_job() -> bool:
         f"({PLEX_INVENTORY_GROUP}/{PLEX_INVENTORY_HOST} in {INVENTORY.name}), "
         f"port_follows_exporter={port_follows_exporter} "
         f"(exporter_port={exporter_port}, job_ports={port_halves}), "
-        f"reference_chain_live={reference_chain_live} ({PLEX_NODE_LISTEN_REF!r} in "
-        f"{PLEX_NODE_EXPORTER_DROPIN.name}), no_multi_target_shape="
+        f"far_end_is_held={far_end_is_held} ({PLEX_NODE_FAR_END_SUITE.name}::"
+        f"{PLEX_NODE_FAR_END_CLAUSE} defined={far_end_defined} "
+        f"referenced={far_end_referenced}), no_multi_target_shape="
         f"{no_multi_target_shape} (keys={job_keys}, unexpected={extra_keys}, "
         f"unreadable={unreadable_keys}), interval_follows_refresh="
         f"{interval_follows_refresh} (interval={interval}s, "
-        f"{PLEX_WATCHDOG_REFRESH_PARAM}={refresh}s), timeout_fits={timeout_fits} "
+        f"{PLEX_WATCHDOG_REFRESH_PARAM}={refresh}s), interval_is_job_local="
+        f"{interval_is_job_local} (job_scrape_interval={job_interval}s, "
+        f"global={global_interval}s), timeout_fits={timeout_fits} "
         f"(timeout={timeout}s))"
     )
     return ok
