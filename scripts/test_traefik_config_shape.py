@@ -5366,10 +5366,62 @@ def _blackbox_field_defects(doc) -> tuple:
 
 
 # The legal YAML that may stand between the top of a file and its first KEY
-# while carrying no prose: a document start, and the `%YAML` / `%TAG` directives
-# that must precede one. A BOM is stripped separately — it is a character on the
-# first line rather than a line of its own.
-_YAML_PROLOGUE = re.compile(r"^(?:---|%\S.*)$")
+# while carrying no prose: a document start, and the directives that may precede
+# one. A BOM is stripped separately — it is a character on the first line rather
+# than a line of its own.
+#
+# SKIP ONLY WHAT THE BINARY TAKES, and that rule is this constant's whole defect
+# history (DEC-309). Round 3 shipped `^(?:---|%\S.*)$` — EVERY `%` directive,
+# generalised from the one `%TAG` row it had measured — and `%YAML 1.2` is a
+# document `prom/blackbox-exporter:v0.28.0` REFUSES outright ("found incompatible
+# YAML document"), because go-yaml v3 implements YAML 1.1. That is the version
+# anyone writing a config today reaches for, rc=1 under `restart: unless-stopped`
+# is the crash loop this role served for two weeks, and this reader walked past
+# it into a GREEN the parent `1f29d08` had RED.
+#
+# FITTED TO 26 PROLOGUES driven through real ansible-core 2.21.1 into that
+# image's own `--config.check`, not to go-yaml's source
+# (logs/builder-5b-r4-red.log legs B and C, logs/builder-5b-r4-legd.log; all 26
+# plus the shipped file are re-driven as a biconditional against the SUITE in
+# logs/builder-5b-r4-door.log, 27 rows).
+#   TAKEN, rc=0 — 13. `---`; `--- # comment`; `---` + a blank line; a UTF-8 BOM;
+#           `%TAG !e! …` + `---`; `%YAML 1.1` + `---` with one space, with two
+#           spaces, with a TAB, with a trailing comment, and with a comment LINE
+#           between the directive and the `---`; `%TAG` and `%YAML 1.1` together;
+#           and `---` or `%YAML 1.1` + `---` placed BELOW this file's 48-line
+#           header instead of above it.
+#   REFUSED, rc=1 — 13. `----`; `...`; a bare `%TAG` + `---`; `%TAG` with no
+#           `---`; `%YAML 1.1` with no `---`; `%YAML 1.1` given TWICE; `%YAML
+#           1.0`, `%YAML 1.2`, `%YAML 1.10`, `%YAML 2.0`, lower-case `%yaml 1.1`
+#           and an unknown `%FOO bar`, each + `---`; and `%YAML 1.2` + `---`
+#           BELOW the header.
+# The `(?:\s.*)?` tails are two of those rows rather than caution: `--- # comment`
+# and `%YAML 1.1 # comment` are both rc=0 on the binary, and round 3's spelling
+# RED the first of them (logs/builder-5b-r4-red.log leg C).
+#
+# Which of the REFUSED rows this reader is the one to red, and which belong to the
+# reading clause's `parses`, is `_leading_comment_block`'s own paragraph.
+_YAML_PROLOGUE = re.compile(r"^(?:---(?:\s.*)?|%TAG\s.*|%YAML\s+1\.1(?:\s.*)?)$")
+BLACKBOX_PROLOGUE_EVIDENCE = "logs/builder-5b-r4-{red,legd}.log"
+
+
+def _is_yaml_directive(line) -> bool:
+    """Is this line a `%` directive? BOM-tolerant, like the reader above it.
+
+    Read on `_leading_comment_block`'s STOP line, where it is a document fact
+    rather than a formatting one: every `%` prologue that reader refuses to walk
+    past is one the binary refuses too. The seven are enumerated in that reader's
+    own docstring, which is also where the converse is disclaimed.
+
+    IT IS INDENTATION-TOLERANT TOO, AND THAT IS A MEASUREMENT RATHER THAN AN
+    INTENTION. An indented `%YAML 1.1` is not a directive at all in YAML, and both
+    this predicate and `_YAML_PROLOGUE` see it as one because both read the
+    `.strip()`ped line. The binary refuses both indented spellings, and so does
+    the suite — `1.1` through the reading clause's `parses` and `1.2` through this
+    predicate, so the verdicts agree by different routes rather than by design
+    (logs/builder-5b-r4-mutants.log rows A2/A3).
+    """
+    return bool(line) and line.lstrip("\ufeff").strip().startswith("%")
 
 
 def _leading_comment_block(text: str) -> tuple:
@@ -5398,6 +5450,31 @@ def _leading_comment_block(text: str) -> tuple:
     document body and score a per-module comment. That is why the stop line is
     RETURNED: an empty block is a statement about this reader, and the caller
     prints it as one.
+
+    A LINE, NOT A DOCUMENT, and DEC-309 is what that distinction cost. Round 3
+    read "recognise the prologue" as "recognise the `%` family" and skipped
+    `%YAML 1.2` — see `_YAML_PROLOGUE`, where the 26 measured prologues now live.
+    The split those rows support is this:
+
+    * Every `%` line this reader will NOT walk past is one the binary refuses on
+      its own. Seven of them, measured: `%YAML 1.0`, `%YAML 1.2`, `%YAML 1.10`,
+      `%YAML 2.0`, `%yaml 1.1`, `%FOO bar`, a bare `%TAG`. So the caller reds
+      `prologue_loads` off the stop line via `_is_yaml_directive`, and it holds
+      wherever the directive SITS — a `%YAML 1.2` below this file's 48-line
+      header is rc=1 on the binary too, and there the header is intact and reads
+      true, so no prose arm could ever have caught it.
+    * The converse does NOT hold, and this reader does not pretend otherwise. A
+      document can be refused for a reason that is not any one line — `%YAML 1.1`
+      given TWICE, or either directive with no `---` after it. All three are the
+      reading clause's `parses`, which reds all three; measured at HEAD rather
+      than assumed (`logs/builder-5b-r4-red.log` leg B). Re-spelling them here
+      would be the second-reader drift this file has already paid for.
+
+    ONE MEASURED DISAGREEMENT, AND IT IS NOT THIS READER'S. `%YAML` + a TAB +
+    `1.1` is rc=0 on the binary and a PyYAML `while scanning a directive`, so the
+    suite reds a config that runs — through `parses`, one clause over. Filed as
+    `task-1786198184-88d8` against the reader-vs-binary biconditional
+    (`task-1786189577-e019`'s subject) rather than papered over here.
 
     Scoped to the header on purpose: the per-module comments are attributions
     ("this module came from Step 5b"), which stay true for ever, while the header
@@ -5810,19 +5887,34 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
       to read. The guard could not tell bare from quoted before this arm: the
       bare template was 47/47 GREEN (leg C).
 
-      EITHER QUOTE STYLE, DELIBERATELY, and this is where a wider arm would have
-      been a wrong one. The obvious spelling of this check requires the DOUBLE
-      quotes the file ships — and it would red the spelling that measured BEST.
-      Single-quoted is 17/18 and its one loss is a rc=1 refusal an operator sees;
-      double-quoted is 16/18 and one of its two losses is SILENT. The arm may
-      claim only what the rows separate, which is quoted from bare.
+      EITHER QUOTE STYLE, AND THE REASON IS THE SCOPE OF THE CLAIM RATHER THAN
+      ANY DOCUMENT THIS BUYS. What the 18 rows separate is QUOTED from BARE, so
+      that is what the arm may say; single-quoted at 17/18 and double at 16/18 do
+      not differ by a row this arm could honestly rest on.
 
-      WHY THE FILE NONETHELESS SHIPS THE WEAKER-ON-THE-WIRE SPELLING, measured
-      at `logs/builder-5b-r3-neutralise.log`: `_neutralise_refs` substitutes
+      AND IT BUYS NO DOCUMENT, WHICH IS THE CORRECTION DEC-309 CHARGE 2 FORCED.
+      Round 3 argued the width here by saying the narrow spelling "would red the
+      spelling that measured BEST". It would not: the suite reds the
+      single-quoted template ANYWAY, `FAIL: 2/47`, and FIVE of the reds are this
+      clause's own — `module_defined`, `header_key`, `token_from_vault`,
+      `no_token_literal`, `header_prose_current` — while `token_render_is_quoted`
+      is the one arm that says True (re-measured at this row's own parent,
+      `logs/builder-5b-r4-charge2.log` leg B, the whole red line captured
+      verbatim). The width is INERT on that template, and a sentence claiming
+      otherwise is the `8784` class in the paragraph round 3 was sent to repair
+      for being one.
+
+      WHAT MAKES IT INERT is `_neutralise_refs`, and the cause is measured rather
+      than plausible (`logs/builder-5b-r4-charge2.log` leg C): it substitutes
       `'<REF>'`, a SINGLE-quoted placeholder, so the single-quoted template
       becomes `X-Plex-Token: ''<REF>''` and THIS FILE's own parse of it is a
-      PyYAML `ParserError`. Adopting the better spelling is a change to that
-      helper, not to that line, and it is not this row's.
+      PyYAML `ParserError` — "while parsing a block mapping" — which is why
+      `module_defined` now PRINTS the parse error instead of reporting a broken
+      document as a missing module. The binary, for its part, takes both renders
+      at rc=0 with the token intact (leg A), so "measured best" remains true of
+      the WIRE and is false only as a claim about this suite. Adopting the better
+      spelling is a change to that helper, not to that line, and it is not this
+      row's.
 
       AND QUOTING IS NOT A UNIVERSAL DEFENCE — that over-claim is exactly what
       charge 1 struck, and the template's paragraph now carries the two rows
@@ -5874,6 +5966,20 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
       move the token into the 0644 file — which would be silently correct at
       runtime and would falsify the sentence that licenses that mode.
 
+    * `prologue_loads` — THE HEADER READER'S STOP LINE, READ AS A DOCUMENT FACT,
+      and it is here because the arm below cannot carry it. `_leading_comment_block`
+      walks past the prologue the binary TAKES; every `%` line it will not walk
+      past is one the binary REFUSES (seven measured rows, `_YAML_PROLOGUE`).
+      Round 3 skipped the whole `%` family and turned `%YAML 1.2` — rc=1 "found
+      incompatible YAML document", because go-yaml v3 is YAML 1.1 — from the RED
+      the parent `1f29d08` printed into a GREEN (DEC-309 charge 1). Narrowing the
+      skip list is half the repair; this arm is the other half, because the
+      narrowing only reds a directive standing ABOVE the header. Put the same
+      `%YAML 1.2` BELOW those 48 lines and the binary still refuses it at rc=1
+      while the header parses, names the token and names the module, so
+      `header_prose_current` reads TRUE over a config that cannot start
+      (`logs/builder-5b-r4-legd.log`). One arm, both positions.
+
     * `header_prose_current` — the template's OWN HEADER, scored against the
       parsed document as a biconditional (DEC-302 charge 1). Round 1 shipped the
       token under a comment block that still called this file's contents "the
@@ -5922,10 +6028,18 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
     the reason" sentence.
     """
     text = _read(BLACKBOX_CONFIG)
+    # The parse error is KEPT AND PRINTED, the reading clause's treatment
+    # (`parses=False (error=…)`), because without it `module_defined=False` reports
+    # a whole-document `ParserError` as "this module is not defined" — a printed
+    # reason false of a file whose module is right there. DEC-309 charge 2, and the
+    # document that produces it is not hypothetical: the SINGLE-quoted spelling of
+    # the token line makes this file's own `_neutralise_refs` output
+    # `X-Plex-Token: ''<REF>''` (logs/builder-5b-r4-charge2.log leg C).
     try:
         doc = yaml.load(_neutralise_refs(text), Loader=_StrictLoader)
-    except yaml.YAMLError:
-        doc = None
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
     modules = doc.get("modules") if isinstance(doc, dict) else None
     sessions = modules.get(BLACKBOX_SESSIONS_MODULE) if isinstance(modules, dict) else None
     module_defined = isinstance(sessions, dict)
@@ -5952,12 +6066,18 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
     )
     in_module = header_line.search(module_block)
     header_value = in_module.group(1) if in_module else None
-    # The single existing spelling, `env.j2:46`, with its filter. The quotes are
-    # OPTIONAL HERE and REQUIRED by `token_render_is_quoted` below, which is a
-    # separation and not an oversight: this pattern answers "which variable, with
-    # which filter", and the quoting is a second fact with its own measurement and
-    # its own arm, so a mutant that unquotes reds on the arm whose sentence it
-    # falsifies.
+    # The single existing spelling, `env.j2:46`, with its filter. This pattern
+    # answers "which variable, with which filter" and NOT "quoted how" — the
+    # quoting is a second fact with its own measurement and its own arm
+    # (`token_render_is_quoted`), so a mutant that unquotes reds on the arm whose
+    # sentence it falsifies rather than on this one.
+    #
+    # `"?` IS THE DOUBLE QUOTES AND THE BARE FORM, AND THAT IS THE WHOLE OF IT.
+    # The comment here used to say the quotes were "OPTIONAL", which is false of
+    # the single-quoted spelling — this pattern does not match it (DEC-309 charge
+    # 2). Widening it would be inert anyway: on that template the document does
+    # not reach this line, because `_neutralise_refs` has already made the parse
+    # a `ParserError` and `module_defined` is the arm that reds, printing it.
     vault_reference = re.compile(
         rf'"?\{{\{{\s*{re.escape(PLEX_VAULT_KEY)}\s*\|\s*default\(\'\'\)\s*\}}\}}"?'
     )
@@ -6008,6 +6128,13 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
     # renamed by dropping a character IS a substring of it — both green under
     # `in` and both red here (mem-1786173563-eb5c, met on the prose side).
     preamble, preamble_stop = _leading_comment_block(text)
+    # AND THE STOP LINE IS A DOCUMENT FACT BEFORE IT IS A PROSE ONE. A `%` line
+    # that reader will not walk past is a prologue the binary REFUSES (seven rows,
+    # measured — `_YAML_PROLOGUE`), so this file would not start at all, and the
+    # prose arm below cannot be the one to say so: the header ABOVE such a
+    # directive is intact and reads true, which is exactly the position row
+    # `logs/builder-5b-r4-legd.log` measures at rc=1.
+    prologue_loads = not _is_yaml_directive(preamble_stop)
     credential_modules = _credential_modules(modules)
     preamble_names_header = re.search(
         rf"(?i)\b{re.escape(BLACKBOX_TOKEN_HEADER)}\b", preamble
@@ -6036,13 +6163,13 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         module_defined and header_key and token_from_vault and single_vault_ref
         and no_token_literal and token_render_is_quoted and sessions_accepts_plain
         and world_bit_withheld and prom_carries_no_credential
-        and header_prose_current
+        and prologue_loads and header_prose_current
     )
     print(
         f"{'OK' if ok else 'FAIL'}: {BLACKBOX_SESSIONS_MODULE} sends "
         f"{PLEX_VAULT_KEY} as the {BLACKBOX_TOKEN_HEADER} header and "
         f"{BLACKBOX_CONFIG.name} withholds it from the world "
-        f"(module_defined={module_defined}, "
+        f"(module_defined={module_defined} (parse error={parse_error!r}), "
         f"header_key={header_key} "
         f"({BLACKBOX_SESSIONS_MODULE}.http.headers keys={header_keys}, "
         f"want=[{BLACKBOX_TOKEN_HEADER!r}]), "
@@ -6066,6 +6193,13 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         f"own 0644 rests on), "
         f"prom_carries_no_credential={prom_carries_no_credential} "
         f"({PROM_SCRAPE.name} leaks={prom_leaks}), "
+        f"prologue_loads={prologue_loads} "
+        f"(the header reader stopped at {preamble_stop!r} — a `%` prologue it "
+        f"will not walk past is one this exporter REFUSES at rc=1, measured on "
+        f"seven of them at {BLACKBOX_PROLOGUE_EVIDENCE}, and `restart: "
+        f"unless-stopped` turns that into a crash loop; a `%YAML 1.2` BELOW this "
+        f"header is the same rc=1 with the prose still reading true, so this arm "
+        f"and not the one after it is where that document dies), "
         f"header_prose_current={header_prose_current} "
         f"({BLACKBOX_CONFIG.name}'s own header is "
         f"{len(preamble.splitlines())} line(s), {preamble_note}, and modules "
