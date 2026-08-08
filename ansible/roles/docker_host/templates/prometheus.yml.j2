@@ -186,8 +186,13 @@ scrape_configs:
   # {job="blackbox-plex-sessions"} and probe_success{job=~"blackbox-plex.*"}. A
   # rename here leaves those rules matching nothing and firing never — an alert
   # with no series to match looks exactly like an alert with nothing to say.
-  # Step 7 does not exist yet, so the guard pins the shared blackbox-plex prefix
-  # and says so; the exact-match half arrives with the rules.
+  # That half USED to be deferred — "Step 7 does not exist yet, so the guard pins
+  # the shared blackbox-plex prefix and says so" — and Step 7 landed it. The
+  # rules file is plex-blip-rules.yml.j2 and the relation runs both ways in
+  # scripts/test_traefik_config_shape.py: every job= those alerts name is a
+  # job_name here, the job=~ fan-in must EQUAL these three, and the absence
+  # door's own absent() calls must name exactly the jobs those alerts select out
+  # of this file. A rename or a fourth blackbox-plex-* job reddens there.
   #
   # metrics_path IS /probe ON ALL THREE, which is the pve-exporter comment above
   # for a third time: blackbox also serves /metrics, its OWN process metrics, so

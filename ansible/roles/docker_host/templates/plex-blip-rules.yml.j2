@@ -41,12 +41,14 @@
 # which owns them together with the `promtool test rules` unit test. Adding them
 # here would be this step writing 7d's row.
 #
-# FOUR OF THESE SEVEN CANNOT MATCH AN ABSENT SERIES, which is Step 7b's row and is
-# named here so the file does not read as a complete alarm. `plex_watchdog_probe_status
-# == 0` returns an EMPTY vector exactly when the watchdog has stopped producing —
-# the one moment the meta-guard exists for — while `absent(plex_watchdog_probe_status)`
-# returns 1. Measured at the Step 5 -> Step 7 wave cut with a positive control
-# (logs/planner-step07-live.log). 7b adds the absence companions.
+# EVERY ONE OF THE SEVEN COMPARES A SERIES TO A CONSTANT AND SO CANNOT MATCH AN
+# ABSENT ONE. `plex_watchdog_probe_status == 0` returns an EMPTY vector exactly when
+# the watchdog has stopped producing — the one moment the meta-guard exists for —
+# while `absent(plex_watchdog_probe_status)` returns 1. Measured at the Step 5 ->
+# Step 7 wave cut with a positive control (logs/planner-step07-live.log) and
+# re-driven on THIS file at Step 7b (logs/builder-7b-absence-doors.log). The three
+# `absent()` doors at the bottom of this group are that row; they are one per
+# PRODUCER and not one per rule, because the absences are shared.
 groups:
   - name: plex-blip
     rules:
@@ -91,7 +93,68 @@ groups:
       # current shape is that a diagnostic tool failed silently for days — `fuser`
       # was missing from CT 110 and 34 consecutive probes recorded nothing. The
       # monitoring must monitor itself. See the note above: this rule cannot match
-      # an absent series, and its absence companion is Step 7b's.
+      # an absent series, and PlexWatchdogTextfileAbsent below is its door.
       - alert: PlexWatchdogProbeBroken
         expr: plex_watchdog_probe_status == 0
+        for: 10m
+      # --- Step 7b: the absence doors ---------------------------------------
+      # ONE DOOR PER PRODUCER. The three blackbox jobs vanish together with the
+      # blackbox exporter, `up{job="plex-exporter"}` vanishes only with its scrape
+      # config, and the watchdog's families vanish together with its .prom — so
+      # three doors cover all seven rules above without any of them firing twice
+      # on one event.
+      #
+      # EACH JOB IS NAMED SEPARATELY AND THAT IS THE POINT, not verbosity:
+      # `absent()` returns a sample only when its selector matches NOTHING, so a
+      # single `absent(probe_success{job=~"blackbox-plex.*"})` stays EMPTY while
+      # any one of the three is still reporting — silent with two probes gone,
+      # which is this row's own defect one step in. Measured with its control
+      # (logs/builder-7b-absence-doors.log).
+      #
+      # `for: 5m` outlasts four missed scrapes of the slowest job that feeds this
+      # door (blackbox-plex-sessions at 60s); a stale marker from one restarted
+      # exporter must not page, because a door that cries wolf is retired and the
+      # rules above go back to being silent.
+      - alert: PlexBlackboxProbesAbsent
+        expr: >-
+          absent(probe_success{job="blackbox-plex-identity"}) or
+          absent(probe_success{job="blackbox-plex-sessions"}) or
+          absent(probe_success{job="blackbox-plex-proxied"})
+        for: 5m
+      # NOT the same fault as PlexExporterScrapeFailing and the pair is the whole
+      # reason both exist: Prometheus SYNTHESISES `up` for a configured target
+      # whether the scrape succeeds or not, so `up == 0` covers the exporter being
+      # down and cannot see the job being deleted from prometheus.yml. This one is
+      # config drift — the target nobody is watching because nobody asked for it.
+      - alert: PlexExporterTargetAbsent
+        expr: absent(up{job="plex-exporter"})
+        for: 5m
+      # THE DOOR IS OVER plex_sqlite_db_bytes AND THAT IS A MEASUREMENT, not a
+      # preference. render_textfile_metrics OMITS a family whose measurement is
+      # null rather than publishing a zero, and only the trigger branch populates
+      # the probe/event families while the sqlite gauges go out on the idle poll
+      # every textfile_refresh_sec (15.0s). Driven on the real CLI both ways
+      # (logs/builder-7b-absence-doors.log W1/W2): a never-triggered watchdog with
+      # the WAL checkpointed serves 130 BYTES — plex_sqlite_db_bytes ALONE — and
+      # the same watchdog with a live writer serves wal+db+shm.
+      #
+      # So absent(plex_watchdog_probe_status) would page on every healthy stack
+      # that has not blipped, and absent(plex_sqlite_wal_bytes) would page on
+      # every checkpointed database — that second one was this rule's first draft
+      # and the CLI run above is what refused it. db_bytes is the family that is
+      # there whenever the document is, so its absence IS the document's:
+      # watchdog dead, --textfile-dir unset, or the .prom unreadable to
+      # node-exporter's uid (a UMask=0077 in the unit -> 0600 root:root -> EACCES
+      # -> every family absent). This door makes that outage VISIBLE; nothing yet
+      # PREVENTS it, and the mode is pinned by nothing at task-1786230668-0902.
+      #
+      # WHAT THIS DOOR STILL CANNOT SEE is a watchdog RESTART: the restarted
+      # process republishes the sqlite gauges immediately, so "restarted" and
+      # "healthy, never blipped" are the same document. That needs an unconditional
+      # liveness series from the watchdog — watchdog surface, not rule surface —
+      # and stays open at task-1786230651-63ba. The two rows this file inherited
+      # the argument from (task-1786159639-39db, task-1786167833-1152) are CLOSED
+      # by this step; those two ids are their live successors.
+      - alert: PlexWatchdogTextfileAbsent
+        expr: absent(plex_sqlite_db_bytes)
         for: 10m

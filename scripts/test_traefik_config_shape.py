@@ -2292,18 +2292,22 @@ BLACKBOX_UID = 0
 BLACKBOX_UID_EVIDENCE = "logs/builder-5b-headers-probe.log"
 
 # --- plex-blip-manual-triage Step 5c: the three blackbox scrape jobs ----------
-# THE JOB NAMES ARE A CROSS-STEP RELATION AND NOT A CHOICE, and this row can pin
-# only half of it. Design §5.3 writes Step 7's alert rules as
-# `probe_duration_seconds{job="blackbox-plex-identity"}`,
+# THE JOB NAMES ARE A CROSS-STEP RELATION AND NOT A CHOICE. Design §5.3 writes
+# Step 7's alert rules as `probe_duration_seconds{job="blackbox-plex-identity"}`,
 # `{job="blackbox-plex-sessions"}` and `probe_success{job=~"blackbox-plex.*"}`, so
 # a rename here leaves three rules matching nothing and firing never — the
-# absent-series class this objective has measured twice already
-# (`task-1786159639-39db`, `task-1786167833-1152`), and the one that is invisible
-# because an alert that never fires looks exactly like an alert with nothing to
-# say. STEP 7 DOES NOT EXIST YET, so there is no live far end to cite the way
-# `PLEX_NODE_FAR_END_CLAUSE` cites one: what is pinned is the PREFIX that regex
-# needs, shared by all three names, and the clause says plainly that the other
-# end arrives later rather than pretending to a citation.
+# absent-series class this objective measured twice on the way in
+# (`task-1786159639-39db` and `task-1786167833-1152`, both closed at `7b`), and
+# the one that is invisible because an alert that never fires looks exactly like
+# an alert with nothing to say.
+#
+# THIS CONSTANT IS NO LONGER THE FAR END. At `5c` Step 7 did not exist, so what
+# was pinned was the shared PREFIX — and that was a tautology, since
+# `BLACKBOX_JOBS`' keys are f-strings built from it. `7a` shipped the rules, so
+# `names_are_the_shipped_fan_in` reads the `job=~` patterns out of
+# `plex-blip-rules.yml.j2` and `per_job_door` reads the absence door's jobs
+# against what those rules select out of `prometheus.yml.j2`. The prefix survives
+# as the spelling the three names share, not as anything a clause proves.
 BLACKBOX_JOB_PREFIX = "blackbox-plex"
 # `blackbox-exporter:9115` — the service name is the constant compose is already
 # held to, and the port is the image's own EXPOSE, measured here rather than read
@@ -2574,7 +2578,13 @@ PROM_RULES_MODE_EVIDENCE = "logs/builder-7a-rules-mode.log"
 # meaning is held. The far end is the literal here and not `detailed-design.md`:
 # `.agents/` is git-ignored and that document is untracked, so a guard reading it
 # would be ABSENT in a fresh clone.
-PLEX_BLIP_ALERTS = (
+#
+# THE DESIGN'S SEVEN ARE A SEPARATE CONSTANT FROM THE SHIPPED SEQUENCE as of
+# `7b`, which appends three `absent()` doors. Keeping the halves apart is what
+# lets the §5.3-verbatim claim above stay literally true while the FILE grows:
+# `PLEX_BLIP_ALERTS` is what the render carries, `PLEX_BLIP_DESIGN_ALERTS` is
+# what the design wrote, and the difference is exactly `PLEX_BLIP_ABSENCE_ALERTS`.
+PLEX_BLIP_DESIGN_ALERTS = (
     ("PlexProbeSlow",
      'probe_duration_seconds{job="blackbox-plex-identity"} > 0.5', "1m"),
     ("PlexSessionsProbeStalled",
@@ -2596,9 +2606,10 @@ PLEX_BLIP_ALERTS = (
 # alert with no series to match looks exactly like an alert with nothing to say.
 # `prometheus.yml.j2`'s own 5c comment deferred the exact-match half in writing —
 # "Step 7 does not exist yet, so the guard pins the shared blackbox-plex prefix
-# and says so; the exact-match half arrives with the rules" — and this is that
-# half. Every coordinate below is read out of the far end rather than spelled
-# twice, so the pairs move together or redden.
+# and says so" — and this is that half. That comment has been rewritten to record
+# the landing rather than the deferral, so the quoted sentence is history and not
+# a citation. Every coordinate below is read out of the far end rather than
+# spelled twice, so the pairs move together or redden.
 PLEX_BLIP_EXPR_READERS = {
     # `job="X"`, NOT `job=~`: the negative lookahead is load-bearing, since
     # `job=~"blackbox-plex.*"` would otherwise be read as an exact job name that
@@ -2617,6 +2628,149 @@ PLEX_BLIP_EXPR_READERS = {
 # source's own comment block names TX_STALL/TX_HELD/SLOW_QUERY in prose three
 # lines above the code, so a text scan would be answered by the documentation.
 PLEX_WATCHDOG_EVENT_FN = "_event"
+
+# --- plex-blip-manual-triage Step 7b: the absence doors -----------------------
+# ALL SEVEN OF THE DESIGN'S RULES COMPARE A SERIES TO A CONSTANT, and a
+# comparison over an ABSENT series matches nothing — so each of them is silent
+# exactly when the thing it guards has stopped producing. `7b` adds three
+# `absent()` DOORS, one per PRODUCER rather than one per rule, because the
+# absences are shared: the three blackbox jobs vanish together with the blackbox
+# exporter, `up{job="plex-exporter"}` vanishes only with its scrape config, and
+# the watchdog's four families vanish together with its `.prom`.
+PLEX_BLIP_ABSENCE_EVIDENCE = "logs/builder-7b-absence-doors.log"
+# THE GUARD'S OWN MEASUREMENT, and it is separate from the one above on purpose:
+# `PLEX_BLIP_ABSENCE_EVIDENCE` is `promtool test rules` proving the DOORS fire,
+# `PLEX_BLIP_ABSENCE_GUARD_EVIDENCE` is DEC-328's three charges re-run as mutants
+# proving the CLAUSE reddens. Round 1 shipped the first without the second and
+# every charge was a green mutant: a fourth door on a residue metric (twice, at
+# two `for:` values) and a fourth `blackbox-plex-*` job in the scrape config all
+# left every arm `True`. The harness is `logs/builder-7b-r2-mutants.py`; it
+# restores the tree with a byte compare after each leg.
+PLEX_BLIP_ABSENCE_GUARD_EVIDENCE = "logs/builder-7b-r2-green.log"
+# WHICH DOOR OPENS FOR WHICH INPUT: the metric a comparison rule reads -> (the
+# alert that opens its door, the metric THAT alert calls `absent()` on). The two
+# metrics differ on four of six rows and every one of those is a measured join,
+# not a convenience:
+#
+#   probe_duration_seconds -> probe_success   ONE scrape produces both. blackbox
+#       returns `probe_success 0` on a failed probe, so `probe_success` is absent
+#       exactly when `probe_duration_seconds` is, and a second door over the
+#       duration series would fire on the same event twice.
+#   plex_sqlite_wal_bytes        -> plex_sqlite_db_bytes
+#   plex_watchdog_events_total   -> plex_sqlite_db_bytes
+#   plex_watchdog_probe_status   -> plex_sqlite_db_bytes
+#       and these three are the interesting ones, because ONLY ONE of the
+#       watchdog's families is published unconditionally and it is not any of the
+#       three above. `render_textfile_metrics` OMITS A FAMILY WHOSE MEASUREMENT IS
+#       NULL rather than publishing a zero (its own docstring says why: "a zero is
+#       indistinguishable from a freshly checkpointed WAL once it is a point on a
+#       graph"), and the probe/event families are populated only from the TRIGGER
+#       branch while the sqlite gauges go out on the idle poll every
+#       `textfile_refresh_sec` (15.0 s, `plex_blip_watchdog.py:634`).
+#
+#       Driven on the real CLI at this row's hands, both directions
+#       (`PLEX_BLIP_ABSENCE_EVIDENCE`, legs W1/W2):
+#
+#         never triggered, WAL checkpointed   130 B, `plex_sqlite_db_bytes` ALONE
+#         never triggered, WAL live           3 gauges: wal + db + shm
+#
+#       So a door over `absent(plex_watchdog_probe_status)` would be FIRING on
+#       every healthy stack that has not blipped (measured by
+#       `task-1786159639-39db`, which this row CLOSES), and a door over
+#       `absent(plex_sqlite_wal_bytes)` would be firing on every checkpointed
+#       database — the second one was the draft of THIS constant and the CLI run
+#       above is what refused it. `plex_sqlite_db_bytes` is the family that is
+#       there whenever the document is, so its absence is the document's absence:
+#       watchdog dead, `--textfile-dir` unset, or the `.prom` unreadable to
+#       node-exporter's uid (measured by `task-1786167833-1152`, closed here; the
+#       mode it names is still pinned by nothing and that is OPEN at
+#       `task-1786230668-0902`). What this door does NOT detect is the restart
+#       case, OPEN at `task-1786230651-63ba` — re-filed, not papered over, and
+#       both successors are cited by id here so a fresh clone can find them
+#       without `.agents/`, which is git-ignored.
+PLEX_BLIP_ABSENCE_DOORS = {
+    "probe_success": ("PlexBlackboxProbesAbsent", "probe_success"),
+    "probe_duration_seconds": ("PlexBlackboxProbesAbsent", "probe_success"),
+    "up": ("PlexExporterTargetAbsent", "up"),
+    "plex_sqlite_wal_bytes": ("PlexWatchdogTextfileAbsent", "plex_sqlite_db_bytes"),
+    "plex_watchdog_events_total": (
+        "PlexWatchdogTextfileAbsent", "plex_sqlite_db_bytes"),
+    "plex_watchdog_probe_status": (
+        "PlexWatchdogTextfileAbsent", "plex_sqlite_db_bytes"),
+}
+# WHAT `7b` DOES NOT CLOSE, and it is READ BY `residue_unwatched` rather than
+# printed: no `absent()` in the rules file may name a key of this table. A metric
+# here is one whose OWN absence is not alertable — absent in a state that is
+# HEALTHY, so a door over it pages on the good state — with the measurement that
+# established that and the OPEN task that owns the remedy. Round 1 narrated this
+# sentence and no predicate held it, so a fourth door on `plex_sqlite_wal_bytes`
+# was `PASS` while the same `print` still listed it as unwatched (DEC-328 C1).
+PLEX_BLIP_ABSENCE_RESIDUE = {
+    "plex_watchdog_probe_status":
+        "absent by design until the first trigger — a never-triggered watchdog "
+        "serves 130 B of plex_sqlite_db_bytes alone (measured, leg W1). An "
+        "alertable liveness series is watchdog surface, not rule surface "
+        "(task-1786230651-63ba)",
+    "plex_sqlite_wal_bytes":
+        "absent by design whenever the WAL is checkpointed — the same 130 B "
+        "document (leg W1) against the three-gauge one with a live writer (leg "
+        "W2). Its absence is a HEALTHY database, so a door over it would page on "
+        "the good state",
+}
+# THE DOOR NAMES EVERY JOB SEPARATELY AND A REGEX IS REFUSED INSIDE `absent()`,
+# and this is the row's own defect class one step in: `absent()` returns a sample
+# only when its selector matches NOTHING, so `absent(probe_success{job=~
+# "blackbox-plex.*"})` is EMPTY while one of the three jobs is still reporting —
+# silent exactly when two of three probes have vanished. Measured with its
+# control at `PLEX_BLIP_ABSENCE_EVIDENCE`.
+#
+# WHICH JOBS THE DOOR MUST NAME IS NOT SPELLED HERE. It is resolved at check time
+# out of `prometheus.yml.j2` through the selectors of the rules this door covers,
+# because the first draft compared the door to `BLACKBOX_JOBS` — a TEST CONSTANT
+# — and a fourth `blackbox-plex-*` job joining the scrape config left the arm
+# `True` while its docstring claimed set equality "in both directions"
+# (DEC-328 C2, the `task-1786203094-588c` shape one clause over).
+PLEX_BLIP_ABSENCE_PER_JOB_DOOR = "PlexBlackboxProbesAbsent"
+# Which scrape job feeds each door, so the `for:` below is read against the
+# cadence in `prometheus.yml.j2` rather than chosen by feel. `doors_agree` holds
+# these keys EQUAL to the doors the rules file carries: without that the cadence
+# loop was a quantifier over this dict alone, and a door absent from it had no
+# `for:` checked by anything (DEC-328 C1b).
+PLEX_BLIP_ABSENCE_SOURCE_JOBS = {
+    "PlexBlackboxProbesAbsent": tuple(sorted(BLACKBOX_JOBS)),
+    "PlexExporterTargetAbsent": (PLEX_EXPORTER_SERVICE,),
+    "PlexWatchdogTextfileAbsent": (PLEX_NODE_JOB,),
+}
+# A DOOR'S `for:` OUTLASTS FOUR MISSED SCRAPES of the slowest job that feeds it,
+# read out of the template's own `scrape_interval` (`_effective_scrape_pair`).
+# Four rather than one because a door is an ALARM ABOUT THE ALARM: a single
+# missed scrape is a stale marker and a restarted exporter, and paging on it
+# would retire the door within a week. The relation moves if a cadence changes —
+# raising `blackbox-plex-sessions` to `2m` reddens `for: 5m` rather than quietly
+# converting the door into a same-scrape tripwire.
+PLEX_BLIP_ABSENCE_MIN_MISSES = 4
+# PromQL words that are not metric names. Everything else an expr can carry that
+# looks like an identifier is a FUNCTION and is followed by `(`, which
+# `_promql_selectors` excludes by lookahead rather than by an enumeration that
+# would fail open one function past its edge.
+PROMQL_KEYWORDS = frozenset({
+    "and", "or", "unless", "by", "without", "on", "ignoring", "group_left",
+    "group_right", "offset", "bool", "start", "end",
+})
+# The three doors, in the order the render carries them, in the same
+# `(alert, expr, for)` shape as the design's seven.
+PLEX_BLIP_ABSENCE_ALERTS = (
+    ("PlexBlackboxProbesAbsent",
+     'absent(probe_success{job="blackbox-plex-identity"}) or '
+     'absent(probe_success{job="blackbox-plex-sessions"}) or '
+     'absent(probe_success{job="blackbox-plex-proxied"})', "5m"),
+    ("PlexExporterTargetAbsent",
+     'absent(up{job="plex-exporter"})', "5m"),
+    ("PlexWatchdogTextfileAbsent",
+     "absent(plex_sqlite_db_bytes)", "10m"),
+)
+PLEX_BLIP_ALERTS = PLEX_BLIP_DESIGN_ALERTS + PLEX_BLIP_ABSENCE_ALERTS
+
 # THE WORLD-READ FENCE IS A COLUMN NOW, because this role gained a SECOND
 # world-readable render. `prom/prometheus:v3.12.0` runs as uid 65534, so every
 # file it must open is 0644 root:root or the crash loop both files were measured
@@ -7381,14 +7535,29 @@ def test_blackbox_scrape_jobs_probe_plex() -> bool:
       rule is the definition of the public path this probe exists to measure, so
       a `Host()` change moves the probe with it; a rule this guard cannot read
       fails CLOSED to the empty set and reddens rather than comparing nothing.
-    * `names_share_prefix` — HALF A RELATION, AND SAYING WHICH HALF IS THE POINT.
-      Design §5.3 writes Step 7's rules against `job="blackbox-plex-identity"`,
-      `job="blackbox-plex-sessions"` and `job=~"blackbox-plex.*"`. Step 7 DOES
-      NOT EXIST, so unlike `far_end_is_held` one clause up there is no live
-      module to parse and no citation to keep current: what is pinned is that all
-      three names carry the prefix that regex needs. The far end lands in Step 7
-      and this clause does not pretend otherwise. A rename that keeps the prefix
-      still breaks the two exact-match rules, and nothing here can see it.
+    * `names_are_the_shipped_fan_in` — THE FAR END THAT WAS MISSING AT `5c` AND
+      LANDED AT `7a` (`task-1786203094-588c`, closed by this clause). Until Step 7
+      existed there was no live document selecting on these names, so the clause
+      pinned that all three carried `BLACKBOX_JOB_PREFIX` — and that was a
+      TAUTOLOGY, because `BLACKBOX_JOBS`' keys are f-strings BUILT from that
+      prefix. `all(job.startswith(PREFIX))` is True by construction and printed
+      True under every mutant: renaming all three jobs off design §5.3's prefix
+      in the template AND the constant together was `PASS: 50/50`
+      (`logs/critic-5c-arms.log` C1).
+
+      What replaced it reads the `job=~` patterns OUT OF `plex-blip-rules.yml.j2`
+      — the rules this stack actually ships — and requires every name in
+      `BLACKBOX_JOBS` to be `re.fullmatch`ed by one of them. Both ends now move
+      or the pair reddens, and it fails CLOSED twice over: no `job=~` in the rules
+      file at all is `shipped_fan_in == []` and RED rather than a vacuous `all()`
+      over nothing, and a pattern that does not compile is the same.
+
+      NOT the same relation as `regex_job` in
+      `test_plex_blip_alert_rules_are_design_5_3`, which faces the other way: that
+      one holds the RULES FILE to the scrape config (a regex fanning in to the
+      wrong set), this one holds the SCRAPE CONFIG to the rules (a job renamed out
+      of the alert's reach). C1 renames both ends of `regex_job` together and
+      stays green there; here it reddens.
     * `modules_exhaust_the_config` — the `module=` values the three jobs carry,
       taken together, are exactly `BLACKBOX_MODULES`. THE JOIN NOTHING AT RUNTIME
       CHECKS: a job naming a module `blackbox.yml` does not define gets HTTP 400
@@ -7443,9 +7612,19 @@ def test_blackbox_scrape_jobs_probe_plex() -> bool:
         _router_rule(_router_block(_read(DYNAMIC), DYNAMIC_PLEX_ROUTER))
     ))
     route_is_one_host = len(proxied_hosts) == 1
-    names_share_prefix = all(
-        job.startswith(BLACKBOX_JOB_PREFIX) for job in BLACKBOX_JOBS
+    try:
+        shipped_fan_in = sorted({
+            p for p in re.findall(
+                PLEX_BLIP_EXPR_READERS["regex_job"], _read(PROM_RULES)
+            ) if re.compile(p)
+        })
+    except re.error:
+        shipped_fan_in = []
+    unselected = sorted(
+        job for job in BLACKBOX_JOBS
+        if not any(re.fullmatch(p, job) for p in shipped_fan_in)
     )
+    names_are_the_shipped_fan_in = bool(shipped_fan_in) and not unselected
     defects, found_modules, hops_by_job = {}, [], {}
     for job, spec in BLACKBOX_JOBS.items():
         block = _scrape_job_block(body, job)
@@ -7495,7 +7674,7 @@ def test_blackbox_scrape_jobs_probe_plex() -> bool:
             defects[job] = bad
     modules_exhaust_the_config = sorted(found_modules) == sorted(BLACKBOX_MODULES)
     ok = (
-        parses and route_is_one_host and names_share_prefix
+        parses and route_is_one_host and names_are_the_shipped_fan_in
         and modules_exhaust_the_config and not defects
     )
     print(
@@ -7503,10 +7682,9 @@ def test_blackbox_scrape_jobs_probe_plex() -> bool:
         f"jobs probe Plex by reference (parses={parses} (error={parse_error!r}), "
         f"route_is_one_host={route_is_one_host} ({DYNAMIC.name} "
         f"{DYNAMIC_PLEX_ROUTER} router hosts={proxied_hosts}), "
-        f"names_share_prefix={names_share_prefix} "
-        f"(want prefix={BLACKBOX_JOB_PREFIX!r} — design 5.3's "
-        f'job=~"blackbox-plex.*"; the exact-match far end lands in Step 7 and is '
-        f"NOT held here), modules_exhaust_the_config="
+        f"names_are_the_shipped_fan_in={names_are_the_shipped_fan_in} "
+        f"({PROM_RULES.name} selects on {shipped_fan_in}; unselected="
+        f"{unselected}), modules_exhaust_the_config="
         f"{modules_exhaust_the_config} (jobs name={sorted(found_modules)}, "
         f"{BLACKBOX_CONFIG.name} defines={sorted(BLACKBOX_MODULES)}), "
         f"dialled_at={BLACKBOX_ADDRESS!r}, hops={hops_by_job}, defects={defects})"
@@ -7751,10 +7929,11 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
       of this file's job names that the regex matches must EQUAL `BLACKBOX_JOBS`.
       This is the half `prometheus.yml.j2`'s own 5c comment deferred in writing —
       "Step 7 does not exist yet, so the guard pins the shared blackbox-plex
-      prefix and says so; the exact-match half arrives with the rules" — and it
-      closes in both directions: a fourth `blackbox-plex-*` job silently joining
-      the regex's fan-in reddens too, because `PlexUnreachable` would then alert
-      on a probe nobody decided it should cover.
+      prefix and says so" — and it closes in both directions: a fourth
+      `blackbox-plex-*` job silently joining the regex's fan-in reddens too,
+      because `PlexUnreachable` would then alert on a probe nobody decided it
+      should cover. That comment now records the landing, so the sentence quoted
+      here is history rather than a live citation.
     * `watchdog_metric` — every `plex_*` family is one the watchdog SOURCE emits,
       read by `ast` (`_watchdog_emitted`) because that file names its own metrics
       in prose and a grep would be answered by the documentation.
@@ -7773,12 +7952,14 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
       "every alert has `severity` and a `summary`" is an obligation on `7d`, not a
       property of the source. Pinning them here would redden the file this row is
       required to ship.
-    * that any alert FIRES. Four of the seven compare a series to a constant and
-      cannot match an ABSENT one — `plex_watchdog_probe_status == 0` returns an
-      empty vector exactly when the watchdog has stopped producing, which is the
-      only moment the meta-guard exists for. That is measured at the wave cut with
-      a positive control and it is `7b`'s row, named here so this clause is not
-      mistaken for covering it.
+    * that any alert FIRES. Every one of the seven compares a series to a
+      constant and cannot match an ABSENT one — `plex_watchdog_probe_status == 0`
+      returns an empty vector exactly when the watchdog has stopped producing,
+      which is the only moment the meta-guard exists for. That is measured at the
+      wave cut with a positive control, and `7b` shipped the three `absent()`
+      doors that cover it: the coverage relation lives in
+      `test_absent_series_doors_cover_every_alert_input` and the firability in
+      `PLEX_BLIP_ABSENCE_EVIDENCE`, not here.
     * `up{job="plex-exporter"}`, `probe_success`, `probe_duration_seconds` — the
       metric NAMES are Prometheus' and blackbox's own, produced by the scrape
       rather than by anything in this repo, so there is no in-tree far end to read
@@ -7864,13 +8045,380 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
     ok = bool(doc) and one_group and alerts_are_the_design and not unresolved
     print(
         f"{'OK' if ok else 'FAIL'}: {PROM_RULES.name} carries design 5.3's "
-        f"{len(PLEX_BLIP_ALERTS)} alerts — the (alert, expr, for) sequence "
-        f"literally, and every coordinate resolving "
+        f"{len(PLEX_BLIP_DESIGN_ALERTS)} alerts plus 7b's "
+        f"{len(PLEX_BLIP_ABSENCE_ALERTS)} absence doors — the (alert, expr, for) "
+        f"sequence literally, and every coordinate resolving "
         f"(parses={bool(doc)} (error={parse_error!r}), one_group={one_group} "
         f"(want {PROM_RULES_GROUP!r}), alerts_are_the_design="
         f"{alerts_are_the_design} (divergences={divergences}), "
         f"unresolved={unresolved} — no clause here claims any of these FIRE; "
-        f"the absent-series half is 7b's)"
+        f"that is test_absent_series_doors_cover_every_alert_input's)"
+    )
+    return ok
+
+
+def _promql_selectors(expr: str) -> list:
+    """Every INSTANT SELECTOR in a PromQL expr as `(metric, labels)`.
+
+    A metric name is an identifier that is NOT followed by `(` — which is what
+    separates `probe_success` from `absent`, `increase` and every other function
+    without an enumeration of function names that would fail OPEN one function
+    past its edge. The label block is consumed with the metric, so label KEYS
+    (`job`, `event_type`) are never mistaken for series, and the handful of bare
+    words PromQL reserves are refused by `PROMQL_KEYWORDS`.
+
+    Returns a LIST rather than a set: a door that names the same job twice is a
+    defect this shape can see and a set would hide.
+
+    `(?![a-z0-9_])` after the identifier is load-bearing and it cost a round to
+    notice: without it the engine BACKTRACKS a function name one character to
+    satisfy the `(?!\\s*\\()` lookahead, and `increase(...)` is reported as a
+    metric named `increas`. Measured — the RED it produced is in
+    `logs/builder-7b-red.log`.
+
+    A RECORDING-RULE NAME FAILS CLOSED rather than being read wrong. `:` is out of
+    the identifier class on purpose, so `job:plex_probe:rate5m > 3` yields the
+    bogus `job` (the lookbehind then refuses the two tail segments), which is not
+    a key of `PLEX_BLIP_ABSENCE_DOORS` and reddens `doors_complete`. This file
+    ships no recording rule today; the shape means the first one arrives as a RED
+    asking to be read properly, not as a silently uncovered series.
+    """
+    return [
+        (m.group(1), m.group(2) or "")
+        for m in re.finditer(
+            r'(?<![\w:])([a-z_][a-z0-9_]*)(?![a-z0-9_])(\{[^}]*\})?(?!\s*\()', expr
+        )
+        if m.group(1) not in PROMQL_KEYWORDS
+    ]
+
+
+def _promql_absent_args(expr: str) -> tuple:
+    """`(args, readable)` — what every `absent(...)` in `expr` is called on.
+
+    `args` is a list of `(metric, labels)`. `readable` is False when the count of
+    `absent(` occurrences does not equal the count parsed, which is how this
+    fails CLOSED: `absent(rate(x[5m]))` and `absent(a or b)` are legal PromQL
+    this reader cannot decompose, and returning a SHORT list for them would read
+    as "that door is not there" in one clause and "no regex inside absent" as
+    vacuously true in another. A door this reader cannot read is a RED.
+    """
+    args = [
+        (m.group(1), m.group(2) or "")
+        for m in re.finditer(
+            r'\babsent\s*\(\s*([a-z_][a-z0-9_]*)\s*(\{[^}]*\})?\s*\)', expr
+        )
+    ]
+    return args, len(args) == len(re.findall(r'\babsent\s*\(', expr))
+
+
+def _strip_absent(expr: str) -> str:
+    """`expr` with every readable `absent(...)` span removed.
+
+    What is left is what the rule compares to a CONSTANT, so a metric surviving
+    this is a metric whose absence needs a door.
+    """
+    return re.sub(
+        r'\babsent\s*\(\s*[a-z_][a-z0-9_]*\s*(?:\{[^}]*\})?\s*\)', " ", expr
+    )
+
+
+def test_absent_series_doors_cover_every_alert_input() -> bool:
+    """Step-7b: every series a rule COMPARES has an `absent()` door, per-job.
+
+    THE DEFECT THIS ROW EXISTS FOR IS SILENCE, NOT WRONGNESS. Every one of design
+    §5.3's seven rules compares a series to a constant, and a comparison over an
+    ABSENT series returns an empty vector — so each rule goes quiet exactly when
+    the thing it guards has stopped producing. Measured at the wave cut on a live
+    `prom/prometheus:v3.12.0` with a positive control
+    (`logs/planner-step07-live.log`): with the series absent,
+    `plex_watchdog_probe_status == 0` and `probe_success{job=~"blackbox-plex.*"}
+    == 0` are both EMPTY while `absent(plex_watchdog_probe_status)` returns 1 and
+    the control `up{job="prometheus"} == 1` returns a real sample. The emptiness
+    is the semantics and the instrument works.
+
+    WHICH RULES ARE DOORS IS READ OUT OF THE FILE (`file_doors`: any rule whose
+    expr calls `absent(`), and every arm below that exempts a door or quantifies
+    over one quantifies over that set rather than over
+    `PLEX_BLIP_ABSENCE_DOORS`' values. The round-1 charge was written on the
+    other arrangement: three constants narrated a fourth door and no predicate
+    read them, so adding one was `PASS` past every arm here.
+
+    * `doors_agree` — `file_doors`, the doors `PLEX_BLIP_ABSENCE_DOORS` maps to,
+      and `PLEX_BLIP_ABSENCE_SOURCE_JOBS`' keys are ONE set. This is what makes
+      `for_outlasts_the_scrape` a quantifier over the file instead of over
+      "each door someone remembered to enumerate": without it a fourth door at
+      `for: 15s` is green, because the cadence loop iterates the source-jobs
+      table and nothing related its keys to the rules file.
+
+    * `residue_unwatched` — NO `absent()` IN THIS FILE NAMES A KEY OF
+      `PLEX_BLIP_ABSENCE_RESIDUE`. That table's metrics are absent in states
+      that are HEALTHY, so a door over one pages on the good state, and
+      `absent(plex_sqlite_wal_bytes)` in particular is the draft this row
+      already refused on the CLI (leg D, `rc=1` in both healthy legs). Until
+      this arm existed the table was reached by an f-string and by no predicate:
+      the fourth door was `PASS` while the same `print` went on listing its
+      metric as unwatched — a report contradicting itself inside one line.
+
+    * `doors_complete` — every metric that survives `_strip_absent` on a
+      non-door rule is a key of `PLEX_BLIP_ABSENCE_DOORS`. This is the clause
+      that reddens when a LATER rule arrives reading a series nothing watches:
+      the metric set is read out of the rules FILE, so an eighth alert over a new
+      family is a RED here rather than a silent eighth blind spot. It is
+      FAMILY-granular while the row's thesis is per-JOB, and that residue is
+      filed rather than papered over at `task-1786231423-747a`.
+
+    * `doors_present` — each door named in that table is a rule in this file and
+      it calls `absent()` on the metric the table names. Both halves are read
+      from the file; the table is the map between them.
+
+    * `doors_are_absent_only` — a door rule is `absent(...)`s and nothing else,
+      quantified over `file_doors`. A door that also carried a comparison would
+      be a rule with two jobs, and the `or` between them means the comparison
+      arm can never be REACHED while the absence arm has a sample.
+
+    * `per_job_door` — THE ROW'S OWN DEFECT CLASS, ONE STEP IN, and it is
+      measured rather than reasoned. `absent()` returns a sample only when its
+      selector matches NOTHING, so a single `absent(probe_success{job=~
+      "blackbox-plex.*"})` is silent while any ONE of the three jobs still
+      reports — two probes gone, door shut. The shipped door therefore names
+      each job in its own `absent()`, and THE FAR END IS THE SCRAPE CONFIG: the
+      wanted set is every `job="X"` the rules this door covers name plus every
+      `job_name:` in `prometheus.yml.j2` their `job=~` patterns fan in to, so a
+      fourth `blackbox-plex-*` job joining the scrape config without joining the
+      door reddens here. Against `BLACKBOX_JOBS` — the first draft of this arm —
+      it did not: that is `task-1786203094-588c`'s half-relation shape, in the
+      round that closed 588c, and the door was being compared to a test
+      constant while the docstring claimed "both directions". It fails CLOSED
+      three ways: no covered alerts, no jobs selected, or a `job=~` that does
+      not compile are each a RED rather than a vacuous equality of empty sets.
+
+    * `no_regex_inside_absent` — the general form of the same fact, over every
+      door rather than the one: `job=~` inside an `absent()` anywhere in this file
+      is refused.
+
+    * `for_outlasts_the_scrape` — each door's `for:` is at least
+      `PLEX_BLIP_ABSENCE_MIN_MISSES` times the slowest `scrape_interval` among the
+      jobs that feed it, READ OUT of `prometheus.yml.j2` rather than spelled here.
+      A door is an alarm about the alarm, so one missed scrape must not page.
+      `doors_agree` is what makes it a quantifier over every door in the file.
+
+    NOT CLOSED HERE, and `PLEX_BLIP_ABSENCE_RESIDUE` is a table read by
+    `residue_unwatched` rather than a sentence, so pointing a door at one of its
+    metrics later is a RED. The watchdog OMITS a family whose measurement is null
+    rather than publishing a zero, so two of its series are absent in states that
+    are perfectly healthy: `plex_watchdog_probe_status` until the first trigger,
+    and `plex_sqlite_wal_bytes` whenever the WAL is checkpointed. Both were driven
+    on the real CLI here — a never-triggered watchdog with the WAL checkpointed
+    serves 130 bytes of `plex_sqlite_db_bytes` alone, and the same watchdog with a
+    live writer serves wal+db+shm — and that measurement is what chose the door's
+    metric, having first refused the draft that watched the WAL gauge. The
+    restart case therefore stays open against the WATCHDOG, not against this
+    file: no rule can tell "restarted" from "healthy, never blipped" while the two
+    produce the same document. `task-1786159639-39db` is CLOSED by this row and
+    that residue is re-filed as `task-1786230651-63ba`; the `.prom`'s own mode,
+    the input side of the same door, is `task-1786230668-0902`.
+    """
+    body = _read(PROM_RULES)
+    try:
+        doc = yaml.load(_neutralise_refs(body), Loader=_StrictLoader)
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
+    groups = doc.get("groups") if isinstance(doc, dict) else None
+    groups = groups if isinstance(groups, list) else []
+    rules = groups[0].get("rules") if len(groups) == 1 and isinstance(
+        groups[0], dict) else None
+    rules = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+    exprs = {
+        r.get("alert"): " ".join(r["expr"].split())
+        for r in rules if isinstance(r.get("expr"), str)
+    }
+    fors = {r.get("alert"): r.get("for") for r in rules}
+    door_names = {door for door, _ in PLEX_BLIP_ABSENCE_DOORS.values()}
+    # WHICH RULES ARE DOORS IS READ OUT OF THE FILE, not off the table. Every
+    # arm below that exempts a door, or quantifies over one, quantifies over
+    # THIS set; `doors_agree` then holds it equal to both tables, so a door the
+    # file gains without either table gaining it is a RED here rather than a
+    # rule no arm reaches.
+    file_doors = {
+        alert for alert, expr in exprs.items() if re.search(r'\babsent\s*\(', expr)
+    }
+    defects = []
+    # `doors_agree` — the file's doors, the map's doors and the cadence table's
+    # keys are ONE set. Without it `for_outlasts_the_scrape` iterates
+    # PLEX_BLIP_ABSENCE_SOURCE_JOBS, whose keys nothing relates to the file, and
+    # a fourth door at `for: 15s` is green because no arm looks at it.
+    doors_agree = file_doors == door_names == set(PLEX_BLIP_ABSENCE_SOURCE_JOBS)
+    if not doors_agree:
+        defects.append(
+            f"doors disagree: {PROM_RULES.name} carries {sorted(file_doors)}, "
+            f"PLEX_BLIP_ABSENCE_DOORS maps to {sorted(door_names)}, "
+            f"PLEX_BLIP_ABSENCE_SOURCE_JOBS keys "
+            f"{sorted(PLEX_BLIP_ABSENCE_SOURCE_JOBS)} — a door outside all three "
+            f"is a rule no arm here reaches"
+        )
+    # `residue_unwatched` — PLEX_BLIP_ABSENCE_RESIDUE is a PREDICATE, not a
+    # print. Each of its metrics is absent in a state that is HEALTHY (leg W1's
+    # 130-byte document), so a door over one pages on the good state — and
+    # `absent(plex_sqlite_wal_bytes)` specifically is the draft this row already
+    # refused on the CLI. Without this arm the table was reached by an f-string
+    # only: a fourth door on a residue metric was PASS while the same line went
+    # on printing that metric as "still open".
+    watched_residue = sorted({
+        f"{alert}: absent({metric})"
+        for alert, expr in exprs.items()
+        for metric, _ in _promql_absent_args(expr)[0]
+        if metric in PLEX_BLIP_ABSENCE_RESIDUE
+    })
+    residue_unwatched = not watched_residue
+    if watched_residue:
+        defects.append(
+            f"{watched_residue} — every metric in PLEX_BLIP_ABSENCE_RESIDUE is "
+            f"absent in a HEALTHY state, so a door over it fires on the good "
+            f"state; the residue names the measurement that refused each"
+        )
+    # `doors_complete` — what the comparison rules read, against the table.
+    uncovered = sorted({
+        metric
+        for alert, expr in exprs.items() if alert not in file_doors | door_names
+        for metric, _ in _promql_selectors(_strip_absent(expr))
+        if metric not in PLEX_BLIP_ABSENCE_DOORS
+    })
+    doors_complete = not uncovered
+    if uncovered:
+        defects.append(
+            f"{uncovered} are compared to a constant with no absent() door — "
+            f"each is silent exactly when its producer has stopped"
+        )
+    # `doors_present` — the table's map, in the file.
+    doors_present = True
+    for metric, (door, door_metric) in sorted(PLEX_BLIP_ABSENCE_DOORS.items()):
+        expr = exprs.get(door)
+        if expr is None:
+            doors_present = False
+            defects.append(f"{metric}'s door {door!r} is not a rule in this file")
+            continue
+        args, readable = _promql_absent_args(expr)
+        if not readable:
+            doors_present = False
+            defects.append(f"{door}'s absent() calls are not all plain selectors")
+            continue
+        if door_metric not in {m for m, _ in args}:
+            doors_present = False
+            defects.append(
+                f"{door} does not call absent() on {door_metric!r} "
+                f"(calls it on {sorted({m for m, _ in args})})"
+            )
+    # `doors_are_absent_only` — quantified over the FILE's doors, so a door the
+    # table has not heard of is still held to carrying no comparison arm.
+    doors_are_absent_only = True
+    for door in sorted(file_doors):
+        args, readable = _promql_absent_args(exprs[door])
+        leftover = _promql_selectors(_strip_absent(exprs[door]))
+        if not readable or leftover:
+            doors_are_absent_only = False
+            defects.append(
+                f"{door} is not absent()s alone (readable={readable}, "
+                f"also compares {leftover})"
+            )
+    # `per_job_door` — SET EQUALITY AGAINST THE SCRAPE CONFIG, both directions.
+    # The far end is `prometheus.yml.j2`, resolved through the selectors of the
+    # rules this door covers: every `job="X"` they name plus every job name the
+    # file really scrapes that their `job=~` patterns fan in to. Against
+    # `BLACKBOX_JOBS` this was the 588c tautology one clause over — the door was
+    # compared to a test constant, so a fourth `blackbox-plex-*` job joining the
+    # scrape config left it True.
+    covered_alerts = sorted(
+        alert for alert, expr in exprs.items() if alert not in file_doors
+        and any(
+            PLEX_BLIP_ABSENCE_DOORS.get(metric, (None, None))[0]
+            == PLEX_BLIP_ABSENCE_PER_JOB_DOOR
+            for metric, _ in _promql_selectors(_strip_absent(expr))
+        )
+    )
+    scraped_jobs = _scrape_job_names(_read(PROM_SCRAPE))
+    selected_jobs, unreadable_patterns = set(), []
+    for alert in covered_alerts:
+        selected_jobs.update(
+            re.findall(PLEX_BLIP_EXPR_READERS["exact_job"], exprs[alert]))
+        for pattern in re.findall(
+                PLEX_BLIP_EXPR_READERS["regex_job"], exprs[alert]):
+            try:
+                selected_jobs.update(
+                    j for j in scraped_jobs if re.fullmatch(pattern, j))
+            except re.error as exc:
+                unreadable_patterns.append(f'{alert}: job=~"{pattern}" ({exc})')
+    per_expr = exprs.get(PLEX_BLIP_ABSENCE_PER_JOB_DOOR, "")
+    per_args, per_readable = _promql_absent_args(per_expr)
+    door_jobs = sorted(
+        j for _, labels in per_args
+        for j in re.findall(PLEX_BLIP_EXPR_READERS["exact_job"], labels)
+    )
+    per_job_door = (
+        per_readable and bool(covered_alerts) and bool(selected_jobs)
+        and not unreadable_patterns and door_jobs == sorted(selected_jobs)
+    )
+    if not per_job_door:
+        defects.append(
+            f"{PLEX_BLIP_ABSENCE_PER_JOB_DOOR} names jobs {door_jobs}, want "
+            f"{sorted(selected_jobs)} once each — the jobs {covered_alerts} "
+            f"select out of {PROM_SCRAPE.name} (readable={per_readable}, "
+            f"patterns={unreadable_patterns}); absent() over a regex is EMPTY "
+            f"while any one of them still reports"
+        )
+    # `no_regex_inside_absent` — the same fact over every door.
+    regexed = sorted({
+        f"{alert}: {labels}"
+        for alert, expr in exprs.items()
+        for _, labels in _promql_absent_args(expr)[0]
+        if re.search(PLEX_BLIP_EXPR_READERS["regex_job"], labels)
+    })
+    no_regex_inside_absent = not regexed
+    if regexed:
+        defects.append(f"job=~ inside absent(): {regexed}")
+    # `for_outlasts_the_scrape` — the cadence is read, not spelled.
+    prom = _read(PROM_SCRAPE)
+    cadence, for_outlasts_the_scrape = {}, True
+    for door, jobs in sorted(PLEX_BLIP_ABSENCE_SOURCE_JOBS.items()):
+        intervals = [
+            _effective_scrape_pair(prom, _scrape_job_block(prom, job))["interval"]
+            for job in jobs
+        ]
+        held = _duration_seconds(fors.get(door))
+        want = (
+            max(i for i in intervals if i is not None) * PLEX_BLIP_ABSENCE_MIN_MISSES
+            if all(i is not None for i in intervals) and intervals else None
+        )
+        cadence[door] = {"for_s": held, "want_at_least_s": want}
+        if want is None or held is None or held < want:
+            for_outlasts_the_scrape = False
+            defects.append(
+                f"{door} for={fors.get(door)!r} ({held}s) does not outlast "
+                f"{PLEX_BLIP_ABSENCE_MIN_MISSES} missed scrapes of {list(jobs)} "
+                f"(intervals={intervals}, want >= {want}s)"
+            )
+    ok = (
+        bool(doc) and doors_agree and residue_unwatched and doors_complete
+        and doors_present and doors_are_absent_only and per_job_door
+        and no_regex_inside_absent and for_outlasts_the_scrape
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: {PROM_RULES.name}'s "
+        f"{len(file_doors)} absent() doors cover every series its rules compare "
+        f"(parses={bool(doc)} (error={parse_error!r}), "
+        f"doors_agree={doors_agree} (file={sorted(file_doors)}), "
+        f"residue_unwatched={residue_unwatched} (no door over "
+        f"{sorted(PLEX_BLIP_ABSENCE_RESIDUE)}), "
+        f"doors_complete={doors_complete}, doors_present={doors_present}, "
+        f"doors_are_absent_only={doors_are_absent_only}, "
+        f"per_job_door={per_job_door} (jobs={door_jobs}, "
+        f"{PROM_SCRAPE.name} selects {sorted(selected_jobs)} through "
+        f"{covered_alerts}), "
+        f"no_regex_inside_absent={no_regex_inside_absent}, "
+        f"for_outlasts_the_scrape={for_outlasts_the_scrape} ({cadence}), "
+        f"defects={defects} — firability driven live at "
+        f"{PLEX_BLIP_ABSENCE_EVIDENCE}; DEC-328's three charges re-measured at "
+        f"{PLEX_BLIP_ABSENCE_GUARD_EVIDENCE})"
     )
     return ok
 
@@ -9278,6 +9826,7 @@ def main() -> int:
         test_blackbox_scrape_cadence_is_what_prometheus_runs(),
         test_prometheus_rule_files_names_the_render(),
         test_plex_blip_alert_rules_are_design_5_3(),
+        test_absent_series_doors_cover_every_alert_input(),
         test_prometheus_retention_outlives_the_blip_window(),
         test_prometheus_render_is_world_read_only_unpaid(),
         test_homepage_allowed_hosts(),
