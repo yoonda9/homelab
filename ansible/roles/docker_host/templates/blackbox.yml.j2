@@ -1,15 +1,33 @@
-# blackbox-exporter modules — plex-blip-manual-triage Step 5a.
+# blackbox-exporter modules — plex-blip-manual-triage, design §4.6's probes.
 # Managed by ansible (roles/docker_host/templates/blackbox.yml.j2). Do not edit
 # on the host: the render is the source and a hand edit is lost at `just play`.
 #
+# THIS FILE CARRIES A LIVE PLEX API TOKEN. `plex_sessions`, at the bottom, sends
+# `X-Plex-Token` from vault. That is why the render is 0640 root:root and not the
+# 0644 the prometheus render uses: 0644 would publish the token to every user on
+# the docker host. The mode was chosen at 5a in advance of the line existing —
+# see tasks/main.yml — and readability is not what it buys, because this image
+# declares no `USER` and the process is uid 0.
+#
+# THE SENTENCE ABOVE IS ARMED, because a file's header is exactly where a fact
+# rots: `header_prose_current`, in
+# `test_blackbox_sessions_probe_carries_the_vault_token`, scores THIS comment
+# block against the PARSED document and reds in both directions — a
+# credential-bearing module this header does not name, and this header naming a
+# credential the document no longer has. It exists because Step 5b landed the
+# token under a header that still described the file as carrying "the TWO THAT
+# NEED NO CREDENTIAL" and `/status/sessions` as a future row.
+#
+# AND THERE IS DELIBERATELY NO INVENTORY HERE. Which modules exist is the
+# document below, held against `BLACKBOX_MODULES` in
+# scripts/test_traefik_config_shape.py. A count or a list in this comment would
+# be a third spelling with nothing relating it to the other two — the same
+# defect one paragraph up, and the reason a `5c` reader must take its
+# `params.module` values from the tuple rather than from prose.
+#
 # A MODULE IS A HOW, NOT A WHAT. The URL is the scrape job's `__param_target`
 # (prometheus.yml.j2, row 5c); what lives here is the probe's method, what counts
-# as success, and which IP family to use. Design §4.6 wants three probes and this
-# file carries the TWO THAT NEED NO CREDENTIAL — `/identity` direct and
-# `/identity` through Traefik. The `/status/sessions` probe must send a live Plex
-# token and is row 5b; it lands here, in this file, which is why the file's mode
-# is already the one a secret needs (0640 root:root, readable to a process this
-# image runs as root — see tasks/main.yml).
+# as success, and which IP family to use.
 #
 # THE MODULE NAMES ARE A JOIN NOTHING AT RUNTIME CHECKS. A scrape job whose
 # `module=` parameter names a module this file does not define gets HTTP 400 from
@@ -25,8 +43,9 @@
 # DELETED character) — and `restart: unless-stopped` turns either into the crash
 # loop this role served for two weeks. The allow-list is this document's
 # vocabulary rather than a copy of blackbox's schema, so adding a LEGAL field —
-# `headers:` for row 5b's token, a `min_version:` — is a one-line edit to that
-# map in the same commit. Fail-closed, and deliberate.
+# a `min_version:` under `tls_config`, say — is a one-line edit to that map in
+# the same commit. That is what the `headers:` below cost when it landed, and it
+# is the price the next field pays too. Fail-closed, and deliberate.
 modules:
   # /identity direct to the Plex container. Unauthenticated — it is Plex's own
   # healthcheck endpoint — and it does no database work, which is exactly why
@@ -152,12 +171,22 @@ modules:
         # the operator has stored a value (env.j2:27-45 says so at length about
         # this exact variable).
         #
-        # QUOTED, deliberately. Bare, an empty default renders `X-Plex-Token:`
-        # with a null value — which the binary does accept (rc=0, measured) but
-        # which sends no header at all; quoted it renders `""`, an empty header,
-        # and the difference matters when reading why a probe 401s. The quotes
-        # also mean a token whose first character is YAML-significant cannot
-        # break the document.
+        # QUOTED, AND NOT FOR THE REASON THIS COMMENT USED TO GIVE. It said a
+        # bare reference renders `X-Plex-Token:` with a null value and therefore
+        # SENDS NO HEADER AT ALL, while quoted sends an empty one, and that the
+        # difference is readable in a 401. The renders do differ; the REQUESTS
+        # DO NOT. Driven through prom/blackbox-exporter:v0.28.0 against a
+        # recording origin (logs/builder-5b-r2-wire.log): both spellings put
+        # `X-Plex-Token` on the wire with an empty value, because go-yaml gives a
+        # null map value the zero string and Go writes the header either way.
+        # Three positive controls in the same transcript record a header with a
+        # value, a header with an empty value, and no header at all, so the
+        # recorder can see every state the claim was about — there is no 401
+        # anyone could read differently.
+        #
+        # THE REASON THAT SURVIVES was the second half of that paragraph and it
+        # is enough on its own: a token whose first character is YAML-significant
+        # cannot break the document.
         #
         # THIS IS WHY THIS FILE IS 0640 AND NOT THE 0644 THE PROMETHEUS RENDER
         # USES. 0644 would publish a live Plex API token to every user on the

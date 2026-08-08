@@ -1770,12 +1770,21 @@ BLACKBOX_MODULES = (
     BLACKBOX_DIRECT_MODULE, BLACKBOX_PROXIED_MODULE, BLACKBOX_SESSIONS_MODULE
 )
 # The header that carries the token, pinned as a NAME rather than as "a headers
-# block exists". Plex authenticates on this exact spelling and rejects anything
-# else as unauthenticated, and blackbox answers `/probe` with HTTP 200 and
-# `probe_success 0` for an auth rejection — so the TARGET READS UP either way and
-# a mistyped header key is invisible at the target level. See
-# `test_blackbox_sessions_probe_carries_the_vault_token` for why the falsifier is
-# at metric level and what it costs to get there.
+# block exists". A DIFFERENT header name — `X-Plex-Token2`, `X_Plex_Token`, the
+# token sent as `Authorization` — reaches Plex as no credential, and blackbox
+# answers `/probe` with HTTP 200 and `probe_success 0` for an auth rejection, so
+# the TARGET READS UP either way and a mistyped header key is invisible at the
+# target level.
+#
+# CASE IS THE ONE DIFFERENCE THAT IS NOT A DIFFERENT HEADER, and this comment
+# used to claim otherwise in the same words the clause did — the second spelling
+# of a false measurement sentence, which is the class this row was rejected for
+# once already. `x-plex-token:` in the config arrives on the wire as this exact
+# byte string because Go's `Header.Set` canonicalises, measured at
+# logs/builder-5b-r2-wire.log. The set equality still reds on it; see
+# `test_blackbox_sessions_probe_carries_the_vault_token` for why that false-RED
+# is deliberate, why the falsifier is at metric level, and what it costs to get
+# there.
 BLACKBOX_TOKEN_HEADER = "X-Plex-Token"
 # The compose service is scrape-only like `pve-exporter`/`plex-exporter`, plus
 # the ONE key those two do not have: it is the first scrape target in this stack
@@ -1885,10 +1894,13 @@ BLACKBOX_UID_EVIDENCE = "logs/builder-5b-headers-probe.log"
 #
 # THE DIRECTION IT FAILS IS DECLARED. A field blackbox accepts but this census
 # has not learned REDS: `min_version` under `tls_config` LOADS on the binary and
-# reds here (logs/builder-5a-r3-{red,green}.log, D6), as does the `headers:` that
-# row `5b` must add. That is a one-line edit to the map below, in the same commit
-# that turns the knob — the identical cost `BLACKBOX_MODULES` already imposes on
-# `5b` for its module NAME, and it fails closed.
+# reds here (logs/builder-5a-r3-{red,green}.log, D6). `headers:` was the other
+# named example and that cost HAS NOW BEEN PAID: `5b` added it to the map below
+# in the same commit as the module that needs it, the identical cost
+# `BLACKBOX_MODULES` imposed on the same row for its module NAME. Written in the
+# past tense on purpose — the sibling docstring records the same event and the
+# two must not drift into one landed and one pending (DEC-302 charge 1's class).
+# It fails closed, and the next field pays what this one did.
 _GO_DURATION = re.compile(r"^[+-]?((\d+(\.\d*)?|\.\d+)(ns|us|µs|ms|s|m|h))+$")
 
 
@@ -5353,6 +5365,50 @@ def _blackbox_field_defects(doc) -> tuple:
     return sorted(unknown), sorted(mistyped)
 
 
+def _leading_comment_block(text: str) -> str:
+    """The `#` header a reader meets before a document's first key.
+
+    Stops at the first line that is neither blank nor a comment — for
+    `blackbox.yml.j2` that is `modules:` — so this is the file's OWN header and
+    never an inline comment further down. Scoped that way on purpose: the
+    per-module comments are attributions ("this module came from Step 5b"),
+    which stay true for ever, while the header is an ORIENTATION a later reader
+    trusts for what the file contains.
+    """
+    kept = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            break
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _credential_modules(modules) -> list:
+    """Module names whose `http.headers` carries the token header, any casing.
+
+    CASE-INSENSITIVE, and that is a measurement rather than caution: a config
+    spelling `x-plex-token:` reaches the wire as `X-Plex-Token` because Go's
+    `Header.Set` canonicalises, and the probe reads `probe_success 1`
+    (logs/builder-5b-r2-wire.log). Such a document is a credential-bearing file
+    whatever `header_key` thinks of its spelling, so the arm that scores the
+    file's own header must see it.
+
+    TOTAL OVER MALFORMED DOCUMENTS, like every other reader here: a module whose
+    `http:` is a scalar is already `probers`' subject and a second reader
+    crashing on it is the crashed-reader shape this row has grown three times.
+    """
+    found = []
+    for name, mod in (modules.items() if isinstance(modules, dict) else ()):
+        http = mod.get("http") if isinstance(mod, dict) else None
+        headers = http.get("headers") if isinstance(http, dict) else None
+        if isinstance(headers, dict) and any(
+            str(key).lower() == BLACKBOX_TOKEN_HEADER.lower() for key in headers
+        ):
+            found.append(name)
+    return sorted(found, key=str)
+
+
 def test_blackbox_modules_are_the_three_plex_probes() -> bool:
     """Step-5a: the blackbox config PARSES and defines exactly `BLACKBOX_MODULES`.
 
@@ -5663,8 +5719,23 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
 
     Hence `header_key`: the DISTINGUISHING config is the key NAME, and pinning
     "a headers block exists" would be green over `X-Plex-Token2`,
-    `X_Plex_Token`, or the token sent as `Authorization`. Plex accepts this
-    spelling and treats every other one as no credential at all.
+    `X_Plex_Token`, or the token sent as `Authorization` — three genuinely
+    different headers that reach Plex as no credential at all.
+
+    NOT "every other spelling", which is what this paragraph used to say and is
+    measurably false in exactly one direction (DEC-302 charge 3). CASE is not a
+    spelling difference on the wire: a config carrying `x-plex-token:` arrives at
+    the origin as `X-Plex-Token` — Go's `Header.Set` canonicalises — and the
+    probe reads `probe_success 1` against a recording origin
+    (logs/builder-5b-r2-wire.log, driven beside a control that sends the
+    canonical spelling and is byte-identical). The set equality below reds on
+    that document anyway. That is kept, and it is a benign false-RED rather than
+    a hole: it fails CLOSED, it is one casing of one key in a file whose every
+    other line is pinned to a literal, and the alternative — a case-insensitive
+    compare — would quietly accept a second header differing from this one only
+    in case, which is the shape a token leaking to a second destination takes.
+    `_credential_modules` DOES fold case, because the question it asks is
+    "does this file carry a credential" and the answer there is the wire's.
 
     * `module_defined` / `header_key` — `BLACKBOX_SESSIONS_MODULE` exists in the
       PARSED document and its `http.headers` keys are exactly
@@ -5728,6 +5799,28 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
       scrape jobs against these modules, and the one thing it must not do is
       move the token into the 0644 file — which would be silently correct at
       runtime and would falsify the sentence that licenses that mode.
+
+    * `header_prose_current` — the template's OWN HEADER, scored against the
+      parsed document as a biconditional (DEC-302 charge 1). Round 1 shipped the
+      token under a comment block that still called this file's contents "the
+      TWO THAT NEED NO CREDENTIAL" and `/status/sessions` a future row 5b, in
+      the commit whose own message gives "a clause named for two token-free
+      probes must not print OK over a document carrying a live token" as its
+      reason for renaming a clause. Nothing read those lines, so they rot
+      silently, and `5c` — which the stale paragraph named — is a row that takes
+      its `params.module` values from this file's neighbourhood.
+
+      SO THE PROSE IS HELD TO THE DOCUMENT AND NOT TO A PHRASE. If any module
+      carries the token header (`_credential_modules`, case-folded because the
+      wire folds it), the header block must name `BLACKBOX_TOKEN_HEADER` and
+      every such module BY NAME; if none does, it must not name the header at
+      all. Both directions red: reverting the header to `5a`'s text reds with
+      `unannounced=['plex_sessions']`, and deleting the module's `headers:`
+      block reds the OTHER way on prose that now over-claims. Scoped to the
+      LEADING comment block only — the per-module comments are attributions
+      ("this module came from Step 5b"), which stay true for ever, and legislating
+      over them would put a false-RED tripwire on legitimate prose, which is
+      `task-1786173528-f7de`'s filed defect.
 
     ONE ARM NOBODY ASKED FOR, AND IT IS THE SAME DIFFERENTIAL KILLED FROM A THIRD
     END. `sessions_accepts_plain`: this module must NOT carry `fail_if_not_ssl`.
@@ -5818,10 +5911,32 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
     ))
     prom_carries_no_credential = not prom_leaks
 
+    # THE FILE'S OWN HEADER IS THE THIRD READER OF THIS FACT, and prose is where
+    # it rots. Scored as a BICONDITIONAL against the parsed document, so it is
+    # armed in both directions rather than being a phrase this clause requires.
+    # WHOLE TOKENS, never substrings: the claim is "this name appears", and a
+    # bare `in` is a claim about a FRAGMENT. `plex_sessions` renamed by appending
+    # a suffix is not named by a header still saying `plex_sessions`, and one
+    # renamed by dropping a character IS a substring of it — both green under
+    # `in` and both red here (mem-1786173563-eb5c, met on the prose side).
+    preamble = _leading_comment_block(text)
+    credential_modules = _credential_modules(modules)
+    preamble_names_header = re.search(
+        rf"(?i)\b{re.escape(BLACKBOX_TOKEN_HEADER)}\b", preamble
+    ) is not None
+    unannounced = [
+        name for name in credential_modules
+        if re.search(rf"\b{re.escape(str(name))}\b", preamble) is None
+    ]
+    header_prose_current = (
+        (preamble_names_header and not unannounced) if credential_modules
+        else not preamble_names_header
+    )
+
     ok = (
         module_defined and header_key and token_from_vault and single_vault_ref
         and no_token_literal and sessions_accepts_plain and world_bit_withheld
-        and prom_carries_no_credential
+        and prom_carries_no_credential and header_prose_current
     )
     print(
         f"{'OK' if ok else 'FAIL'}: {BLACKBOX_SESSIONS_MODULE} sends "
@@ -5846,6 +5961,14 @@ def test_blackbox_sessions_probe_carries_the_vault_token() -> bool:
         f"own 0644 rests on), "
         f"prom_carries_no_credential={prom_carries_no_credential} "
         f"({PROM_SCRAPE.name} leaks={prom_leaks}), "
+        f"header_prose_current={header_prose_current} "
+        f"({BLACKBOX_CONFIG.name}'s own header is "
+        f"{len(preamble.splitlines())} line(s) and modules carrying a "
+        f"credential are {credential_modules or 'NONE'}: "
+        f"names_the_header={preamble_names_header}, unannounced={unannounced} — "
+        f"a header that calls this file credential-free, or calls a module that "
+        f"has LANDED a future row, is what {BLACKBOX_SESSIONS_MODULE} shipped "
+        f"over), "
         f"runs_as_uid={BLACKBOX_UID} — readability is NOT what any mode here "
         f"buys, uid 0 bypasses the bits; measured at {BLACKBOX_UID_EVIDENCE})"
     )

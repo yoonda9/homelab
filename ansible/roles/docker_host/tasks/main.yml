@@ -151,11 +151,14 @@
     # `Config.User` "" and `id` inside it reports uid=0(root) — so root:root 0640
     # is readable to the process exactly as traefik.yml's is.
     #
-    # AND IT IS THE MODE THIS FILE WILL NEED. Step 5b adds the /status/sessions
-    # module, which must carry a live Plex API token; the sentence above the
+    # AND IT IS THE MODE THIS FILE NEEDS, WHICH IS NO LONGER A PREDICTION. Step
+    # 5b landed the /status/sessions module and it carries a live Plex API token,
+    # so this render is a secret-bearing file today. The sentence above the
     # prometheus render — that its 0644 "carries no credential, so world-read
-    # costs nothing" — must stay true THERE, and it is false here the moment 5b
-    # lands. Choosing 0640 now means that row changes a module and not a mode.
+    # costs nothing" — must stay true THERE, and it is already false here.
+    # Choosing 0640 at 5a meant that row changed a module and not a mode; what
+    # holds the mode now is `world_bit_withheld` in
+    # scripts/test_traefik_config_shape.py, which reds on 0644 naming the token.
     mode: "0640"
   notify: Restart blackbox-exporter
 
