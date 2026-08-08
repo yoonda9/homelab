@@ -49,6 +49,7 @@ the standalone exit code.
 
 import ast
 import inspect
+import itertools
 import pathlib
 import re
 import sys
@@ -2540,20 +2541,54 @@ PROM_RULES_DELIVERY_EVIDENCE = "logs/builder-7a-handler-question.log"
 PROM_RULES_MODE = "0644"
 PROM_RULES_MODE_EVIDENCE = "logs/builder-7a-rules-mode.log"
 # Design §5.3 (`design/detailed-design.md:583-605`), in the document's own order,
-# with each alert's `for:` — `None` where the design writes none, which
-# `PlexTransactionHoldStorm` does because `increase(...[5m])` already carries its
-# own window. NO `labels:` and NO `annotations:` are pinned here and none are
-# shipped: the source carries neither, plan.md's severity+summary bullet is an
-# obligation on `7d`, and a clause asserting them at `7a` would be a sentence
-# stronger than the file it guards.
+# with each alert's `expr:` and its `for:` — `None` where the design writes no
+# `for:`, which `PlexTransactionHoldStorm` does because `increase(...[5m])`
+# already carries its own window. NO `labels:` and NO `annotations:` are pinned
+# here and none are shipped: the source carries neither, plan.md's
+# severity+summary bullet is an obligation on `7d`, and a clause asserting them
+# at `7a` would be a sentence stronger than the file it guards.
+#
+# THE `expr` COLUMN IS THE ALERT, and it arrived one round late. Round 1 pinned
+# `(alert, for)` and read the exprs only for RESOLVING COORDINATES — metric
+# families, job labels, the `event_type` VALUE — which leaves the threshold, the
+# comparison operator, the range window and the label KEY held by nothing, i.e.
+# nothing held whether an alert can ever fire. Eight mutants were `PASS: 54/54`
+# (`logs/builder-7a-r2-mutants-RED.log`), including `PlexWatchdogProbeBroken`
+# INVERTED to `== 1` — the meta-guard firing exactly when the watchdog is healthy
+# and never when it has died — and `PlexProbeSlow` raised `0.5` -> `500`, which
+# retires R10's headline detection while every reader in the stack agrees the
+# alert is present.
+#
+# NOTHING ELSE IN THE STACK CLOSES IT, and that is measured rather than argued:
+# `promtool check rules` on the pinned image is rc=0 `SUCCESS: 7 rules found` on
+# ALL EIGHT, byte-identical to the delivered leg, and three live containers
+# (delivered / inverted / inert) are identical on state, restart count, rule
+# count, startup log and ERROR count — the only byte that differs anywhere is the
+# `query` field of `/api/v1/rules`, which nothing in this repo reads. That is the
+# same "loads clean, matches nothing, fires never" shape the readers below exist
+# for, stated generally in this clause's own docstring at round 1 and then not
+# applied to its own table.
+#
+# The exprs are compared WHITESPACE-NORMALISED (`" ".join(expr.split())`), so
+# rewrapping a long expr is not a false RED while every character that carries
+# meaning is held. The far end is the literal here and not `detailed-design.md`:
+# `.agents/` is git-ignored and that document is untracked, so a guard reading it
+# would be ABSENT in a fresh clone.
 PLEX_BLIP_ALERTS = (
-    ("PlexProbeSlow", "1m"),
-    ("PlexSessionsProbeStalled", "1m"),
-    ("PlexUnreachable", "30s"),
-    ("PlexExporterScrapeFailing", "2m"),
-    ("PlexSqliteWalOversized", "15m"),
-    ("PlexTransactionHoldStorm", None),
-    ("PlexWatchdogProbeBroken", "10m"),
+    ("PlexProbeSlow",
+     'probe_duration_seconds{job="blackbox-plex-identity"} > 0.5', "1m"),
+    ("PlexSessionsProbeStalled",
+     'probe_duration_seconds{job="blackbox-plex-sessions"} > 5', "1m"),
+    ("PlexUnreachable",
+     'probe_success{job=~"blackbox-plex.*"} == 0', "30s"),
+    ("PlexExporterScrapeFailing",
+     'up{job="plex-exporter"} == 0', "2m"),
+    ("PlexSqliteWalOversized",
+     "plex_sqlite_wal_bytes > 8388608", "15m"),
+    ("PlexTransactionHoldStorm",
+     'increase(plex_watchdog_events_total{event_type="TX_HELD"}[5m]) > 3', None),
+    ("PlexWatchdogProbeBroken",
+     "plex_watchdog_probe_status == 0", "10m"),
 )
 # THE SEVEN EXPRS' COORDINATES ARE JOINS NOTHING AT RUNTIME CHECKS, which is the
 # `params.module` argument one file over said in full: an alert whose `job=` names
@@ -7686,16 +7721,29 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
     """Step-7a: the seven alerts of design §5.3, and every coordinate RESOLVES.
 
     The alert set is the design's (`design/detailed-design.md:583-605`) and it is
-    pinned as an ORDERED sequence with each `for:`, so a rule silently dropped —
-    `PlexWatchdogProbeBroken` above all, the meta-guard that exists because a
-    diagnostic tool failed silently for 34 runs — reddens rather than shrinking a
-    count nobody reads.
+    pinned as an ORDERED sequence with each `expr:` and each `for:`, so a rule
+    silently dropped — `PlexWatchdogProbeBroken` above all, the meta-guard that
+    exists because a diagnostic tool failed silently for 34 runs — reddens rather
+    than shrinking a count nobody reads.
 
-    THE EXPRS' COORDINATES ARE THE REAL SUBJECT, because they are JOINS NOTHING
-    AT RUNTIME CHECKS. An alert whose `job=` names a job this stack does not
-    scrape loads at `promtool` rc=0, matches no series and fires never, and is
-    indistinguishable from an alert with nothing to say. So each is read against
-    its far end rather than spelled a second time:
+    THE `expr` BODIES ARE HELD LITERALLY, and the argument two paragraphs down is
+    exactly why. An alert loads at `promtool` rc=0 and fires never whether its
+    `job=` names nothing OR its threshold is a thousand times too high, and both
+    are indistinguishable from an alert with nothing to say. Round 1 applied that
+    sentence to four COORDINATES and not to the table, and eight mutants —
+    `PlexWatchdogProbeBroken` inverted to `== 1`, `PlexProbeSlow` raised to
+    `> 500`, `[5m]` widened to `[500m]`, `event_type` respelled to `eventtype` —
+    were `PASS: 54/54` past every reader below, past `promtool` and past three
+    live containers. `PLEX_BLIP_ALERTS` now carries the exprs; the write-up and
+    the measurements are on that constant.
+
+    THE EXPRS' COORDINATES ARE STILL READ AGAINST THEIR FAR ENDS, and that is not
+    made redundant by the literal column: the literal holds the rules file to
+    ONE agreed text, while the readers hold that text to the REST OF THE STACK,
+    so renaming a `job_name:` in `prometheus.yml.j2` or a metric family in the
+    watchdog source reddens here even when both sides of a rename look tidy and
+    nobody touched this file. Each is read against its far end rather than
+    spelled a second time:
 
     * `exact_job` — every `job="X"` is a `job_name:` under `scrape_configs:` in
       `prometheus.yml.j2`.
@@ -7717,7 +7765,9 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
     Fully anchored, as Prometheus anchors: `re.fullmatch`, so `blackbox-plex.*`
     cannot be satisfied by a job that merely CONTAINS the prefix.
 
-    NOT PINNED, and each absence is deliberate:
+    NOT PINNED, and each absence is deliberate — this list is what a later hat
+    reads to know what is still open, so an absence missing from it is the defect
+    the round-1 charge was written on:
 
     * `labels:` / `annotations:` — design §5.3 carries none, and plan.md's
       "every alert has `severity` and a `summary`" is an obligation on `7d`, not a
@@ -7749,7 +7799,15 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
     )
     rules = groups[0].get("rules") if one_group else None
     rules = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
-    found = tuple((r.get("alert"), r.get("for")) for r in rules)
+    found = tuple(
+        (
+            r.get("alert"),
+            " ".join(r["expr"].split()) if isinstance(r.get("expr"), str)
+            else r.get("expr"),
+            r.get("for"),
+        )
+        for r in rules
+    )
     alerts_are_the_design = found == PLEX_BLIP_ALERTS
     job_names = _scrape_job_names(_read(PROM_SCRAPE))
     families, events = _watchdog_emitted(_read(PLEX_WATCHDOG_SOURCE))
@@ -7792,13 +7850,25 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
                 )
         if bad:
             unresolved[rule.get("alert")] = bad
+    # Report the DIVERGING rows and not both 7-tuples: an expr is ~70 characters,
+    # so dumping `found` beside `PLEX_BLIP_ALERTS` is 1,000 characters in which a
+    # reader has to spot `== 1` by eye. `zip_longest` because a dropped or added
+    # rule must be named too, and that is the failure this sequence exists for.
+    divergences = [
+        f"#{i}: want {want!r}, found {got!r}"
+        for i, (want, got) in enumerate(
+            itertools.zip_longest(PLEX_BLIP_ALERTS, found), start=1
+        )
+        if want != got
+    ]
     ok = bool(doc) and one_group and alerts_are_the_design and not unresolved
     print(
         f"{'OK' if ok else 'FAIL'}: {PROM_RULES.name} carries design 5.3's "
-        f"{len(PLEX_BLIP_ALERTS)} alerts with resolving coordinates "
+        f"{len(PLEX_BLIP_ALERTS)} alerts — the (alert, expr, for) sequence "
+        f"literally, and every coordinate resolving "
         f"(parses={bool(doc)} (error={parse_error!r}), one_group={one_group} "
         f"(want {PROM_RULES_GROUP!r}), alerts_are_the_design="
-        f"{alerts_are_the_design} (found={found}), "
+        f"{alerts_are_the_design} (divergences={divergences}), "
         f"unresolved={unresolved} — no clause here claims any of these FIRE; "
         f"the absent-series half is 7b's)"
     )
