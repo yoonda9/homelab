@@ -96,3 +96,10 @@ build-all: (build "ubuntu26") (build "fedora") (build "windows11")
 # One-time cloud source-template bootstrap: `just bootstrap {ubuntu26|fedora}`.
 bootstrap os:
     scripts/bootstrap_cloud_template.sh {{os}}
+
+# --- Plex blip capture (design §4.3, C3) -------------------------------------
+
+# One-shot Tier-0 "blip" evidence grab: read-only capture from CT 110 + the PVE
+# host into a timestamped /tmp/plex-blip-<UTC-ISO>/ bundle with a manifest.json.
+plex-blip-capture:
+    scripts/plex_blip_capture.sh
