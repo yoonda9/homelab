@@ -36,10 +36,20 @@
 # running process's — a literal naming a missing file starts clean and serves
 # `{"groups":[]}` — which is why Step 7c runs the validator before the handler.
 #
-# NO `labels:` AND NO `annotations:` HERE. Design §5.3 carries neither; plan.md's
-# "every alert has severity and a summary annotation" is an obligation on Step 7d,
-# which owns them together with the `promtool test rules` unit test. Adding them
-# here would be this step writing 7d's row.
+# EVERY RULE CARRIES `labels.severity` AND `annotations.summary` (Step 7d).
+# Design §5.3 ships neither — `promtool check rules` on it verbatim is rc=0
+# `SUCCESS: 7 rules found`, so the source is sound but silent — and plan.md's
+# "every alert has severity and a summary annotation" is the obligation this step
+# discharges, on all TEN rules (the seven plus 7b's three doors). `severity` is
+# `warning` or `critical`, the two levels Prometheus and Grafana render natively;
+# `PlexUnreachable` is the one `critical` because all three probes failing is the
+# user-visible outage, and the rest are leading indicators, meta-guards or doors.
+# `PlexExporterScrapeFailing`'s summary is worded so it CANNOT be misread as
+# "Plex is down" (design R5): it names the exporter/scrape path, because the fault
+# it reports has a different first move from the server being down. The
+# `test_traefik_config_shape.py` clause holds every rule to both keys per-rule,
+# and `test_plex_blip_alert_rules_promtool.py` proves `PlexSqliteWalOversized`
+# FIRES at the live 43,735,168 B via `promtool test rules`.
 #
 # EVERY ONE OF THE SEVEN COMPARES A SERIES TO A CONSTANT AND SO CANNOT MATCH AN
 # ABSENT ONE. `plex_watchdog_probe_status == 0` returns an EMPTY vector exactly when
@@ -59,18 +69,36 @@ groups:
       - alert: PlexProbeSlow
         expr: probe_duration_seconds{job="blackbox-plex-identity"} > 0.5
         for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The Plex /identity probe is slow (>0.5s) — the earliest sign of the
+            blip, while probe_success on the cheap endpoint still reports healthy.
       # The other half of the differential: /identity fast + /status/sessions slow
       # is the database/lock signature, both slow is host or thread-pool
       # saturation. The same run reached 101,394 ms on this endpoint.
       - alert: PlexSessionsProbeStalled
         expr: probe_duration_seconds{job="blackbox-plex-sessions"} > 5
         for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The Plex /status/sessions probe is stalled (>5s) — the database/lock
+            signature of the blip; this run reached 101,394 ms on this endpoint.
       # The regex fans in to all three blackbox-plex jobs, which is a relation
       # prometheus.yml.j2's own 5c comment deferred to this step in writing. The
       # guard now holds it as an exact set rather than a shared prefix.
       - alert: PlexUnreachable
         expr: probe_success{job=~"blackbox-plex.*"} == 0
         for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            A Plex blackbox probe is failing (probe_success == 0) — Plex is not
+            answering on at least one of the identity/sessions/proxied paths.
       # EXPLICITLY NOT "PLEX IS DOWN" (design R5). This fires when the metrics
       # EXPORTER stops answering, which the current single-panel dashboard invites
       # an operator to read as the server being down; those are different faults
@@ -79,16 +107,36 @@ groups:
       - alert: PlexExporterScrapeFailing
         expr: up{job="plex-exporter"} == 0
         for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The plex-exporter metrics scrape is failing — this is a MONITORING
+            fault, NOT Plex being down. The media server may be serving normally
+            while these metrics go blind; check the exporter container, not Plex.
       # The leading indicator (design R12): the WAL grows before the stalls start,
       # so this is the only rule here that can fire BEFORE a user notices. 8 MiB,
       # against the 41.71 MiB observed during the live blip.
       - alert: PlexSqliteWalOversized
         expr: plex_sqlite_wal_bytes > 8388608
         for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The Plex SQLite WAL has grown past 8 MiB — the leading indicator of
+            the blip (it grows before streams stall; 41.71 MiB during the live
+            fault). The only rule here that can fire BEFORE a user notices.
       # No `for:` and that is the design's: increase(...[5m]) already carries its
       # own window, so a second one would only delay the same claim.
       - alert: PlexTransactionHoldStorm
         expr: increase(plex_watchdog_events_total{event_type="TX_HELD"}[5m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            More than 3 held-transaction (TX_HELD) events in 5 minutes — the Plex
+            SQLite database is contending, the mechanism behind the stall.
       # THE META-GUARD (design P5). The whole reason this project exists in its
       # current shape is that a diagnostic tool failed silently for days — `fuser`
       # was missing from CT 110 and 34 consecutive probes recorded nothing. The
@@ -97,6 +145,13 @@ groups:
       - alert: PlexWatchdogProbeBroken
         expr: plex_watchdog_probe_status == 0
         for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The blip watchdog's own probe reports broken (the meta-guard) — the
+            diagnostic that failed silently for 34 runs when psmisc was missing
+            is failing again. Fix the watchdog before trusting the rules above.
       # --- Step 7b: the absence doors ---------------------------------------
       # ONE DOOR PER PRODUCER. The three blackbox jobs vanish together with the
       # blackbox exporter, `up{job="plex-exporter"}` vanishes only with its scrape
@@ -121,6 +176,13 @@ groups:
           absent(probe_success{job="blackbox-plex-sessions"}) or
           absent(probe_success{job="blackbox-plex-proxied"})
         for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            A Plex blackbox probe series has been absent for 5m — the blackbox
+            exporter or its scrape config is gone, and the comparison alerts
+            above cannot fire without it. The door for a vanished probe.
       # NOT the same fault as PlexExporterScrapeFailing and the pair is the whole
       # reason both exist: Prometheus SYNTHESISES `up` for a configured target
       # whether the scrape succeeds or not, so `up == 0` covers the exporter being
@@ -129,6 +191,13 @@ groups:
       - alert: PlexExporterTargetAbsent
         expr: absent(up{job="plex-exporter"})
         for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The plex-exporter target has been dropped from Prometheus for 5m
+            (config drift) — its up series is absent, which up == 0 cannot see.
+            Nobody is watching the exporter because nobody asked for it.
       # THE DOOR IS OVER plex_sqlite_db_bytes AND THAT IS A MEASUREMENT, not a
       # preference. render_textfile_metrics OMITS a family whose measurement is
       # null rather than publishing a zero, and only the trigger branch populates
@@ -158,3 +227,10 @@ groups:
       - alert: PlexWatchdogTextfileAbsent
         expr: absent(plex_sqlite_db_bytes)
         for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            The watchdog textfile metrics have been absent for 10m — the watchdog
+            is dead, --textfile-dir is unset, or the .prom is unreadable to
+            node-exporter's uid. The whole plex_watchdog_* family is dark.

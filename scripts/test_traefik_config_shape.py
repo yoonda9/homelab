@@ -2771,6 +2771,44 @@ PLEX_BLIP_ABSENCE_ALERTS = (
 )
 PLEX_BLIP_ALERTS = PLEX_BLIP_DESIGN_ALERTS + PLEX_BLIP_ABSENCE_ALERTS
 
+# --- plex-blip-manual-triage Step 7d: severity + summary on every rule --------
+# plan.md's second Tests bullet — "every alert has `severity` and a `summary`
+# annotation" — is an OBLIGATION on this step and NOT a property of design §5.3,
+# which ships its seven rules with NO `labels:` and NO `annotations:` block at
+# all (premise 4, measured at the wave cut: `promtool check rules` on §5.3
+# verbatim is rc=0 `SUCCESS: 7 rules found`, so the source is sound but silent on
+# both keys). `7d` adds them to all TEN rules the render carries — the design's
+# seven plus `7b`'s three `absent()` doors — and this guard holds every rule to
+# BOTH, PER-RULE over the PARSED render rather than by counting occurrences, so a
+# rule added later without either reddens instead of shrinking a total nobody
+# reads. It is a separate clause from `test_plex_blip_alert_rules_are_design_5_3`
+# on purpose: that one pins the `(alert, expr, for)` sequence and is deliberately
+# BLIND to labels/annotations (it reads three keys per rule), which is what let
+# the design-5.3 claim above stay literally true across `7b`'s growth.
+ALERT_SEVERITY_LABEL = "severity"
+ALERT_SUMMARY_ANNOTATION = "summary"
+# The two severities Prometheus and Grafana render natively and this stack ships;
+# a typo'd level (`warn`, `crit`) is a value no dashboard filters on, so it is
+# caught here rather than sorted into a silent bucket. `severity` PRESENCE is the
+# obligation; holding it to this set is the anti-typo companion, not a new one.
+ALERT_SEVERITY_LEVELS = frozenset({"warning", "critical"})
+# ACCEPTANCE 2, and it is a WORDING PROPERTY rather than an exact sentence.
+# `PlexExporterScrapeFailing` fires when the metrics EXPORTER stops answering,
+# which the current single-panel dashboard invites an operator to read as the
+# media server being down (design R5, plan.md:540) — a different fault with a
+# different first move. Its summary must therefore NAME the real failure (the
+# exporter / scrape / metrics path) and must NOT be misreadable as "Plex is
+# down". Pinning the property and not the sentence lets the wording be rewritten
+# without a false RED, while a summary that drifts back into the conflation the
+# alert's own name exists to prevent still reddens.
+EXPORTER_SCRAPE_FAILING_ALERT = "PlexExporterScrapeFailing"
+EXPORTER_DOWN_MISREADINGS = (
+    "plex is down", "plex down", "plex is unreachable", "plex unreachable",
+    "plex is offline", "plex offline", "server is down",
+    "media server is down",
+)
+EXPORTER_REAL_FAULT_WORDS = ("exporter", "scrape", "metric")
+
 # THE WORLD-READ FENCE IS A COLUMN NOW, because this role gained a SECOND
 # world-readable render. `prom/prometheus:v3.12.0` runs as uid 65534, so every
 # file it must open is 0644 root:root or the crash loop both files were measured
@@ -8057,6 +8095,106 @@ def test_plex_blip_alert_rules_are_design_5_3() -> bool:
     return ok
 
 
+def test_every_alert_carries_severity_and_summary() -> bool:
+    """Step-7d: every rule ships `labels.severity` + `annotations.summary`.
+
+    plan.md's second Tests bullet is an obligation on this step, not a property
+    of design §5.3 — the source carries neither key (premise 4). This guard reads
+    the PARSED render and holds EVERY rule to both, per-rule, so a rule added
+    later without them reddens rather than passing on a count that stays high.
+    `severity` is also held to `{warning, critical}` — the two levels Prometheus
+    and Grafana render natively — so a typo lands here rather than in a bucket no
+    dashboard filters on.
+
+    ACCEPTANCE 2 is a SEPARATE arm and it is a WORDING PROPERTY, not a sentence:
+    `PlexExporterScrapeFailing`'s summary must NAME the real fault (exporter /
+    scrape / metrics) and must NOT be misreadable as "Plex is down", because the
+    single-panel dashboard already invites that conflation (design R5) and the
+    two faults have different first moves. Pinning the property lets the wording
+    be rewritten freely while a drift back into "Plex is down" still reddens; the
+    alert must also EXIST for the arm to have bitten, so its absence is a defect
+    here too.
+
+    NOT this clause's job: that the alerts FIRE (that is the `promtool test rules`
+    unit suite in `test_plex_blip_alert_rules_promtool.py`), the `(alert, expr,
+    for)` sequence (`test_plex_blip_alert_rules_are_design_5_3`), or the absence
+    doors' coverage (`test_absent_series_doors_cover_every_alert_input`). This one
+    reads labels and annotations and nothing else.
+    """
+    body = _read(PROM_RULES)
+    try:
+        doc = yaml.load(_neutralise_refs(body), Loader=_StrictLoader)
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
+    groups = doc.get("groups") if isinstance(doc, dict) else None
+    groups = groups if isinstance(groups, list) else []
+    one_group = (
+        len(groups) == 1 and isinstance(groups[0], dict)
+        and groups[0].get("name") == PROM_RULES_GROUP
+    )
+    rules = groups[0].get("rules") if one_group else None
+    rules = [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else []
+    missing = {}
+    for r in rules:
+        name = r.get("alert")
+        labels = r.get("labels") if isinstance(r.get("labels"), dict) else {}
+        anns = r.get("annotations") if isinstance(r.get("annotations"), dict) else {}
+        severity = labels.get(ALERT_SEVERITY_LABEL)
+        summary = anns.get(ALERT_SUMMARY_ANNOTATION)
+        bad = []
+        if not (isinstance(severity, str) and severity in ALERT_SEVERITY_LEVELS):
+            bad.append(
+                f"labels.{ALERT_SEVERITY_LABEL}={severity!r} "
+                f"(want one of {sorted(ALERT_SEVERITY_LEVELS)})"
+            )
+        if not (isinstance(summary, str) and summary.strip()):
+            bad.append(
+                f"annotations.{ALERT_SUMMARY_ANNOTATION}={summary!r} "
+                "(want a non-empty string)"
+            )
+        if bad:
+            missing[name] = bad
+    # ACCEPTANCE 2 — the wording property, read off the exporter alert's summary.
+    exporter = next(
+        (r for r in rules if r.get("alert") == EXPORTER_SCRAPE_FAILING_ALERT), None
+    )
+    exporter_defect = None
+    if exporter is None:
+        exporter_defect = (
+            f"{EXPORTER_SCRAPE_FAILING_ALERT} is absent — acceptance 2 has "
+            "nothing to bite"
+        )
+    else:
+        anns = exporter.get("annotations") if isinstance(
+            exporter.get("annotations"), dict) else {}
+        summary = anns.get(ALERT_SUMMARY_ANNOTATION)
+        low = summary.lower() if isinstance(summary, str) else ""
+        misreads = [p for p in EXPORTER_DOWN_MISREADINGS if p in low]
+        names_fault = any(w in low for w in EXPORTER_REAL_FAULT_WORDS)
+        if misreads or not names_fault:
+            exporter_defect = (
+                f"summary={summary!r}: misreads-as-down={misreads}, "
+                f"names-real-fault={names_fault} — must name one of "
+                f"{EXPORTER_REAL_FAULT_WORDS} and none of "
+                f"{EXPORTER_DOWN_MISREADINGS}"
+            )
+    ok = (
+        bool(doc) and one_group and bool(rules)
+        and not missing and exporter_defect is None
+    )
+    print(
+        f"{'OK' if ok else 'FAIL'}: every one of {PROM_RULES.name}'s {len(rules)} "
+        f"rules carries labels.{ALERT_SEVERITY_LABEL} in "
+        f"{sorted(ALERT_SEVERITY_LEVELS)} and a non-empty "
+        f"annotations.{ALERT_SUMMARY_ANNOTATION} "
+        f"(parses={bool(doc)} (error={parse_error!r}), one_group={one_group}, "
+        f"missing={missing}), and {EXPORTER_SCRAPE_FAILING_ALERT}'s summary is "
+        f"unmisreadable as 'Plex is down' (exporter_defect={exporter_defect})"
+    )
+    return ok
+
+
 def _promql_selectors(expr: str) -> list:
     """Every INSTANT SELECTOR in a PromQL expr as `(metric, labels)`.
 
@@ -9826,6 +9964,7 @@ def main() -> int:
         test_blackbox_scrape_cadence_is_what_prometheus_runs(),
         test_prometheus_rule_files_names_the_render(),
         test_plex_blip_alert_rules_are_design_5_3(),
+        test_every_alert_carries_severity_and_summary(),
         test_absent_series_doors_cover_every_alert_input(),
         test_prometheus_retention_outlives_the_blip_window(),
         test_prometheus_render_is_world_read_only_unpaid(),
