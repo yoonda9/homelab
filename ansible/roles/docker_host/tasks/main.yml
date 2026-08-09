@@ -186,6 +186,39 @@
     # Note the asymmetry with the two legs the `rule_files:` comment records: an
     # UNREADABLE rules file is loud, while a MISSING one is silent.
     mode: "0644"
+    # STEP 7c — VALIDATE BEFORE THE HANDLER CAN RESTART PROMETHEUS. A malformed
+    # rules file does not degrade prometheus, it STOPS it: one unparseable `expr`
+    # and the container is `exited` logging `could not parse expression`, and
+    # under this stack's `restart: unless-stopped` that is the crash loop already
+    # recorded at scripts/test_traefik_config_shape.py:2072 (RestartCount 20801,
+    # TSDB empty for two weeks). This is the FIRST render whose bad output takes
+    # the process down rather than being ignored, which is why the gate arrives
+    # here and `grep -c validate:` on this file was zero before it.
+    #
+    # `ansible.builtin.template`'s OWN `validate:` is the gate, not a
+    # check-afterwards task: a `validate:` that fails leaves the DEST UNCHANGED,
+    # so the good file stays and this task's `notify:` never fires — a separate
+    # task would have already overwritten the good file. `%s` is the temp render
+    # ansible is about to copy, bound `:ro` into the container.
+    #
+    # THE VALIDATOR IS THE PINNED IMAGE'S OWN promtool, pinned by RELATION to
+    # `docker_host_prometheus_image` (the SAME variable compose.yml.j2's
+    # prometheus service runs) rather than a re-spelled tag or a host binary —
+    # the c6c4/e627 two-literals-that-agree class. `--network none` because
+    # `check rules` only parses a local file.
+    #
+    # `--user 0:0` IS LOAD-BEARING AND MEASURED, NOT A HABIT. `%s` is ansible's
+    # temp render, 0600 root:root on the host; `prom/prometheus:v3.12.0` declares
+    # `USER nobody` (uid 65534), so the default-user container answers
+    # `open /tmp/plex-blip-rules.yml: permission denied` and validate would RED on
+    # a perfectly good render — the same uid trap the mode comment above records
+    # for the delivered file. uid 0 bypasses the bits and reads the root temp; the
+    # container is read-only and network-less, so running it as root is contained.
+    validate: >-
+      docker run --rm --network none --user 0:0 --entrypoint promtool
+      -v %s:/tmp/plex-blip-rules.yml:ro
+      {{ docker_host_prometheus_image }}
+      check rules /tmp/plex-blip-rules.yml
   notify: Restart prometheus
 
 # The blackbox probe modules (plex-blip-manual-triage Step 5a). Same read-once

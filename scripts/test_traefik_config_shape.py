@@ -3523,6 +3523,36 @@ def _render_task_scalar(task: str, key: str):
     return match.group(1) if match else None
 
 
+def _render_task_validate(task: str) -> str | None:
+    """A render task's `validate:` command folded to one line, or None if absent.
+
+    Step-7c. `ansible.builtin.template`'s `validate:` is a `>-` folded scalar
+    here — the command spans several indented lines under the key — so a
+    single-line reader like `_render_task_scalar` would see only the block
+    indicator. This joins the continuation lines the way YAML folds a `>` block
+    (one space per line break) so the caller reads the exact command string
+    ansible will run with `%s` replaced by the temp render. Horizontal-whitespace
+    classes only on the key line, same reason as `_block_scalar`; a continuation
+    line is any line more indented than the `validate:` key, so a `notify:` back
+    at the task-key indent ends the scalar rather than being folded into it.
+    """
+    m = re.search(r'(?m)^([ \t]*)validate:[ \t]*(.*?)[ \t]*\r?$', task or "")
+    if not m:
+        return None
+    key_indent = len(m.group(1).expandtabs())
+    head = m.group(2).strip()
+    # A block-scalar indicator (`>`, `>-`, `|`, `|+`, ...) carries no content.
+    parts = [] if re.fullmatch(r'[>|][+-]?', head) else ([head] if head else [])
+    for line in task[m.end():].splitlines():
+        if not line.strip():
+            continue
+        lead = line[: len(line) - len(line.lstrip(" \t"))]
+        if len(lead.expandtabs()) <= key_indent:
+            break
+        parts.append(line.strip())
+    return " ".join(parts) if parts else None
+
+
 def _render_task_block(body: str, src: str) -> str:
     """The `ansible.builtin.template` task block that renders `src`.
 
@@ -5152,6 +5182,75 @@ def test_rendered_configs_reach_the_service_that_reads_them() -> bool:
         f"{'OK' if ok else 'FAIL'}: rendered configs reach the service that reads them "
         f"({len(RELOAD_CONTRACT) - len(broken)}/{len(RELOAD_CONTRACT)} paths whole, "
         f"broken={broken})"
+    )
+    return ok
+
+
+def test_plex_blip_rules_render_is_validated_against_the_pinned_image() -> bool:
+    """Step-7c: the rules render cannot reach the running process unvalidated.
+
+    A malformed rules file does not degrade Prometheus — it STOPS it. Measured on
+    the pinned `prom/prometheus:v3.12.0` at the wave cut (`logs/planner-step07-live.log`,
+    leg 'bad'): one unparseable `expr` and the container is `exited`, logging
+    `could not parse expression`, and under this repo's `restart: unless-stopped`
+    that is the crash-loop class already recorded at :2072 (`RestartCount 20801`,
+    TSDB empty for two weeks). It is the FIRST of this role's renders whose bad
+    output takes the process down rather than being ignored, so `grep -c validate:`
+    on `tasks/main.yml` was ZERO before this row.
+
+    `ansible.builtin.template`'s OWN `validate:` is the gate, not a check-afterwards
+    task: a `validate:` that fails leaves the DEST UNCHANGED, so the good file
+    stays and the `notify: Restart prometheus` handler never fires — a separate
+    task would have already overwritten the good file before checking it. Driven
+    as a real delivery against a live container in `logs/builder-7c-delivery.log`
+    (good render → new container id on the new rules; bad render → play FAILED, dest
+    byte-identical, SAME container id still serving the old rules — the fresh-`up -d`
+    leg cannot test that, mem-1786224903-8344).
+
+    Five pins, one relation:
+
+    * present — the RULES render carries a `validate:`.
+    * validates the RENDER — the command carries `%s`, the temp file ansible
+      writes and is about to copy, not a fixed path. Validating any other path
+      passes while the new bytes go unread.
+    * `check rules` — the validator actually PARSES rules, so an unparseable
+      `expr` is rc!=0. A vacuous `validate: /bin/true %s` is the hole this pin
+      closes; `test_plex_blip_rules_validate_gate.py` drives the shipped command
+      RED on a bad render and GREEN on a good one.
+    * promtool from the PINNED image — `{{ docker_host_prometheus_image }}`, the
+      SAME variable `compose.yml.j2`'s prometheus service runs, read back out of
+      that service block rather than re-spelled. A host `promtool` or a second
+      literal tag is the c6c4/e627 two-literals-that-agree class: the validator
+      would drift from the process it guards.
+    * no literal tag — `prom/prometheus` appears NOWHERE in the command as a
+      string, only as the variable, so the relation above is the only carrier.
+    """
+    tasks, compose = _read(TASKS), _read(COMPOSE)
+    task = _render_task_block(tasks, PROM_RULES.name)
+    cmd = _render_task_validate(task)
+    service_block = _compose_service_block(compose, PROMETHEUS_SERVICE)
+    image = re.search(r'(?m)^\s*image:\s*(\S.*?)\s*$', service_block)
+    image_val = image.group(1) if image else ""
+    var = re.compile(r'\{\{\s*docker_host_prometheus_image\s*\}\}')
+
+    present = bool(cmd)
+    validates_render = present and "%s" in cmd
+    checks_rules = present and "check rules" in cmd
+    runs_promtool = present and "promtool" in cmd
+    pinned_var = present and var.search(cmd) is not None
+    # the compose service really runs that same variable — the pin is a relation,
+    # not a lone literal that happens to name the right image.
+    compose_runs_var = var.search(image_val) is not None
+    no_literal_tag = present and "prom/prometheus" not in cmd
+
+    ok = (present and validates_render and checks_rules and runs_promtool
+          and pinned_var and compose_runs_var and no_literal_tag)
+    print(
+        f"{'OK' if ok else 'FAIL'}: plex-blip rules render is validated against the "
+        f"pinned image (present={present} validates_render={validates_render} "
+        f"check_rules={checks_rules} promtool={runs_promtool} "
+        f"pinned_image_var={pinned_var} compose_runs_var={compose_runs_var} "
+        f"no_literal_tag={no_literal_tag}; cmd={cmd!r})"
     )
     return ok
 
@@ -9966,6 +10065,7 @@ def main() -> int:
         test_plex_blip_alert_rules_are_design_5_3(),
         test_every_alert_carries_severity_and_summary(),
         test_absent_series_doors_cover_every_alert_input(),
+        test_plex_blip_rules_render_is_validated_against_the_pinned_image(),
         test_prometheus_retention_outlives_the_blip_window(),
         test_prometheus_render_is_world_read_only_unpaid(),
         test_homepage_allowed_hosts(),
