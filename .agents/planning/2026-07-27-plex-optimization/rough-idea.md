@@ -1,0 +1,1 @@
+Remote connection to plex works but it can be slow, we want to optimize remote connections and general performance as best as we can. One bottleneck may just be using Cloudflare as the DNS registrar but it is hard to tell right now

@@ -1,0 +1,1 @@
+I keep having sporadic connection issues with plex regardless of whether I am accessing it from the LAN or remotely, what kind of metrics and logs do I need to track and how should I track it to help figure out what is happening? We already have grafana and prometheus set up but not completely configured to capture all the data we would want.
