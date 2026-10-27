@@ -40,6 +40,13 @@ module "docker_host" {
   # Inject the operator SSH key so root@docker-host has an authorized_keys entry;
   # otherwise Ansible's root SSH login is denied (DEBUG.md). See tofu/variables.tf.
   ssh_public_keys = local.operator_ssh_keys
+  # 32G, not the module's 16G default: the root disk hit 100% on 2026-10-12 and
+  # Prometheus dropped every sample for 15 days. Images take ~6-7G and the 90d
+  # TSDB ~7-8G at steady state (~75MB/day), so 16G had no room for an image
+  # upgrade. Grown live with `pct resize 111 rootfs 32G` on 2026-10-27 BEFORE
+  # this line changed, so `tofu plan` reads no diff. Grow it the same way next
+  # time; this provider's in-place behaviour for an LXC disk change is unverified.
+  disk_gb = 32
 }
 
 # Plex CT 110 — the GPU/media consumer of lxc_service. Unprivileged, with the
