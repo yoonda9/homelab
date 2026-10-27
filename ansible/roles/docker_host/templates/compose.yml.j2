@@ -3,10 +3,24 @@
 # Traefik reverse proxy + whoami smoke service (design §4.4).
 # whoami is exposed ONLY through Traefik labels (no published host port) and is
 # internal-only via the internal-allowlist middleware.
+# Container log rotation. Docker's default json-file driver keeps every line
+# and CT 111 has no daemon.json, so these logs grew without bound (281 MB on
+# 2026-10-27, cadvisor alone 149 MB) on the root disk that filled. Per service
+# and not daemon.json `log-opts`: Docker applies daemon defaults only to
+# containers created AFTER the change, while `logging:` is part of each
+# service's spec, so the play's `up -d` recreates all twelve and delivers it.
+# 10 MB x 3 files caps each container at 30 MB, ~360 MB for the stack.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   traefik:
     image: {{ docker_host_traefik_image }}
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -36,6 +50,7 @@ services:
   cloudflared:
     image: {{ docker_host_cloudflared_image }}
     restart: unless-stopped
+    logging: *default-logging
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
@@ -45,6 +60,7 @@ services:
   whoami:
     image: {{ docker_host_whoami_image }}
     restart: unless-stopped
+    logging: *default-logging
     # Internal-only smoke route: discovered by the docker provider, routed on
     # websecure, TLS via the active resolver, gated by internal-allowlist.
     labels:
@@ -77,6 +93,7 @@ services:
   homepage:
     image: {{ docker_host_homepage_image }}
     restart: unless-stopped
+    logging: *default-logging
     # gethomepage/homepage (v0.9.0+) validates the Host header: any request whose
     # Host is not localhost or in HOMEPAGE_ALLOWED_HOSTS gets a "Host validation
     # failed" page. Reached only via Traefik on home.{{ domain }}, so that
@@ -109,6 +126,7 @@ services:
   uptime-kuma:
     image: {{ docker_host_uptime_kuma_image }}
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - uptime-kuma-data:/app/data
     labels:
@@ -128,6 +146,7 @@ services:
   grafana:
     image: {{ docker_host_grafana_image }}
     restart: unless-stopped
+    logging: *default-logging
     # Admin password is sourced from the sibling .env (rendered from vault),
     # never embedded here. GF_SECURITY_ADMIN_PASSWORD comes from env.j2.
     environment:
@@ -153,6 +172,7 @@ services:
   prometheus:
     image: {{ docker_host_prometheus_image }}
     restart: unless-stopped
+    logging: *default-logging
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       # 90 days, because the fault this stack instruments is sporadic and is read
@@ -193,6 +213,7 @@ services:
       # rules are not merely unread — they are invisible inside the container;
       # logs/builder-7a-handler-question.log row D3).
       - {{ docker_host_project_dir }}/prometheus/rules/plex-blip-rules.yml:/etc/prometheus/rules/plex-blip-rules.yml:ro
+      - {{ docker_host_project_dir }}/prometheus/rules/host-disk-rules.yml:/etc/prometheus/rules/host-disk-rules.yml:ro
       - prometheus-data:/prometheus
     labels:
       - traefik.enable=true
@@ -213,6 +234,7 @@ services:
   node-exporter:
     image: {{ docker_host_node_exporter_image }}
     restart: unless-stopped
+    logging: *default-logging
     command:
       - --path.rootfs=/host
     pid: host
@@ -222,6 +244,7 @@ services:
   cadvisor:
     image: {{ docker_host_cadvisor_image }}
     restart: unless-stopped
+    logging: *default-logging
     privileged: true
     devices:
       - /dev/kmsg
@@ -242,6 +265,7 @@ services:
   pve-exporter:
     image: {{ docker_host_pve_exporter_image }}
     restart: unless-stopped
+    logging: *default-logging
     # Env-var configuration activates ONLY when PVE_USER is set; the exporter
     # then reads PVE_TOKEN_NAME/PVE_TOKEN_VALUE/PVE_VERIFY_SSL. Without PVE_USER
     # it ignores all three and falls back to an on-disk /etc/prometheus/pve.yml
@@ -278,6 +302,7 @@ services:
   plex-exporter:
     image: {{ docker_host_plex_exporter_image }}
     restart: unless-stopped
+    logging: *default-logging
     # Configuration is env-var ONLY (collector.rb `initialize`): there is no
     # config file and no CLI flag, so this service has no `command:` — one
     # region fewer than pve-exporter, and a command here would REPLACE the
@@ -318,6 +343,7 @@ services:
   blackbox-exporter:
     image: {{ docker_host_blackbox_exporter_image }}
     restart: unless-stopped
+    logging: *default-logging
     # THE FLAG IS NOT DECORATION. This image's own CMD is
     # `--config.file=/etc/blackbox_exporter/config.yml`, so a service block with
     # no `command:` boots happily on the image's built-in modules while the mount

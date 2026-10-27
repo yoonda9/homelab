@@ -2041,8 +2041,13 @@ PVE_API_HOST = "192.168.1.50"
 # without a parsable key line was invisible to the list. It now fails CLOSED on
 # those lines instead — see `_line_class` for the four deployable spellings that
 # were green through this constant, and for what `doc`/`seq` are exempted for.
-SCRAPE_ONLY_KEYS = {"image", "restart", "environment", "command"}
-OUTBOUND_ONLY_KEYS = {"image", "restart", "environment", "command", "depends_on"}
+# `logging` joined both sets on 2026-10-27 with the bounded json-file anchor every
+# service now carries. It is not merely allowed:
+# `test_every_compose_service_bounds_its_logs` REQUIRES it, per service, resolved.
+SCRAPE_ONLY_KEYS = {"image", "restart", "logging", "environment", "command"}
+OUTBOUND_ONLY_KEYS = {
+    "image", "restart", "logging", "environment", "command", "depends_on",
+}
 
 # --- plex-monitoring Step 3: the Plex Media Server exporter -------------------
 # Named once each and consumed on BOTH sides wherever two files have to agree
@@ -2477,6 +2482,11 @@ PROMETHEUS_SIBLING_EVIDENCE = "logs/builder-5d-r2-premises.log"
 # provisioned and every detection in this objective has depended on a human
 # noticing a paused stream.
 PROM_RULES = TEMPLATES / "plex-blip-rules.yml.j2"
+# The root-filesystem rules (2026-10-27). A second rules render with the same
+# delivery relation as PROM_RULES, so it takes a RELOAD_CONTRACT row of its own
+# and a place in WORLD_READ_LICENCE; its firability is
+# scripts/test_host_disk_alert_rules_promtool.py's.
+HOST_DISK_RULES = TEMPLATES / "host-disk-rules.yml.j2"
 PROM_RULES_KEY = "rule_files"
 PROM_RULES_GROUP = "plex-blip"
 # THE SPELLING IS A LITERAL PATH AND A GLOB IS REFUSED, and both halves are
@@ -2818,7 +2828,7 @@ EXPORTER_REAL_FAULT_WORDS = ("exporter", "scrape", "metric")
 # the rules render arriving beside a check that names only its neighbour — the
 # "next render task walks straight past the table" defect `RELOAD_CONTRACT`'s own
 # header predicted and Step 4a then committed.
-WORLD_READ_LICENCE = (PROM_SCRAPE, PROM_RULES)
+WORLD_READ_LICENCE = (PROM_SCRAPE, PROM_RULES, HOST_DISK_RULES)
 
 # --- the field census, and it is LOAD-BEARING rather than prose ---------------
 # `prom/blackbox-exporter:v0.28.0` unmarshals its config STRICTLY: a field it
@@ -3489,6 +3499,16 @@ RELOAD_CONTRACT = {
     # the rule path — the same crash loop that emptied this stack's TSDB for two
     # weeks — and NOT an inference from the prometheus.yml row's digits.
     "plex-blip-rules.yml.j2": {
+        "service": PROMETHEUS_SERVICE,
+        "owner": RENDER_OWNER,
+        "mode": PROM_RULES_MODE,
+        "config_flag": None,
+        "default_path": None,
+        "named_in": PROM_SCRAPE,
+    },
+    # Same row shape as plex-blip-rules above: same service, same uid-65534
+    # mode, named by the same `rule_files:` list.
+    HOST_DISK_RULES.name: {
         "service": PROMETHEUS_SERVICE,
         "owner": RENDER_OWNER,
         "mode": PROM_RULES_MODE,
@@ -5226,31 +5246,39 @@ def test_plex_blip_rules_render_is_validated_against_the_pinned_image() -> bool:
       string, only as the variable, so the relation above is the only carrier.
     """
     tasks, compose = _read(TASKS), _read(COMPOSE)
-    task = _render_task_block(tasks, PROM_RULES.name)
-    cmd = _render_task_validate(task)
     service_block = _compose_service_block(compose, PROMETHEUS_SERVICE)
     image = re.search(r'(?m)^\s*image:\s*(\S.*?)\s*$', service_block)
     image_val = image.group(1) if image else ""
     var = re.compile(r'\{\{\s*docker_host_prometheus_image\s*\}\}')
-
-    present = bool(cmd)
-    validates_render = present and "%s" in cmd
-    checks_rules = present and "check rules" in cmd
-    runs_promtool = present and "promtool" in cmd
-    pinned_var = present and var.search(cmd) is not None
     # the compose service really runs that same variable — the pin is a relation,
     # not a lone literal that happens to name the right image.
     compose_runs_var = var.search(image_val) is not None
-    no_literal_tag = present and "prom/prometheus" not in cmd
 
-    ok = (present and validates_render and checks_rules and runs_promtool
-          and pinned_var and compose_runs_var and no_literal_tag)
+    # EVERY rules render, not only plex-blip's: the set is the RELOAD_CONTRACT
+    # rows `rule_files:` names, so a second rules file (host-disk-rules.yml.j2,
+    # 2026-10-27) is held to the same gate without being listed here. Dropping
+    # its `validate:` was GREEN before this walk.
+    rules_srcs = [
+        src for src, row in RELOAD_CONTRACT.items()
+        if row.get("named_in") == PROM_SCRAPE
+    ]
+    ok, rows = bool(rules_srcs) and compose_runs_var, {}
+    for src in rules_srcs:
+        cmd = _render_task_validate(_render_task_block(tasks, src))
+        present = bool(cmd)
+        arms = {
+            "present": present,
+            "validates_render": present and "%s" in cmd,
+            "check_rules": present and "check rules" in cmd,
+            "promtool": present and "promtool" in cmd,
+            "pinned_image_var": present and var.search(cmd) is not None,
+            "no_literal_tag": present and "prom/prometheus" not in cmd,
+        }
+        ok = ok and all(arms.values())
+        rows[src] = " ".join(f"{k}={v}" for k, v in arms.items()) + f"; cmd={cmd!r}"
     print(
-        f"{'OK' if ok else 'FAIL'}: plex-blip rules render is validated against the "
-        f"pinned image (present={present} validates_render={validates_render} "
-        f"check_rules={checks_rules} promtool={runs_promtool} "
-        f"pinned_image_var={pinned_var} compose_runs_var={compose_runs_var} "
-        f"no_literal_tag={no_literal_tag}; cmd={cmd!r})"
+        f"{'OK' if ok else 'FAIL'}: every rules render is validated against the "
+        f"pinned image (compose_runs_var={compose_runs_var}, renders={rows})"
     )
     return ok
 
@@ -10024,6 +10052,59 @@ def test_no_undeclared_conditional_region() -> bool:
     return ok
 
 
+# --- 2026-10-27: bounded container logs ----------------------------------------
+# CT 111's root disk filled on 2026-10-12. Docker's default json-file driver keeps
+# every line, there is no daemon.json, and the container logs stood at 281 MB
+# (cadvisor 149 MB) when it was cleared. The bound has to be per service:
+# daemon.json `log-opts` reach only containers created after the change.
+COMPOSE_LOG_ANCHOR_KEY = "x-logging"
+COMPOSE_LOG_DRIVER = "json-file"
+# Both bounds are required: max-size without max-file rotates into ONE file and
+# truncates, and max-file without max-size never rotates at all.
+COMPOSE_LOG_BOUND_OPTIONS = ("max-size", "max-file")
+
+
+def test_every_compose_service_bounds_its_logs() -> bool:
+    """Every compose service's resolved `logging:` is a bounded json-file driver.
+
+    PARSED, not grepped: the references are replaced by a BARE scalar (not
+    `_neutralise_refs`' quoted one, which cannot sit before `/path:/path`), and
+    the document goes through `_StrictLoader`, so `logging: *default-logging`
+    is checked as what the alias RESOLVES to and a service that drops the line,
+    or names a different anchor, reds here. Iterates the parsed `services:`
+    mapping, so a thirteenth service added without the line reds too.
+    """
+    try:
+        doc = yaml.load(
+            re.sub(r"\{\{.*?\}\}", "REF", _read(COMPOSE)), Loader=_StrictLoader)
+        parse_error = None
+    except yaml.YAMLError as exc:
+        doc, parse_error = None, str(exc).splitlines()[0]
+    services = doc.get("services") if isinstance(doc, dict) else None
+    services = services if isinstance(services, dict) else {}
+    anchor = doc.get(COMPOSE_LOG_ANCHOR_KEY) if isinstance(doc, dict) else None
+    unbounded = {}
+    for name, svc in services.items():
+        log = svc.get("logging") if isinstance(svc, dict) else None
+        opts = log.get("options") if isinstance(log, dict) else None
+        opts = opts if isinstance(opts, dict) else {}
+        bounded = (
+            isinstance(log, dict) and log.get("driver") == COMPOSE_LOG_DRIVER
+            and all(str(opts.get(k) or "").strip() for k in COMPOSE_LOG_BOUND_OPTIONS)
+        )
+        if not bounded:
+            unbounded[name] = log
+    ok = parse_error is None and bool(services) and not unbounded and isinstance(
+        anchor, dict)
+    print(
+        f"{'OK' if ok else 'FAIL'}: every compose service bounds its logs "
+        f"(parse_error={parse_error}, services={len(services)}, "
+        f"anchor_present={isinstance(anchor, dict)}, driver={COMPOSE_LOG_DRIVER}, "
+        f"required={list(COMPOSE_LOG_BOUND_OPTIONS)}, unbounded={unbounded})"
+    )
+    return ok
+
+
 def main() -> int:
     results = [
         test_role_structure_exists(),
@@ -10083,6 +10164,7 @@ def main() -> int:
         test_web_twins_double_their_websecure_sibling(),
         test_templates_render_line_for_line(),
         test_no_undeclared_conditional_region(),
+        test_every_compose_service_bounds_its_logs(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

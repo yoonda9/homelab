@@ -221,6 +221,26 @@
       check rules /tmp/plex-blip-rules.yml
   notify: Restart prometheus
 
+# Root-filesystem alerts (host-disk-rules.yml.j2's header says why they exist).
+# Same mode, gate and handler as the plex-blip rules above, for the same measured
+# reasons: uid 65534 needs 0644, one bad `expr` stops prometheus, and a
+# single-file bind sees the new inode only after a restart.
+- name: Render the host disk alert rules
+  ansible.builtin.template:
+    src: host-disk-rules.yml.j2
+    dest: "{{ docker_host_project_dir }}/prometheus/rules/host-disk-rules.yml"
+    owner: root
+    group: root
+    # Harmless to publish at 0644: this file carries no credential, only three
+    # expressions over node_filesystem metric names and job labels.
+    mode: "0644"
+    validate: >-
+      docker run --rm --network none --user 0:0 --entrypoint promtool
+      -v %s:/tmp/host-disk-rules.yml:ro
+      {{ docker_host_prometheus_image }}
+      check rules /tmp/host-disk-rules.yml
+  notify: Restart prometheus
+
 # The blackbox probe modules (plex-blip-manual-triage Step 5a). Same read-once
 # `:ro` bind mount as prometheus.yml above, so the handler is again the whole
 # delivery path — `docker compose up -d` leaves a container whose spec did not

@@ -1,0 +1,64 @@
+# {{ ansible_managed }}
+# Root-filesystem alerts for the two CTs this stack scrapes: docker-host CT 111
+# (job node-exporter) and Plex CT 110 (job plex-node-exporter).
+#
+# WHY THIS FILE EXISTS. CT 111's 16G root hit 100% on 2026-10-12 and stayed there
+# until 2026-10-27: the 90d TSDB (~75 MB/day, ~7-8 GB at steady state) beside
+# ~7 GB of images left no headroom. Prometheus failed every WAL write with
+# `no space left on device` and then died behind a container docker still called
+# `Up`, so the outage cut a 15-day hole in the very data that would have shown it
+# coming. The rootfs is 32G now (tofu/main.tf); these rules are the warning that
+# arrives while Prometheus can still write.
+#
+# ONLY THE EARLY THRESHOLD CAN BE RELIED ON for CT 111: at 100% the process that
+# evaluates these rules is the first thing to stop. 15% of 32G is ~4.8 GB, weeks
+# of TSDB growth, which is the runway the warning exists to buy.
+#
+# A SEPARATE FILE FROM plex-blip-rules.yml, because that one is design §5.3's
+# single `plex-blip` group and its guards hold it to exactly that. Delivery is
+# the same relation: a literal `rule_files:` entry in prometheus.yml.j2, a
+# single-file `:ro` bind in compose.yml.j2, 0644 for uid 65534, and the pinned
+# promtool `validate:` before `notify: Restart prometheus` (tasks/main.yml).
+# Nothing is pushed: Alertmanager is deferred (plex-blip-rules.yml.j2's header).
+groups:
+  - name: host-disk
+    rules:
+      - alert: HostRootFilesystemLow
+        expr: >-
+          node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            A CT root filesystem (/) is under 15% free; the job label names the
+            host (node-exporter = docker-host CT 111, plex-node-exporter = Plex
+            CT 110). Prune unused images, or grow the rootfs with pct resize
+            BEFORE raising disk_gb in tofu/main.tf.
+      - alert: HostRootFilesystemCritical
+        expr: >-
+          node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"} < 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: >-
+            A CT root filesystem (/) is under 5% free. On docker-host CT 111
+            Prometheus stops writing at 100% and every alert goes dark with it;
+            free space now.
+      # The door for the two rules above: both compare a series to a constant, so
+      # a node-exporter that stops reporting `/` silences them exactly when it
+      # matters. One `absent()` per job, so either CT going dark opens it.
+      - alert: HostRootFilesystemSeriesAbsent
+        expr: >-
+          absent(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/"})
+          or absent(node_filesystem_avail_bytes{job="plex-node-exporter",mountpoint="/"})
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            No root-filesystem series from node-exporter or plex-node-exporter;
+            the disk-space alerts for that CT cannot fire until it reports again.

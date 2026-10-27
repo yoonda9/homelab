@@ -36,6 +36,8 @@ global:
 # comparing two strings that agree until one moves.
 rule_files:
   - /etc/prometheus/rules/plex-blip-rules.yml
+  # Root-filesystem alerts (host-disk-rules.yml.j2), the same literal-path rule.
+  - /etc/prometheus/rules/host-disk-rules.yml
 
 scrape_configs:
   - job_name: prometheus
