@@ -24,6 +24,7 @@ REQUIRED_HEADINGS = (
     "GitLab-side hygiene",
     "Compromise playbook",
     "Routine re-image",
+    "Hairpin",
     "Known limits",
 )
 
@@ -102,6 +103,21 @@ def test_known_limits_body() -> bool:
     return _report(not bad, f"known-limits section names the three limits (missing: {bad})")
 
 
+def test_hairpin_body() -> bool:
+    s = _section(_body(), "Hairpin")
+    checks = {
+        "WAN IP": "WAN IP" in s,
+        "whoami probe": "whoami" in s and "curl" in s,
+        "source IP echoed": "RemoteAddr" in s or "X-Real-Ip" in s,
+        "internal-allowlist": "internal-allowlist" in s,
+        "router admin ports": re.search(r"admin\s+ports", s) is not None,
+        "evidence or acceptance": re.search(r"evidence", s, re.I) is not None
+        and re.search(r"accept", s, re.I) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"hairpin section states the probe and the outcomes (missing: {bad})")
+
+
 def test_compromise_body() -> bool:
     s = _section(_body(), "Compromise playbook")
     checks = {
@@ -137,6 +153,7 @@ def main() -> int:
         test_hygiene_body(),
         test_compromise_body(),
         test_reimage_body(),
+        test_hairpin_body(),
         test_known_limits_body(),
     ]
     total, passed = len(results), sum(results)

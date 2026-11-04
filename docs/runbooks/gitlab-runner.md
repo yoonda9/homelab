@@ -17,6 +17,7 @@ whose body says "not yet written" belongs to a later step.
 - [GitLab-side hygiene](#gitlab-side-hygiene)
 - [Compromise playbook](#compromise-playbook)
 - [Routine re-image](#routine-re-image)
+- [Hairpin](#hairpin)
 - [Known limits](#known-limits)
 
 ## Create the VM
@@ -123,6 +124,33 @@ of the compromise playbook, with the runner drained first instead of paused
 for cause. The SSH host key changes on every re-image, so remove the old entry
 from `~/.ssh/known_hosts` (`ssh-keygen -R 192.168.1.120`) before the next
 login.
+
+## Hairpin
+
+Open question, not yet measured: whether a job on VM 120 can reach Traefik's
+internal-only routers, or the router's own admin ports, by connecting to the
+router's public (WAN) IP. Traefik's `internal-allowlist` admits
+`192.168.1.0/24`, so a hairpin that presents the VM's source address `.120`
+would be let in. Measurement is an operator-gated live step (plan Step 11);
+this section holds the result, either the evidence or an explicit acceptance,
+once that step runs.
+
+Measure from VM 120:
+
+```sh
+curl -sk --resolve whoami.<domain>:443:<WAN IP> https://whoami.<domain>/
+```
+
+The whoami response echoes `RemoteAddr` / `X-Real-Ip`, which is the source IP
+the router presents (`.120`, or `.1` if it SNATs). Repeat for one internal-only
+router such as grafana, and probe the router's admin ports (80, 443, 22) on the
+WAN IP. The PVE RFC1918 drop does not cover a hairpin to the public address.
+
+Outcome: blocked means record the evidence here. Open with source `.120` means
+narrow `internal-allowlist` to exclude the runner IPs. Open with source `.1`, or
+router admin reachable, means add a PVE egress DROP to the WAN IP, which is
+dynamic and needs a runbook check when the IP changes. Otherwise record the
+operator's explicit acceptance of the risk.
 
 ## Known limits
 
