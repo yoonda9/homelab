@@ -3,7 +3,7 @@
 Text-parsed (stdlib only): the `gitlab_runners` map in tofu/locals.tf drives a
 `for_each` call of modules/dev_vm in tofu/main.tf, with `node` a per-entry
 field, vmid 120 and 192.168.1.120/24, the operator-keys precondition present,
-and no Proxmox firewall resource outside the Step 10 stage gate. The root
+and every Proxmox firewall resource confined to gitlab_runner_firewall.tf (stage-gated). The root
 `gitlab_runners` output (ipv4 + vm_id per VM) feeds inventory generation.
 """
 
@@ -104,8 +104,10 @@ def test_no_firewall_resource_before_stage_gate() -> bool:
     bad = []
     for f in sorted(TOFU.glob("*.tf")):
         for m in re.finditer(r'resource\s+"(proxmox_virtual_environment_[a-z_]*firewall[a-z_]*)"', f.read_text()):
-            bad.append(f"{f.name}:{m.group(1)}")
-    return _report(not bad, f"no Proxmox firewall resource outside the Step 10 gate (found={bad})")
+            if f.name != "gitlab_runner_firewall.tf":
+                bad.append(f"{f.name}:{m.group(1)}")
+    present = "proxmox_virtual_environment_cluster_firewall" in (TOFU / "gitlab_runner_firewall.tf").read_text()
+    return _report(not bad and present, f"Proxmox firewall resources live only in gitlab_runner_firewall.tf, which holds them (stray={bad}); gating is test_gitlab_runner_firewall_shape")
 
 
 def test_root_output() -> bool:

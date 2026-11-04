@@ -92,6 +92,76 @@ def check_dev_vm_default() -> bool:
     return _report(ok, "dev_vm firewall input still defaults to false")
 
 
+def _res(files: dict, rtype: str, name: str) -> str:
+    for _f, t, n, body in census(files):
+        if t == rtype and n == name:
+            return body
+    return ""
+
+
+def _assign(body: str, key: str):
+    m = re.search(r"^\s*" + key + r'\s*=\s*("[^"\n]*"|true|false)\s*$', body, re.M)
+    return m.group(1) if m else None
+
+
+def check_cluster_pins(files: dict) -> bool:
+    b = _res(files, "proxmox_virtual_environment_cluster_firewall", "dc")
+    ok = (
+        _assign(b, "input_policy") == '"ACCEPT"'
+        and _assign(b, "output_policy") == '"ACCEPT"'
+        and _assign(b, "forward_policy") == '"ACCEPT"'
+        and _assign(b, "enabled") == "true"
+        and _assign(b, "ebtables") == "true"
+        and re.search(r"var\." + STAGE + r"\s*>=\s*2", b) is not None
+    )
+    return _report(ok, "datacenter switch: enabled, input/output/forward ACCEPT pinned, ebtables, stage >= 2")
+
+
+def check_node_firewall_off(files: dict) -> bool:
+    b = _res(files, "proxmox_node_firewall", "pve")
+    ok = _assign(b, "enabled") == "false" and re.search(r"var\." + STAGE + r"\s*>=\s*2", b) is not None
+    dc = _res(files, "proxmox_virtual_environment_cluster_firewall", "dc")
+    ordered = re.search(r"depends_on\s*=\s*\[[^\]]*proxmox_node_firewall\.pve", dc) is not None
+    return _report(ok and ordered, "node firewall disabled at stage 2 and ordered before the datacenter switch")
+
+
+def check_vm_options(files: dict) -> bool:
+    b = _res(files, "proxmox_virtual_environment_firewall_options", "vm")
+    want = {"enabled": "true", "input_policy": '"DROP"', "output_policy": '"ACCEPT"', "macfilter": "true",
+            "ipfilter": "true", "radv": "false", "dhcp": "false", "ndp": "false"}
+    bad = {k: _assign(b, k) for k, v in want.items() if _assign(b, k) != v}
+    return _report(not bad, f"VM options pin enabled/DROP-in/ACCEPT-out/macfilter/ipfilter/radv/dhcp/ndp (bad={bad})")
+
+
+def check_ipset(files: dict) -> bool:
+    b = _res(files, "proxmox_virtual_environment_firewall_ipset", "ipfilter")
+    cidr = _block(b, r"cidr")
+    ok = (
+        _assign(b, "name") == '"ipfilter-net0"'
+        and re.search(r"^\s*name\s*=\s*split\(\"/\",\s*each\.value\.ip_cidr\)\[0\]\s*$", cidr, re.M) is not None
+    )
+    return _report(ok, "ipset ipfilter-net0 holds the runner's own IP")
+
+
+def check_rules(files: dict) -> bool:
+    b = _res(files, "proxmox_virtual_environment_firewall_rules", "vm")
+    drops = set(re.findall(r'action\s*=\s*"DROP"\s*\n\s*dest\s*=\s*"([^"]+)"', b))
+    need = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "224.0.0.0/4", "255.255.255.255", "::/0"}
+    in_rules = "9100,9252" in b and '"22"' in b
+    return _report(need <= drops and in_rules, f"drops cover RFC1918, tailnet, multicast, broadcast, IPv6 (missing={sorted(need - drops)}); ingress 22 and 9100,9252")
+
+
+def check_stage_semantics(files: dict) -> bool:
+    """Stage 0 none, 1 per-VM objects only, 2 everything."""
+    bad = []
+    for _f, rtype, name, body in census(files):
+        switch = rtype in SWITCH_TYPES or rtype == "proxmox_node_firewall"
+        thresh = "2" if switch else "1"
+        if not re.search(r"var\." + STAGE + r"\s*>=\s*" + thresh + r"\b", body):
+            bad.append(f"{rtype}.{name}")
+    return _report(not bad, f"singletons gate on stage >= 2, per-VM objects on stage >= 1 (bad={bad})")
+
+
 def main() -> int:
     files = _tofu_text()
     results = [
@@ -99,6 +169,12 @@ def main() -> int:
         check_census(files),
         check_stage0_empty(files),
         check_dev_vm_default(),
+        check_cluster_pins(files),
+        check_node_firewall_off(files),
+        check_vm_options(files),
+        check_ipset(files),
+        check_rules(files),
+        check_stage_semantics(files),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
