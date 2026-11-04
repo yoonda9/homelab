@@ -1,0 +1,9 @@
+---
+- name: Template daemon.json with bounded json-file logs
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Drain and restart docker

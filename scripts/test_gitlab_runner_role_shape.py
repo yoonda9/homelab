@@ -75,6 +75,40 @@ def test_no_cross_role_src() -> bool:
     return _report(not bad, f"no cross-role src references (offenders: {bad})")
 
 
+def test_geerlingguy_dependency() -> bool:
+    m = _read("meta/main.yml")
+    ok = (
+        bool(re.search(r"role:\s*geerlingguy\.docker", m))
+        and bool(re.search(r"docker_packages_state:\s*present", m))
+        and bool(re.search(r"docker_daemon_options:\s*\{\}", m))
+        and bool(re.search(r"docker_restart_handler_state:\s*started", m))
+        and bool(re.search(r"docker_users:\s*\[\]", m))
+    )
+    return _report(ok, "meta depends on geerlingguy.docker with present / {} / started / [] vars")
+
+
+def test_daemon_json_notifies_drain() -> bool:
+    t = _read("tasks/docker.yml")
+    m = re.search(r"template:\n(?:\s+\S.*\n)*?\s+dest:\s*/etc/docker/daemon\.json\n((?:\s+\S.*\n?)*)", t)
+    block = m.group(0) if m else ""
+    ok = bool(m) and "src: daemon.json.j2" in block and bool(re.search(r"notify:\s*Drain and restart docker\s*$", block, re.M))
+    ok = ok and not re.search(r"notify:\s*(Restart docker|restart docker)\b", t)
+    return _report(ok, "daemon.json is templated by the role and notifies 'Drain and restart docker', not a bare docker restart")
+
+
+def test_daemon_json_log_caps() -> bool:
+    t = _read("templates/daemon.json.j2")
+    ok = '"log-driver": "json-file"' in t and '"max-size": "10m"' in t and '"max-file": "3"' in t
+    return _report(ok, "daemon.json.j2 caps json-file logs at 10m x 3")
+
+
+def test_main_imports_docker() -> bool:
+    return _report(
+        bool(re.search(r"import_tasks:\s*docker\.yml", _read("tasks/main.yml"))),
+        "tasks/main.yml imports docker.yml",
+    )
+
+
 def main() -> int:
     results = [fn() for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     passed = sum(results)

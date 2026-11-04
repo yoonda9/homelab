@@ -1,3 +1,6 @@
 ---
 - name: Harden the VM
   ansible.builtin.import_tasks: harden.yml
+
+- name: Configure Docker
+  ansible.builtin.import_tasks: docker.yml

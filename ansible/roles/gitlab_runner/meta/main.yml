@@ -13,4 +13,12 @@ galaxy_info:
   galaxy_tags:
     - homelab
     - gitlab
-dependencies: []
+# geerlingguy.docker runs before this role's tasks. It must not own daemon.json
+# (docker_daemon_options stays empty) nor restart dockerd on its own: this role
+# templates daemon.json and changes go through the drain handler.
+dependencies:
+  - role: geerlingguy.docker
+    docker_packages_state: present
+    docker_daemon_options: {}
+    docker_restart_handler_state: started
+    docker_users: []
