@@ -32,3 +32,11 @@ output "plex_ipv4" {
   description = "Best-effort IPv4 of the plex LXC (null until network up)."
   value       = module.plex.ipv4_address
 }
+
+# gitlab-runner VM facts for the Ansible inventory (gen_inventory.py renders the
+# gitlab_runner group from this). ipv4 is the configured static address, so it
+# does not depend on the guest agent.
+output "gitlab_runners" {
+  description = "gitlab-runner VMs by name: static IPv4 and PVE VM-ID."
+  value       = { for k, m in module.gitlab_runner : k => { ipv4 = m.ipv4_configured, vm_id = m.vm_id } }
+}

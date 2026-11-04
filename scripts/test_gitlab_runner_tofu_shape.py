@@ -4,7 +4,7 @@ Text-parsed (stdlib only): the `gitlab_runners` map in tofu/locals.tf drives a
 `for_each` call of modules/dev_vm in tofu/main.tf, with `node` a per-entry
 field, vmid 120 and 192.168.1.120/24, the operator-keys precondition present,
 and no Proxmox firewall resource outside the Step 10 stage gate. The root
-output arm lands with Step 2b.
+`gitlab_runners` output (ipv4 + vm_id per VM) feeds inventory generation.
 """
 
 import pathlib
@@ -108,6 +108,17 @@ def test_no_firewall_resource_before_stage_gate() -> bool:
     return _report(not bad, f"no Proxmox firewall resource outside the Step 10 gate (found={bad})")
 
 
+def test_root_output() -> bool:
+    """outputs.tf exposes gitlab_runners as {name: {ipv4, vm_id}} from the module."""
+    out = _block(_read("outputs.tf"), r'output\s+"gitlab_runners"')
+    ok = (
+        re.search(r"for\s+k\s*,\s*m\s+in\s+module\.gitlab_runner\s*:", out) is not None
+        and re.search(r"\bipv4\s*=\s*m\.ipv4_configured\b", out) is not None
+        and re.search(r"\bvm_id\s*=\s*m\.vm_id\b", out) is not None
+    )
+    return _report(ok, "root output gitlab_runners maps each module instance to {ipv4, vm_id}")
+
+
 def main() -> int:
     results = [
         test_map_entry_fields(),
@@ -115,6 +126,7 @@ def main() -> int:
         test_call_inputs_from_entry(),
         test_keys_precondition(),
         test_no_firewall_resource_before_stage_gate(),
+        test_root_output(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
