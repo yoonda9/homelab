@@ -150,7 +150,29 @@ Not yet written.
 
 ## Troubleshooting
 
-Not yet written.
+Start on the VM with `systemctl status gitlab-runner` and
+`journalctl -u gitlab-runner -n 100`, then `gitlab-runner verify`.
+
+- **Runner shows offline in GitLab.** The service is down or cannot reach
+  gitlab.com. Check `systemctl is-active gitlab-runner`, then outbound 443 from
+  the VM. After a firewall change, suspect the [Firewall](#firewall) section
+  before the runner.
+- **`verify` exits non-zero with a 401.** The token is dead or revoked. Follow
+  [Rotate a token](#rotate-a-token); it will not fix itself.
+- **Jobs stay pending.** The runner is online but not picking up work. Check
+  that the project still has the runner enabled, that the runner is not paused,
+  and that turning off instance runners has not hidden an untagged-job mismatch.
+  A locked runner will not serve a second project.
+- **Jobs stuck running or the service will not stop.** A stop drains: the runner
+  sends SIGQUIT and waits for jobs up to the drain timeout. A stop that seems
+  hung is usually that wait. Do not `kill -9` or reboot mid-drain; wait it out,
+  or cancel the job in GitLab.
+- **Job fails with `no space left on device`.** See [Clean disk](#clean-disk).
+- **Play fails before rendering `config.toml`.** The pre-render assert names the
+  runner entry that has no key in `vault_gitlab_runner_tokens`. Add the key with
+  `ansible-vault edit`; never paste the token into chat.
+- **The play fails over SSH.** Use the guest-agent recovery in
+  [Create the VM](#create-the-vm).
 
 ## Security model
 

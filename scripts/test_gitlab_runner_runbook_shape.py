@@ -228,6 +228,37 @@ def test_rotate_body() -> bool:
     return _report(not bad, f"rotate section uses the ID-based reset and states the effects (missing: {bad})")
 
 
+def test_troubleshooting_body() -> bool:
+    s = _section(_body(), "Troubleshooting")
+    checks = {
+        "journalctl": "journalctl -u gitlab-runner" in s,
+        "verify": "gitlab-runner verify" in s,
+        "401 means rotate": "401" in s and re.search(r"rotate", s, re.I) is not None,
+        "offline runner": re.search(r"offline", s, re.I) is not None,
+        "pending jobs": re.search(r"pending", s, re.I) is not None,
+        "drain wait, no kill -9": re.search(r"drain", s, re.I) is not None and "kill -9" in s,
+        "pre-render assert names missing vault key": re.search(r"pre-render\s+assert", s, re.I) is not None
+        and "vault_gitlab_runner_tokens" in s,
+        "never paste token": re.search(r"never\s+paste", s, re.I) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"troubleshooting section covers offline, stuck, 401, assert (missing: {bad})")
+
+
+def test_runner_vars_file() -> bool:
+    f = REPO_ROOT / "ansible" / "group_vars" / "gitlab_runner" / "vars.yml"
+    txt = f.read_text() if f.is_file() else ""
+    live = [l for l in txt.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    checks = {
+        "file exists": bool(txt),
+        "list is [] until the token step": "gitlab_runner_runners: []" in live,
+        "lumologic-pve entry prepared": "name: lumologic-pve" in txt and "project: lumologic/lumologic" in txt,
+        "no token value": re.search(r"glrt-|token\s*:", txt) is None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"runner vars file carries the prepared entry, no secret (missing: {bad})")
+
+
 def test_heading_order_and_uniqueness() -> bool:
     body = _body()
     found = re.findall(r"^## (.+?)\s*$", body, re.M)
@@ -259,6 +290,8 @@ def main() -> int:
         test_register_body(),
         test_add_project_body(),
         test_rotate_body(),
+        test_troubleshooting_body(),
+        test_runner_vars_file(),
         test_security_model_body(),
         test_hygiene_body(),
         test_compromise_body(),
