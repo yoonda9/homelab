@@ -22,6 +22,8 @@ REQUIRED_HEADINGS = (
     "Troubleshooting",
     "Security model",
     "GitLab-side hygiene",
+    "Compromise playbook",
+    "Routine re-image",
     "Known limits",
 )
 
@@ -100,6 +102,32 @@ def test_known_limits_body() -> bool:
     return _report(not bad, f"known-limits section names the three limits (missing: {bad})")
 
 
+def test_compromise_body() -> bool:
+    s = _section(_body(), "Compromise playbook")
+    checks = {
+        "pause the runner": re.search(r"pause\s+the\s+runner", s, re.I) is not None,
+        "re-image": re.search(r"re-image", s, re.I) is not None,
+        "runner-reimage named": "just runner-reimage" in s,
+        "runner-reimage marked planned": re.search(r"planned", s, re.I) is not None,
+        "delete and recreate / ID reset": re.search(r"delete\s+and\s+recreate", s, re.I) is not None
+        and re.search(r"\bID\b", s) is not None,
+        "rotate CI variables": re.search(r"rotate", s, re.I) is not None and "CI variables" in s,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"compromise-playbook section lists the four steps (missing: {bad})")
+
+
+def test_reimage_body() -> bool:
+    s = _section(_body(), "Routine re-image")
+    checks = {
+        "monthly": re.search(r"monthly", s, re.I) is not None,
+        "on upgrades": re.search(r"upgrade", s, re.I) is not None,
+        "SSH host key changes": re.search(r"host\s+key", s, re.I) is not None and re.search(r"chang", s) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"routine-re-image section states cadence and host-key change (missing: {bad})")
+
+
 def main() -> int:
     results = [
         test_headings(),
@@ -107,6 +135,8 @@ def main() -> int:
         test_create_vm_body(),
         test_security_model_body(),
         test_hygiene_body(),
+        test_compromise_body(),
+        test_reimage_body(),
         test_known_limits_body(),
     ]
     total, passed = len(results), sum(results)

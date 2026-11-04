@@ -15,6 +15,8 @@ whose body says "not yet written" belongs to a later step.
 - [Troubleshooting](#troubleshooting)
 - [Security model](#security-model)
 - [GitLab-side hygiene](#gitlab-side-hygiene)
+- [Compromise playbook](#compromise-playbook)
+- [Routine re-image](#routine-re-image)
 - [Known limits](#known-limits)
 
 ## Create the VM
@@ -96,6 +98,31 @@ VM.
   hold the VM indefinitely.
 - The job-token allowlist stays at its default; do not widen it to other
   projects.
+
+## Compromise playbook
+
+Use this when a job, an attached project member, or the VM itself is suspected
+of being compromised. Do the steps in order.
+
+1. Pause the runner in GitLab (Settings > CI/CD > Runners > Pause), so no new
+   job lands on the VM while you work.
+2. Re-image the VM with `just runner-reimage NAME`. This recipe is planned (it
+   arrives with the Proxmox firewall step) and does not exist yet; until it
+   does, use `tofu apply -replace` on the VM by hand, and confirm the VM is
+   not left without its firewall before unpausing.
+3. Delete and recreate the runner in GitLab, or use the ID-based token reset,
+   so the old authentication token is dead. A re-imaged VM must not reuse the
+   token the compromised one held.
+4. Rotate any CI variables the runner could have seen: every variable of every
+   attached project, plus any deploy key or registry credential a job used.
+
+## Routine re-image
+
+Re-image the VM monthly and on upgrades, using the same procedure as steps 2-3
+of the compromise playbook, with the runner drained first instead of paused
+for cause. The SSH host key changes on every re-image, so remove the old entry
+from `~/.ssh/known_hosts` (`ssh-keygen -R 192.168.1.120`) before the next
+login.
 
 ## Known limits
 
