@@ -50,3 +50,11 @@
   become: true
   roles:
     - plex
+
+# GitLab runner VM (120): Ubuntu 26.04 guest. `common` runs first (above, on
+# `all`); this play targets only the gitlab_runner group (hardening + Docker).
+- name: GitLab runner VM
+  hosts: gitlab_runner
+  become: true
+  roles:
+    - gitlab_runner

@@ -11,6 +11,9 @@ galaxy_info:
       versions:
         - bookworm
         - trixie
+    - name: Ubuntu
+      versions:
+        - resolute
   galaxy_tags:
     - homelab
     - baseline

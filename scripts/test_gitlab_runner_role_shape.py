@@ -124,6 +124,26 @@ def test_drain_handler_order() -> bool:
     return _report(ok, "Drain and restart docker: probe unit, stop gitlab-runner, restart docker, start gitlab-runner (stop/start only if the unit exists)")
 
 
+def test_site_play() -> bool:
+    site = (REPO_ROOT / "ansible" / "site.yml").read_text()
+    plays = re.split(r"(?m)^- name:", site)[1:]
+    ok = any(
+        re.search(r"hosts:\s*gitlab_runner\s*$", pl, re.M)
+        and re.search(r"become:\s*true", pl)
+        and re.search(r"roles:\s*\n\s+-\s+gitlab_runner\s*$", pl, re.M)
+        for pl in plays
+    )
+    first_all = site.find("hosts: all")
+    runner = site.find("hosts: gitlab_runner")
+    return _report(ok and 0 <= first_all < runner, "site.yml has a gitlab_runner play (become, role gitlab_runner) after the common play")
+
+
+def test_common_lists_ubuntu() -> bool:
+    m = (REPO_ROOT / "ansible" / "roles" / "common" / "meta" / "main.yml").read_text()
+    ok = bool(re.search(r"name:\s*Ubuntu\n\s+versions:\n\s+-\s+resolute", m)) and "name: Debian" in m
+    return _report(ok, "common meta platforms list Ubuntu resolute beside Debian")
+
+
 def main() -> int:
     results = [fn() for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     passed = sum(results)
