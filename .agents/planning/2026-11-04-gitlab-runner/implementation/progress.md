@@ -24,6 +24,7 @@
 - Step 12d: runbook full shape pin — commit f46294c (heading order, uniqueness, non-empty sections); shape 11/11; duplicate-heading mutant re-run by critic goes red on no-dup + order arms; runbook restored, docs diff empty; test-only, no assertions weakened; review.passed. Step 12 remainder: Steps 2-11 cross-check after Step 11, 12e operator-gated.
 - Step 10a: bpg firewall schema premise — commit 645bb6d; doc verified against locked bpg 0.120.0 (proxmox_node_firewall non-deprecated, cluster input_policy Optional non-computed so the line must be pinned, ipset IP in cidr{name}); docs-only, no HCL/apply; review.passed. Next: 10b stage variable + census guard (P1).
 - Step 10b: gitlab_runner_firewall_stage variable (default 0, contains([0,1,2]) validation) + stage-gate census guard — commit c36dde6; firewall_shape 4/4, tofu_shape 6/6, fmt/validate clean; diff only variables.tf + new test; review.passed. Note for 10c: census is vacuously true until resources exist, so 10c must prove it bites with a gated resource and an ungated mutant.
+- Step 10c: stage-gated Proxmox firewall resources (tofu/firewall.tf) — commit 1b1bea8; matches §4.10 (ACCEPT pinned, node fw off ordered first, ipset/options/rules, stage gating); firewall shape 10/10, tofu shape 6/6, tofu validate ok; review.passed. Minor note: tofu_shape stray-check regex misses proxmox_node_firewall (file-confined by firewall guard anyway). Next: 10d runner-reimage recipe.
 
 ## Remaining
 
