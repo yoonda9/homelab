@@ -144,9 +144,32 @@ def test_reimage_body() -> bool:
     return _report(not bad, f"routine-re-image section states cadence and host-key change (missing: {bad})")
 
 
+def test_heading_order_and_uniqueness() -> bool:
+    body = _body()
+    found = re.findall(r"^## (.+?)\s*$", body, re.M)
+    body_headings = [h for h in found if h != "Table of contents"]
+    toc = _section(body, "Table of contents")
+    toc_order = re.findall(r"^- \[(.+?)\]\(#", toc, re.M)
+    checks = {
+        "no duplicate headings": len(found) == len(set(found)),
+        "headings in REQUIRED order": body_headings == list(REQUIRED_HEADINGS),
+        "TOC in REQUIRED order": toc_order == list(REQUIRED_HEADINGS),
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"headings are unique and ordered like the TOC (failing: {bad})")
+
+
+def test_no_empty_sections() -> bool:
+    body = _body()
+    empty = [h for h in REQUIRED_HEADINGS if len(_section(body, h).strip()) < 10]
+    return _report(not empty, f"every required section has a body, filled or marked not yet written (empty: {empty})")
+
+
 def main() -> int:
     results = [
         test_headings(),
+        test_heading_order_and_uniqueness(),
+        test_no_empty_sections(),
         test_toc_lists_sections(),
         test_create_vm_body(),
         test_security_model_body(),
