@@ -109,6 +109,21 @@ def test_main_imports_docker() -> bool:
     )
 
 
+def test_drain_handler_order() -> bool:
+    h = _read("handlers/main.yml")
+    names = re.findall(r"^- name:\s*(.+)$", h, re.M)
+    probe = h.find("systemctl cat gitlab-runner")
+    stop = re.search(r"name:\s*gitlab-runner\n\s+state:\s*stopped", h)
+    restart = re.search(r"name:\s*docker\n\s+state:\s*restarted", h)
+    start = re.search(r"name:\s*gitlab-runner\n\s+state:\s*started", h)
+    in_order = bool(stop and restart and start) and 0 <= probe < stop.start() < restart.start() < start.start()
+    listens = len(re.findall(r"listen:\s*Drain and restart docker\s*$", h, re.M))
+    # stop and start are gated on the unit existing; docker restart is not
+    gated = len(re.findall(r"when:\s*\S*\.rc\s*==\s*0", h)) == 2
+    ok = "Drain and restart docker" in names and in_order and listens >= 3 and gated
+    return _report(ok, "Drain and restart docker: probe unit, stop gitlab-runner, restart docker, start gitlab-runner (stop/start only if the unit exists)")
+
+
 def main() -> int:
     results = [fn() for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     passed = sum(results)

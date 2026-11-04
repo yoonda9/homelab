@@ -3,3 +3,33 @@
   ansible.builtin.service:
     name: ssh
     state: restarted
+
+# Drain and restart docker: one notify name, four handlers run in file order.
+# gitlab-runner is stopped (SIGQUIT drain via the Step 5 drop-in) before docker
+# restarts so no job is killed; stop/start are skipped while the unit does not
+# exist yet (Steps 3-4 run before the package is installed).
+- name: Drain and restart docker
+  ansible.builtin.command: systemctl cat gitlab-runner.service  # noqa: command-instead-of-module
+  register: gitlab_runner_unit_probe
+  changed_when: false
+  failed_when: false
+
+- name: Stop gitlab-runner before the docker restart
+  ansible.builtin.systemd:
+    name: gitlab-runner
+    state: stopped
+  when: gitlab_runner_unit_probe.rc == 0
+  listen: Drain and restart docker
+
+- name: Restart docker
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  listen: Drain and restart docker
+
+- name: Start gitlab-runner after the docker restart
+  ansible.builtin.systemd:
+    name: gitlab-runner
+    state: started
+  when: gitlab_runner_unit_probe.rc == 0
+  listen: Drain and restart docker
