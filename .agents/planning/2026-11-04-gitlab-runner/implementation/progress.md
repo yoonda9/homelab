@@ -23,6 +23,7 @@
 - Step 12c: runbook hairpin section + known-limits arms — commit 1bc3b4d; hairpin text matches plan Step 11 and dynamic.yml.j2 allowlist (192.168.1.0/24); runbook shape 9/9 re-run by critic; docs+shape test only, no Step 4-11 pins; review.passed. Step 12 remainder: 12d full shape pin.
 - Step 12d: runbook full shape pin — commit f46294c (heading order, uniqueness, non-empty sections); shape 11/11; duplicate-heading mutant re-run by critic goes red on no-dup + order arms; runbook restored, docs diff empty; test-only, no assertions weakened; review.passed. Step 12 remainder: Steps 2-11 cross-check after Step 11, 12e operator-gated.
 - Step 10a: bpg firewall schema premise — commit 645bb6d; doc verified against locked bpg 0.120.0 (proxmox_node_firewall non-deprecated, cluster input_policy Optional non-computed so the line must be pinned, ipset IP in cidr{name}); docs-only, no HCL/apply; review.passed. Next: 10b stage variable + census guard (P1).
+- Step 10b: gitlab_runner_firewall_stage variable (default 0, contains([0,1,2]) validation) + stage-gate census guard — commit c36dde6; firewall_shape 4/4, tofu_shape 6/6, fmt/validate clean; diff only variables.tf + new test; review.passed. Note for 10c: census is vacuously true until resources exist, so 10c must prove it bites with a gated resource and an ungated mutant.
 
 ## Remaining
 
