@@ -1,0 +1,9 @@
+---
+# Admin account created by cloud-init; its password is locked, key auth only (R20).
+gitlab_runner_admin_user: user
+
+# Units needrestart must never restart on its own: a restart mid-job kills it (R28).
+gitlab_runner_needrestart_excluded_units:
+  - docker
+  - containerd
+  - gitlab-runner

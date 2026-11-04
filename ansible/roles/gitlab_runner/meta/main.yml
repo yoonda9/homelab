@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: gitlab_runner
+  namespace: homelab
+  author: homelab maintainers
+  description: Self-hosted GitLab runner VM (hardening, Docker, gitlab-runner).
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - resolute
+  galaxy_tags:
+    - homelab
+    - gitlab
+dependencies: []

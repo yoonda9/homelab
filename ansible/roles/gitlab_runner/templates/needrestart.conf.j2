@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Never let needrestart restart these units: a restart mid-job kills the job.
+{% for unit in gitlab_runner_needrestart_excluded_units %}
+$nrconf{override_rc}{qr(^{{ unit }}(\.service)?$)} = 0;
+{% endfor %}
