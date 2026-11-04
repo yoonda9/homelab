@@ -109,3 +109,17 @@ bootstrap os:
 # host into a timestamped /tmp/plex-blip-<UTC-ISO>/ bundle with a manifest.json.
 plex-blip-capture:
     scripts/plex_blip_capture.sh
+
+# --- gitlab-runner re-image (Step 10d) ---------------------------------------
+
+# Re-image one runner: `just runner-reimage gitlab-runner-1`. The VM and its
+# firewall options/ipset/rules are replaced in ONE apply, so the new VM is never
+# left without its firewall. Under stage 0 the firewall addresses match nothing
+# (tofu warns, harmless). Interactive: review the plan before approving.
+[working-directory: 'tofu']
+runner-reimage NAME:
+    tofu apply \
+      -replace='module.gitlab_runner["{{NAME}}"]' \
+      -replace='proxmox_virtual_environment_firewall_ipset.ipfilter["{{NAME}}"]' \
+      -replace='proxmox_virtual_environment_firewall_options.vm["{{NAME}}"]' \
+      -replace='proxmox_virtual_environment_firewall_rules.vm["{{NAME}}"]'

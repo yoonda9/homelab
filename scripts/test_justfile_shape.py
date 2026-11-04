@@ -356,6 +356,33 @@ def test_play_runner_limits_to_gitlab_runner() -> bool:
     return ok
 
 
+def test_runner_reimage_replaces_vm_and_firewall() -> bool:
+    """`runner-reimage NAME` replaces the VM and that runner's firewall objects (Step 10d).
+
+    A re-image that replaced only the VM would leave it without its firewall
+    (the options/ipset/rules are keyed by vm_id), so all four addresses must be
+    in the one apply, each keyed by the NAME parameter.
+    """
+    text = _justfile_text()
+    body = _recipe_body("runner-reimage", text)
+    wd = re.search(
+        r"^\[working-directory:\s*'tofu'\]\s*\n\s*runner-reimage\s+NAME\s*:", text, re.MULTILINE
+    )
+    addrs = (
+        r'module\.gitlab_runner\["\{\{\s*NAME\s*\}\}"\]',
+        r'proxmox_virtual_environment_firewall_ipset\.ipfilter\["\{\{\s*NAME\s*\}\}"\]',
+        r'proxmox_virtual_environment_firewall_options\.vm\["\{\{\s*NAME\s*\}\}"\]',
+        r'proxmox_virtual_environment_firewall_rules\.vm\["\{\{\s*NAME\s*\}\}"\]',
+    )
+    missing = [a for a in addrs if not re.search(rf"-replace[= ]'?{a}", body)]
+    ok = bool(body) and wd is not None and "tofu apply" in body and not missing
+    print(
+        f"{'OK' if ok else 'FAIL'}: runner-reimage applies -replace for VM + 3 firewall "
+        f"objects from tofu/ (workdir={wd is not None}, missing={len(missing)})"
+    )
+    return ok
+
+
 TESTS = (
     test_justfile_exists,
     test_leaf_recipes_defined,
@@ -373,6 +400,7 @@ TESTS = (
     test_bootstrap_invokes_script,
     test_build_all_sweeps_three,
     test_play_runner_limits_to_gitlab_runner,
+    test_runner_reimage_replaces_vm_and_firewall,
 )
 
 
