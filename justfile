@@ -38,6 +38,12 @@ fmt:
 play:
     ansible-playbook site.yml
 
+# Play only the gitlab_runner inventory group (VM 120); CT 110 / CT 111 are not
+# touched. Run `just gen-inventory` first so the group is current.
+[working-directory: 'ansible']
+play-runner:
+    ansible-playbook site.yml --limit gitlab_runner
+
 # acme_ca_server (group_vars/all/vars.yml) is ALREADY LE prod, so an ordinary
 # `just play` renders the prod CA — but acme.json is keyed by resolver name
 # (le-dns-cf), so if the store still holds an older (e.g. staging) cert Traefik

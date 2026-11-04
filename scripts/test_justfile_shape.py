@@ -324,6 +324,38 @@ def test_build_all_sweeps_three() -> bool:
     return ok
 
 
+def _recipe_body(name: str, text: str) -> str:
+    """Return the indented body lines of recipe `name` ('' if absent)."""
+    m = re.search(
+        rf"^{re.escape(name)}(?:\s+[^\n:]*)?:[^\n]*\n((?:[ \t]+[^\n]*\n?)*)",
+        text,
+        re.MULTILINE,
+    )
+    return m.group(1) if m else ""
+
+
+def test_play_runner_limits_to_gitlab_runner() -> bool:
+    """`play-runner` plays site.yml limited to the gitlab_runner group (Step 2d).
+
+    The `--limit gitlab_runner` is what keeps CT 110 / CT 111 untouched; a body
+    without it would converge every host. Also runs from `ansible/`.
+    """
+    text = _justfile_text()
+    body = _recipe_body("play-runner", text)
+    wd = re.search(
+        r"^\[working-directory:\s*'ansible'\]\s*\n\s*play-runner\b", text, re.MULTILINE
+    )
+    limited = re.search(
+        r"ansible-playbook\s+site\.yml\b[^\n]*--limit(?:\s+|=)gitlab_runner(?![\w-])", body
+    )
+    ok = bool(body) and wd is not None and limited is not None
+    print(
+        f"{'OK' if ok else 'FAIL'}: play-runner runs site.yml --limit gitlab_runner "
+        f"from ansible/ (body={body.strip()!r}, workdir={wd is not None})"
+    )
+    return ok
+
+
 TESTS = (
     test_justfile_exists,
     test_leaf_recipes_defined,
@@ -340,6 +372,7 @@ TESTS = (
     test_build_invokes_script,
     test_bootstrap_invokes_script,
     test_build_all_sweeps_three,
+    test_play_runner_limits_to_gitlab_runner,
 )
 
 
