@@ -63,7 +63,11 @@ def test_needrestart_exclusion() -> bool:
     d = _read("defaults/main.yml")
     units_ok = all(u in (t + d) for u in ("docker", "containerd", "gitlab-runner"))
     ok = "/etc/needrestart/conf.d/" in t and "$nrconf{override_rc}" in (t + _read("templates/needrestart.conf.j2")) and units_ok
-    guarded = "/usr/sbin/needrestart" in t or "/etc/needrestart" in t and "stat" in t
+    stat_m = re.search(r"ansible\.builtin\.stat:\n\s+path:\s*/usr/sbin/needrestart\n\s+register:\s*(\w+)", t)
+    reg = stat_m.group(1) if stat_m else None
+    tmpl_m = re.search(r"ansible\.builtin\.template:\n(?:\s+\S.*\n)*?\s+dest:\s*/etc/needrestart/conf\.d/[^\n]*\n((?:\s+\S.*\n?)*)", t)
+    when_m = re.search(r"^\s+when:\s*(\S+)\s*$", tmpl_m.group(1), re.M) if tmpl_m else None
+    guarded = bool(reg) and bool(when_m) and when_m.group(1) == f"{reg}.stat.exists"
     return _report(ok and guarded, "needrestart exclusion names docker, containerd and gitlab-runner, only when needrestart is installed")
 
 
