@@ -113,3 +113,21 @@ locals {
     var.operator_ssh_public_key_file != "" ? [trimspace(file(var.operator_ssh_public_key_file))] : []
   )
 }
+
+locals {
+  # gitlab_runners — CI runner VMs cloned from the Packer template through
+  # modules/dev_vm (gitlab-runner design §4.1). Keyed by VM name; each entry's
+  # `node` is the Proxmox node it lands on (a second node also needs its own
+  # template and provider — see the design's second-node caveat). Address .120
+  # is static and outside the router's DHCP pool.
+  gitlab_runners = {
+    "gitlab-runner-pve" = {
+      node      = "pve"
+      vm_id     = 120
+      ip_cidr   = "192.168.1.120/24"
+      cores     = 8
+      memory_mb = 16384
+      disk_gb   = 150
+    }
+  }
+}

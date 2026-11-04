@@ -153,3 +153,39 @@ module "plex" {
   # (without it user_account.keys=[] and root SSH is denied — DEBUG.md).
   ssh_public_keys = local.operator_ssh_keys
 }
+
+# Guard: an empty operator key list would boot the runner VM with only the
+# template's baked-in user/password (R18). A module block cannot carry a
+# lifecycle precondition, so a no-op terraform_data holds it and the module
+# depends_on it — the plan fails before any VM is created.
+resource "terraform_data" "gitlab_runner_operator_keys" {
+  lifecycle {
+    precondition {
+      condition     = length(local.operator_ssh_keys) > 0
+      error_message = "The gitlab-runner VM needs at least one operator SSH public key: set TF_VAR_operator_ssh_public_key_file or TF_VAR_operator_ssh_public_keys (see tofu/variables.tf)."
+    }
+  }
+}
+
+# gitlab-runner VM 120 — Ubuntu 26.04 cloned from pkr-ubuntu26, static
+# 192.168.1.120. Size, node, vmid and address come from local.gitlab_runners.
+module "gitlab_runner" {
+  for_each   = local.gitlab_runners
+  source     = "./modules/dev_vm"
+  depends_on = [terraform_data.gitlab_runner_operator_keys]
+
+  name            = each.key
+  os              = "ubuntu26"
+  template_id     = local.template_ids.ubuntu26
+  node            = each.value.node
+  vm_id           = each.value.vm_id
+  cores           = each.value.cores
+  memory_mb       = each.value.memory_mb
+  disk_gb         = each.value.disk_gb
+  ipv4_cidr       = each.value.ip_cidr
+  ipv4_gateway    = local.net.gateway
+  dns_servers     = local.net.dns_servers
+  dns_domain      = local.net.dns_domain
+  ssh_public_keys = local.operator_ssh_keys
+  firewall        = true # inert until the VM's own firewall options are enabled (design §4.10)
+}
