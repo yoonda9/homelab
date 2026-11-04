@@ -20,10 +20,12 @@
 - Step 3 guard row d41e: needrestart arm — commit ad1be4b; arm pins template `when:` equal to the registered stat.exists; base 14/14, 5 mutants (no when, other var, or true, not, no .exists) all FAIL the arm, harden.yml restored git-clean; review.passed.
 - Step 12a: runbook security model, GitLab-side hygiene, known limits — commit db2cc22; runbook shape 6/6 at HEAD; 3 delete-heading mutants + timeout-figure mutant each rc=1, runbook restored clean; content matches R26/R27; review.passed. Step 12 remainder: compromise playbook, routine re-image, hairpin arms, Steps 2-11 cross-check.
 - Step 12b: runbook compromise playbook (4 steps) + routine re-image (monthly/upgrades/host-key change) — commit 8ce3ab8; runbook shape 8/8 re-run by critic; `runner-reimage` marked planned, not pinned as present; docs+shape test only; review.passed. Step 12 remainder: 12c hairpin/known-limits arms, 12d full runbook-shape pin.
+- Step 12c: runbook hairpin section + known-limits arms — commit 1bc3b4d; hairpin text matches plan Step 11 and dynamic.yml.j2 allowlist (192.168.1.0/24); runbook shape 9/9 re-run by critic; docs+shape test only, no Step 4-11 pins; review.passed. Step 12 remainder: 12d full shape pin.
+- Step 12d: runbook full shape pin — commit f46294c (heading order, uniqueness, non-empty sections); shape 11/11; duplicate-heading mutant re-run by critic goes red on no-dup + order arms; runbook restored, docs diff empty; test-only, no assertions weakened; review.passed. Step 12 remainder: Steps 2-11 cross-check after Step 11, 12e operator-gated.
 
 ## Remaining
 
-- Operator GATEs f7e5 (tofu apply VM 120) and 4344 (play-runner twice), not run from the loop. Steps 4-13 held by plan "Proof first" until gate 4344 passes. Step 12 remainder (12c hairpin/known-limits arms, 12d full runbook-shape pin, Steps 2-11 cross-check after Step 11) still to cut.
+- Operator GATEs f7e5 (tofu apply VM 120) and 4344 (play-runner twice), not run from the loop. Steps 4-13 held by plan "Proof first" until gate 4344 passes. Step 12 remainder (12d full runbook-shape pin, Steps 2-11 cross-check after Step 11) still to cut.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 
