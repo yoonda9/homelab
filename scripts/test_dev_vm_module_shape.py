@@ -206,6 +206,19 @@ def test_main_conditional_blocks() -> bool:
     return not bad
 
 
+def test_ipv4_configured_output() -> bool:
+    """ipv4_configured is the static address sans prefix, null when DHCP (Step 1d)."""
+    f = MODULE / "outputs.tf"
+    out = _block(f.read_text() if f.is_file() else "", r'output\s+"ipv4_configured"')
+    m = re.search(
+        r'value\s*=\s*var\.ipv4_cidr\s*==\s*""\s*\?\s*null\s*:\s*split\("/",\s*var\.ipv4_cidr\)\[0\]\s*$',
+        out.strip(),
+    )
+    ok = m is not None
+    print(f"{'OK' if ok else 'FAIL'}: ipv4_configured strips the prefix, null when ipv4_cidr empty")
+    return ok
+
+
 def main() -> int:
     results = [
         test_module_directory_exists(),
@@ -219,6 +232,7 @@ def main() -> int:
         test_main_renders_scalars(),
         test_main_static_ip_config(),
         test_main_conditional_blocks(),
+        test_ipv4_configured_output(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
