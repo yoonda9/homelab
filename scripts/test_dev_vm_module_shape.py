@@ -77,7 +77,7 @@ def test_main_has_initialization_block() -> bool:
         return False
     body = main_file.read_text()
     has_init = re.search(
-        r'initialization\s*\{[^}]*?ip_config\s*\{[^}]*?ipv4\s*\{[^}]*?address\s*=\s*"dhcp"',
+        r'initialization\s*\{[^}]*?ip_config\s*\{[^}]*?ipv4\s*\{[^}]*?address\s*=[^\n]*"dhcp"',
         body,
         re.DOTALL,
     )
@@ -148,6 +148,64 @@ def test_provider_pin_floor() -> bool:
     return ok
 
 
+def _main() -> str:
+    f = MODULE / "main.tf"
+    return f.read_text() if f.is_file() else ""
+
+
+def _block(body: str, header: str) -> str:
+    """Brace-balanced body of the first block whose header matches the regex."""
+    m = re.search(header + r"\s*\{", body)
+    if not m:
+        return ""
+    depth, i = 1, m.end()
+    while i < len(body) and depth:
+        depth += {"{": 1, "}": -1}.get(body[i], 0)
+        i += 1
+    return body[m.end():i - 1]
+
+
+def test_main_renders_scalars() -> bool:
+    """vmid, cpu type and NIC firewall flag come from the variables (Step 1c)."""
+    body = _main()
+    checks = {
+        "vm_id": re.search(r"^\s*vm_id\s*=\s*var\.vm_id\s*$", body, re.M) is not None,
+        "cpu.type": re.search(r"type\s*=\s*var\.cpu_type\b", _block(body, r"\bcpu")) is not None,
+        "nic.firewall": re.search(r"firewall\s*=\s*var\.firewall\b", _block(body, r"\bnetwork_device")) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    print(f"{'OK' if not bad else 'FAIL'}: main.tf renders vm_id/cpu.type/network_device.firewall (bad={bad})")
+    return not bad
+
+
+def test_main_static_ip_config() -> bool:
+    """address is dhcp unless ipv4_cidr set; gateway only with a static address."""
+    ip = _block(_block(_main(), r"\bip_config"), r"\bipv4")
+    addr = re.search(r'address\s*=\s*var\.ipv4_cidr\s*==\s*""\s*\?\s*"dhcp"\s*:\s*var\.ipv4_cidr\b', ip)
+    gw = re.search(r'gateway\s*=\s*var\.ipv4_cidr\s*==\s*""\s*\?\s*null\s*:\s*var\.ipv4_gateway\b', ip)
+    ok = bool(addr and gw)
+    print(f"{'OK' if ok else 'FAIL'}: ip_config address=dhcp unless ipv4_cidr; gateway null unless static")
+    return ok
+
+
+def test_main_conditional_blocks() -> bool:
+    """user_account and dns render only when their inputs are set."""
+    init = _block(_main(), r"\binitialization")
+    ua = _block(init, r'dynamic\s+"user_account"')
+    dns = _block(init, r'dynamic\s+"dns"')
+    bad = []
+    if not re.search(r"for_each\s*=\s*length\(var\.ssh_public_keys\)\s*>\s*0\s*\?\s*\[1\]\s*:\s*\[\]", ua):
+        bad.append("user_account:for_each")
+    if not (re.search(r"keys\s*=\s*var\.ssh_public_keys\b", ua) and re.search(r"username\s*=\s*var\.ssh_username\b", ua)):
+        bad.append("user_account:content")
+    if not re.search(r'for_each\s*=[^\n]*var\.dns_servers[^\n]*var\.dns_domain[^\n]*\?\s*\[1\]\s*:\s*\[\]', dns):
+        bad.append("dns:for_each")
+    if not (re.search(r"servers\s*=\s*var\.dns_servers\b", dns) and re.search(r'domain\s*=\s*var\.dns_domain\s*==\s*""\s*\?\s*null\s*:\s*var\.dns_domain', dns)):
+        bad.append("dns:content")
+    print(f"{'OK' if not bad else 'FAIL'}: user_account and dns are conditional dynamic blocks (bad={bad})")
+    return not bad
+
+
 def main() -> int:
     results = [
         test_module_directory_exists(),
@@ -158,6 +216,9 @@ def main() -> int:
         test_consumer_cidata_variables_optional(),
         test_gateway_validation(),
         test_provider_pin_floor(),
+        test_main_renders_scalars(),
+        test_main_static_ip_config(),
+        test_main_conditional_blocks(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:

@@ -1,6 +1,7 @@
 resource "proxmox_virtual_environment_vm" "dev_vm" {
   name      = var.name
   node_name = var.node
+  vm_id     = var.vm_id
 
   clone {
     vm_id = var.template_id
@@ -9,6 +10,7 @@ resource "proxmox_virtual_environment_vm" "dev_vm" {
 
   cpu {
     cores = var.cores
+    type  = var.cpu_type
   }
 
   memory {
@@ -24,23 +26,39 @@ resource "proxmox_virtual_environment_vm" "dev_vm" {
   }
 
   network_device {
-    bridge = var.bridge
+    bridge   = var.bridge
+    firewall = var.firewall
   }
 
   agent {
     enabled = true
   }
 
-  # Sole purpose: trigger PVE per-clone cidata regeneration so each
-  # clone boots with a fresh local-hostname (= var.name on Linux) and
-  # instance-id. No user_account / user_data_file_id — credentials
-  # are baked into the template at install time per C-6, and per-clone
-  # OS-level identity reset is the template's seal step (C-8). Per Q6/A6
-  # this module is intentionally bare.
+  # Always present so PVE regenerates per-clone cidata (fresh
+  # local-hostname = var.name, fresh instance-id). The consumer inputs
+  # are all optional: with none set this is DHCP and no credentials,
+  # exactly the bare-template behaviour (C-6/C-8).
   initialization {
     ip_config {
       ipv4 {
-        address = "dhcp"
+        address = var.ipv4_cidr == "" ? "dhcp" : var.ipv4_cidr
+        gateway = var.ipv4_cidr == "" ? null : var.ipv4_gateway
+      }
+    }
+
+    dynamic "user_account" {
+      for_each = length(var.ssh_public_keys) > 0 ? [1] : []
+      content {
+        username = var.ssh_username
+        keys     = var.ssh_public_keys
+      }
+    }
+
+    dynamic "dns" {
+      for_each = length(var.dns_servers) > 0 || var.dns_domain != "" ? [1] : []
+      content {
+        servers = var.dns_servers
+        domain  = var.dns_domain == "" ? null : var.dns_domain
       }
     }
   }
