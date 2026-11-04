@@ -1,7 +1,7 @@
 """Shape tests for docs/runbooks/gitlab-runner.md (gitlab-runner Step 2e).
 
-Pins only the sections that exist so far: the section headings, and the
-create-the-VM body (pre-checks, plan/apply, guest-agent recovery). Later steps
+Pins the section headings and the filled-in bodies (create the VM, register,
+add a project, rotate, security, hygiene, compromise, firewall, ...). Later steps
 extend REQUIRED_HEADINGS as they fill sections in. Stdlib only.
 """
 
@@ -168,6 +168,66 @@ def test_firewall_body() -> bool:
     return _report(not bad, f"firewall section states sequence, rollback, verification, re-image (missing: {bad})")
 
 
+def test_register_body() -> bool:
+    s = _section(_body(), "Register a runner")
+    checks = {
+        "project runner in the GitLab UI": re.search(r"project runner", s, re.I) is not None and "GitLab UI" in s,
+        "untagged on": re.search(r"untagged", s, re.I) is not None,
+        "locked": re.search(r"\blocked\b", s, re.I) is not None,
+        "protected off": re.search(r"protected", s, re.I) is not None,
+        "max timeout SET 5400-5700 s": re.search(r"5400\s*[-–]\s*5700\s*s", s) is not None
+        and re.search(r"\bset\b", s, re.I) is not None,
+        "description = runner name": re.search(r"description", s, re.I) is not None,
+        "runner id recorded": re.search(r"runner\s+id", s, re.I) is not None,
+        "ansible-vault edit": "ansible-vault edit" in s,
+        "vault_gitlab_runner_tokens.<name>": "vault_gitlab_runner_tokens" in s,
+        "vars entry in gitlab_runner_runners": "gitlab_runner_runners" in s
+        and "group_vars/gitlab_runner/vars.yml" in s,
+        "same commit": re.search(r"same\s+commit", s, re.I) is not None,
+        "just play-runner": "just play-runner" in s,
+        "token never in chat": re.search(r"never\s+(paste|enter)", s, re.I) is not None
+        and re.search(r"chat|transcript", s, re.I) is not None,
+        "drain timeout invariant": re.search(r"drain\s+timeout", s, re.I) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"register section states attributes, vault, vars, play (missing: {bad})")
+
+
+def test_add_project_body() -> bool:
+    s = _section(_body(), "Add a project")
+    checks = {
+        "path 1: new project runner": re.search(r"new project runner", s, re.I) is not None,
+        "path 1: vars entry": "gitlab_runner_runners" in s,
+        "path 1: vault key": "vault_gitlab_runner_tokens" in s,
+        "path 1: play": "just play-runner" in s,
+        "path 2: enable existing runner in UI": re.search(r"enable\s+(the|an)\s+existing", s, re.I) is not None
+        and "GitLab UI" in s,
+        "path 2: no repo change": re.search(r"no\s+repo\s+change", s, re.I) is not None,
+        "both paths named": re.search(r"two\s+paths|either", s, re.I) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"add-a-project section gives both paths (missing: {bad})")
+
+
+def test_rotate_body() -> bool:
+    s = _section(_body(), "Rotate a token")
+    checks = {
+        "ID-based reset endpoint": "/runners/:id/reset_authentication_token" in s,
+        "UI Reset token alternative": re.search(r"Reset token", s) is not None,
+        "token-based reset forbidden (literal path absent)": re.search(r"/runners/reset_authentication_token", s) is None,
+        "token-based reset named as never": re.search(r"never[^.]*token-based", s, re.I) is not None,
+        "new token into vault": "ansible-vault edit" in s,
+        "play": "just play-runner" in s,
+        "runner id unchanged": re.search(r"runner\s+id[^.]*unchanged|unchanged[^.]*runner\s+id", s, re.I) is not None,
+        "401 from verify means rotate": "401" in s and "gitlab-runner verify" in s and re.search(r"rotate", s, re.I) is not None,
+        "old cache volumes orphaned, prune reclaims": re.search(r"orphan", s, re.I) is not None
+        and "cache" in s
+        and re.search(r"prune", s, re.I) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"rotate section uses the ID-based reset and states the effects (missing: {bad})")
+
+
 def test_heading_order_and_uniqueness() -> bool:
     body = _body()
     found = re.findall(r"^## (.+?)\s*$", body, re.M)
@@ -196,6 +256,9 @@ def main() -> int:
         test_no_empty_sections(),
         test_toc_lists_sections(),
         test_create_vm_body(),
+        test_register_body(),
+        test_add_project_body(),
+        test_rotate_body(),
         test_security_model_body(),
         test_hygiene_body(),
         test_compromise_body(),

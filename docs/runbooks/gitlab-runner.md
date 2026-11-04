@@ -58,15 +58,87 @@ Fix the address or keys in place, or destroy and recreate the VM
 
 ## Register a runner
 
-Not yet written.
+The runner is created on the GitLab side and the repo only holds its token and
+a declaration. The VM never runs `gitlab-runner register`. The token never goes
+into chat, a ticket or any transcript: never paste it anywhere but the vault
+editor.
+
+1. Create a project runner in the GitLab UI: the project's Settings > CI/CD >
+   Runners > New project runner. Set the attributes. None of them can be set from `config.toml`.
+   - Run untagged jobs: on.
+   - Locked to the current project: on.
+   - Protected: off (on is optional for a project with outside contributors).
+   - Maximum job timeout: **set** it to 5400-5700 s and never leave it unset.
+     The invariant is: drain timeout > max job timeout + after_script + upload.
+   - Description: the runner name, for example `lumologic-pve`.
+2. Create the runner. GitLab shows the `glrt-` token once. Note the runner id
+   from the page or from the URL.
+3. On your workstation run `ansible-vault edit ansible/group_vars/all/vault.yml`
+   and add the key under `vault_gitlab_runner_tokens`:
+
+   ```yaml
+   vault_gitlab_runner_tokens:
+     lumologic-pve: glrt-...
+   ```
+
+   The vault stays in `group_vars/all`; do not move it.
+4. In `ansible/group_vars/gitlab_runner/vars.yml` append one entry to
+   `gitlab_runner_runners`, with the runner name, the host, the project, the
+   runner id from step 2 and an optional `limit`:
+
+   ```yaml
+   gitlab_runner_runners:
+     - name: lumologic-pve
+       host: gitlab-runner-pve
+       project: lumologic/lumologic
+       id: 1234567
+   ```
+
+   Commit this and the vault edit in the same commit. An entry without its vault
+   key fails the role's pre-render assert and renders nothing.
+5. Run `just play-runner`, then a second time: the second run must report
+   `changed=0`.
+6. On the VM `gitlab-runner verify` must exit 0, and the runner must show online
+   under the project's Settings > CI/CD > Runners.
 
 ## Add a project
 
-Not yet written.
+There are two paths. Pick by whether the project should get its own runner or
+share an existing one.
+
+- **A new project runner.** Follow [Register a runner](#register-a-runner) for
+  the new project: create the runner in the GitLab UI with the same attributes,
+  add one vault key under `vault_gitlab_runner_tokens`, append one entry to `gitlab_runner_runners` in
+  `ansible/group_vars/gitlab_runner/vars.yml`, and run `just play-runner`.
+- **Enable an existing project runner for another project.** In the GitLab UI,
+  open the other project's Settings > CI/CD > Runners and enable the existing
+  runner there. There is no repo change and no play. The runner stays locked to
+  its first project, so unlock it for the move first and re-lock it after.
+  Attached projects share one trust boundary (see
+  [Security model](#security-model)), so enable only trusted projects.
 
 ## Rotate a token
 
-Not yet written.
+Rotate when a token leaked or the compromise playbook calls for it, and when
+`gitlab-runner verify` fails with a 401 (the play fails at its verify task). A
+401 means rotate: the token is dead or revoked, and the runner will not rotate
+it by itself because the token has no expiry.
+
+1. Reset the token by the runner's id. In the GitLab UI use Reset token on the
+   runner, or call `POST /runners/:id/reset_authentication_token` with a personal
+   access token. Never use the token-based reset endpoint: it needs the old
+   token, which is the one you cannot trust. The old token stops working at
+   once, so jobs on the runner fail until step 3 finishes.
+2. Put the new token into the vault with
+   `ansible-vault edit ansible/group_vars/all/vault.yml`, replacing the value
+   under `vault_gitlab_runner_tokens`. Do not paste it into chat.
+3. Run `just play-runner`. The template changes and the runner hot-reloads
+   within seconds. The runner id is unchanged, so `gitlab_runner_runners` needs
+   no edit. Then `gitlab-runner verify` must exit 0.
+
+A rotated token orphans the old `runner-*-cache-*` Docker volumes, because the
+token is part of their name. The scheduled `ci-docker-prune` reclaims them; run
+it by hand to reclaim them sooner.
 
 ## Upgrade
 
