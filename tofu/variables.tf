@@ -23,3 +23,19 @@ variable "operator_ssh_public_key_file" {
   default     = ""
   description = "Path to a single SSH public key file (e.g. ~/.ssh/id_ed25519.pub) whose contents are injected into every service CT's root user_account. Set via TF_VAR_operator_ssh_public_key_file. Empty = use operator_ssh_public_keys only."
 }
+
+# Staged Proxmox firewall for the gitlab-runner VMs (design §4.10, plan Step 10).
+# Every firewall resource is gated on this by count/for_each, so the code can merge
+# before its operator gate and an ordinary `just apply` at 0 touches none of it.
+#   0 = no firewall resources   1 = per-VM objects (inert until the switch)
+#   2 = also the datacenter switch
+variable "gitlab_runner_firewall_stage" {
+  type        = number
+  default     = 0
+  description = "Firewall rollout stage for the gitlab-runner VMs: 0 none, 1 per-VM objects, 2 plus the datacenter switch. Moved only in the operator-gated Step 10 applies."
+
+  validation {
+    condition     = contains([0, 1, 2], var.gitlab_runner_firewall_stage)
+    error_message = "gitlab_runner_firewall_stage must be 0, 1 or 2."
+  }
+}
