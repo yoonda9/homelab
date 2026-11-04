@@ -46,3 +46,62 @@ variable "bridge" {
   type    = string
   default = "vmbr0"
 }
+
+variable "ssh_public_keys" {
+  type        = list(string)
+  default     = []
+  description = "Operator public keys. When non-empty, main.tf renders initialization.user_account with them; empty keeps the bare-template behaviour."
+}
+
+variable "ssh_username" {
+  type        = string
+  default     = "user"
+  description = "The template's baked-in user that receives ssh_public_keys."
+}
+
+variable "ipv4_cidr" {
+  type        = string
+  default     = ""
+  description = "Static IPv4 address with prefix (e.g. 192.168.1.120/24). Empty means DHCP."
+}
+
+variable "ipv4_gateway" {
+  type        = string
+  default     = ""
+  description = "IPv4 gateway. Required when ipv4_cidr is set."
+  validation {
+    # Cross-variable reference in a validation block needs OpenTofu >= 1.9.
+    condition     = var.ipv4_cidr == "" || var.ipv4_gateway != ""
+    error_message = "ipv4_gateway must be set whenever ipv4_cidr is set."
+  }
+}
+
+variable "dns_servers" {
+  type        = list(string)
+  default     = []
+  description = "DNS servers; rendered in initialization.dns only when set."
+}
+
+variable "dns_domain" {
+  type        = string
+  default     = ""
+  description = "DNS search domain; rendered in initialization.dns only when set."
+}
+
+variable "vm_id" {
+  type        = number
+  default     = null
+  description = "Stable PVE VM-ID. Null lets PVE pick."
+}
+
+variable "firewall" {
+  type        = bool
+  default     = false
+  description = "Sets network_device.firewall. Inert until the VM's own firewall options are enabled."
+}
+
+variable "cpu_type" {
+  type        = string
+  default     = "host"
+  description = "CPU type, pinned explicitly because the bpg schema default is qemu64 while the template uses host."
+}
