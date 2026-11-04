@@ -99,6 +99,15 @@ def test_no_consumer_cidata_variables() -> bool:
     return ok
 
 
+def test_provider_pin_floor() -> bool:
+    """versions.tf pins bpg/proxmox to a >= 0.108.0 floor (gitlab-runner Step 1a)."""
+    body = (MODULE / "versions.tf").read_text() if (MODULE / "versions.tf").is_file() else ""
+    m = re.search(r'version\s*=\s*"\s*>=\s*0\.108\.0\s*"', body)
+    ok = m is not None and "~>" not in body
+    print(f"{'OK' if ok else 'FAIL'}: provider pin is >= 0.108.0 (no ~> cap)")
+    return ok
+
+
 def main() -> int:
     results = [
         test_module_directory_exists(),
@@ -107,6 +116,7 @@ def main() -> int:
         test_os_variable_validation(),
         test_main_has_initialization_block(),
         test_no_consumer_cidata_variables(),
+        test_provider_pin_floor(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
