@@ -13,6 +13,9 @@ whose body says "not yet written" belongs to a later step.
 - [Upgrade](#upgrade)
 - [Clean disk](#clean-disk)
 - [Troubleshooting](#troubleshooting)
+- [Security model](#security-model)
+- [GitLab-side hygiene](#gitlab-side-hygiene)
+- [Known limits](#known-limits)
 
 ## Create the VM
 
@@ -72,3 +75,32 @@ Not yet written.
 ## Troubleshooting
 
 Not yet written.
+
+## Security model
+
+Developer or above on any attached project = root on the runner VM and all its
+tokens. A job runs arbitrary code on the VM's Docker daemon, so anyone who can
+push a pipeline can read every runner secret on the host. Attach only trusted
+projects, and treat membership of an attached project as access to the VM.
+
+## GitLab-side hygiene
+
+Set these in the GitLab UI for each attached project; none are enforced by the
+VM.
+
+- The runner is locked to its project (Settings > CI/CD > Runners), so it cannot
+  be enabled on other projects.
+- Fork pipelines in the parent project are off, so a fork cannot run jobs on the
+  runner.
+- The project's maximum job timeout is set to 5400-5700 s, so a stuck job cannot
+  hold the VM indefinitely.
+- The job-token allowlist stays at its default; do not widen it to other
+  projects.
+
+## Known limits
+
+- No Alertmanager: alerts are evaluated by Prometheus but nothing pages anyone.
+- The split manager (a separate runner-manager host from the job executor) is a
+  follow-up, not built.
+- Sysbox (rootless-style container isolation for job containers) is a follow-up,
+  not built.
