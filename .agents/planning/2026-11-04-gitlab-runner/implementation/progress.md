@@ -22,6 +22,7 @@
 - Step 12b: runbook compromise playbook (4 steps) + routine re-image (monthly/upgrades/host-key change) — commit 8ce3ab8; runbook shape 8/8 re-run by critic; `runner-reimage` marked planned, not pinned as present; docs+shape test only; review.passed. Step 12 remainder: 12c hairpin/known-limits arms, 12d full runbook-shape pin.
 - Step 12c: runbook hairpin section + known-limits arms — commit 1bc3b4d; hairpin text matches plan Step 11 and dynamic.yml.j2 allowlist (192.168.1.0/24); runbook shape 9/9 re-run by critic; docs+shape test only, no Step 4-11 pins; review.passed. Step 12 remainder: 12d full shape pin.
 - Step 12d: runbook full shape pin — commit f46294c (heading order, uniqueness, non-empty sections); shape 11/11; duplicate-heading mutant re-run by critic goes red on no-dup + order arms; runbook restored, docs diff empty; test-only, no assertions weakened; review.passed. Step 12 remainder: Steps 2-11 cross-check after Step 11, 12e operator-gated.
+- Step 10a: bpg firewall schema premise — commit 645bb6d; doc verified against locked bpg 0.120.0 (proxmox_node_firewall non-deprecated, cluster input_policy Optional non-computed so the line must be pinned, ipset IP in cidr{name}); docs-only, no HCL/apply; review.passed. Next: 10b stage variable + census guard (P1).
 
 ## Remaining
 
