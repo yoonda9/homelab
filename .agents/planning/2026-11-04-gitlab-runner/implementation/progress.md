@@ -17,7 +17,13 @@
 - Step 3c: docker meta dependency + role-owned daemon.json — commit 2619069 (meta vars present/{}/started/[]; daemon.json.j2 10m x3; template notifies 'Drain and restart docker', handler lands in 3d); role-shape test 11/11; ansible-lint deferred to 3e gate (vault env); review.passed.
 - Step 3d: Drain and restart docker handler — commit 12fe5c3 (probe -> stop gitlab-runner -> restart docker -> start, stop/start gated on unit rc==0, listened to via docker.yml notify); role-shape 12/12 + order arm; scope handlers + one arm; review.passed. ansible-lint vault-pass error is environmental (deferred to 3e gate).
 - Step 3e: site.yml gitlab_runner play after common + Ubuntu resolute in common platforms — commit ad6dd43; shape 14/14 (host group, become, role, order arms) re-run by critic; syntax-check/ansible-lint deferred to operator gate 4344 (vault env); review.passed. **Step 3 build complete; only operator GATE 4344 and filed guard row d41e remain.**
+- Step 3 guard row d41e: needrestart arm — commit ad1be4b; arm pins template `when:` equal to the registered stat.exists; base 14/14, 5 mutants (no when, other var, or true, not, no .exists) all FAIL the arm, harden.yml restored git-clean; review.passed.
+- Step 12a: runbook security model, GitLab-side hygiene, known limits — commit db2cc22; runbook shape 6/6 at HEAD; 3 delete-heading mutants + timeout-figure mutant each rc=1, runbook restored clean; content matches R26/R27; review.passed. Step 12 remainder: compromise playbook, routine re-image, hairpin arms, Steps 2-11 cross-check.
 
 ## Remaining
 
-- Operator GATEs f7e5 (tofu apply VM 120) and 4344 (play-runner twice), not run from the loop; guard row d41e (needrestart `when:` arm); Steps 4-13
+- Operator GATEs f7e5 (tofu apply VM 120) and 4344 (play-runner twice), not run from the loop. Steps 4-13 held by plan "Proof first" until gate 4344 passes. Step 12 remainder (compromise playbook, routine re-image, hairpin arms, cross-check) still to cut.
+
+## Decision: Step 12 ordering (2026-11-04, task 9405)
+
+Chose (a): cut the remaining Step 12 rows now as docs-only work: 12b compromise playbook + routine re-image, 12c hairpin/known-limits arms (without Steps 4-11 pins), 12d full runbook-shape pin. "Proof first" forbids role code, not docs rows. Deferred: the Steps 2-11 section cross-check, to run after Step 11 once those sections exist. 12e (UI walkthrough) stays operator-gated, not run from the loop. Caveat for 12b: `just runner-reimage` does not exist yet; the runbook must mark it as a planned recipe, and the shape arm must not pin it as present.
