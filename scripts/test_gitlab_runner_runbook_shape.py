@@ -24,6 +24,7 @@ REQUIRED_HEADINGS = (
     "GitLab-side hygiene",
     "Compromise playbook",
     "Routine re-image",
+    "Firewall",
     "Hairpin",
     "Known limits",
 )
@@ -144,6 +145,29 @@ def test_reimage_body() -> bool:
     return _report(not bad, f"routine-re-image section states cadence and host-key change (missing: {bad})")
 
 
+def test_firewall_body() -> bool:
+    s = _section(_body(), "Firewall")
+    checks = {
+        "stage 1 then stage 2": "gitlab_runner_firewall_stage" in s
+        and re.search(r"stage\s*=\s*1", s) is not None
+        and re.search(r"stage\s*=\s*2", s) is not None,
+        "root SSH session held open": re.search(r"root\s+SSH\s+session", s) is not None,
+        "rollback pve-firewall stop": "pve-firewall stop" in s,
+        "pre-flight bridge-nf sysctl": "net.bridge.bridge-nf-call-iptables" in s,
+        "conntrack count": "conntrack -C" in s,
+        "Plex latency baseline": re.search(r"Plex latency", s) is not None and "baseline" in s,
+        "0 to change/destroy on the VM": re.search(r"0 to change", s) is not None,
+        "verification: 9252 from CT 111": ":9252" in s and "CT 111" in s,
+        "nft flush negative control": "nft flush ruleset" in s,
+        "restore after flush": "systemctl restart ci-egress docker gitlab-runner" in s,
+        "runner-reimage re-checks before unpause": "just runner-reimage" in s
+        and "pve-firewall status" in s
+        and re.search(r"unpause", s, re.I) is not None,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"firewall section states sequence, rollback, verification, re-image (missing: {bad})")
+
+
 def test_heading_order_and_uniqueness() -> bool:
     body = _body()
     found = re.findall(r"^## (.+?)\s*$", body, re.M)
@@ -176,6 +200,7 @@ def main() -> int:
         test_hygiene_body(),
         test_compromise_body(),
         test_reimage_body(),
+        test_firewall_body(),
         test_hairpin_body(),
         test_known_limits_body(),
     ]
