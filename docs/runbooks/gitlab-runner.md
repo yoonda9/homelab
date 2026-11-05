@@ -202,10 +202,11 @@ of being compromised. Do the steps in order.
 
 1. Pause the runner in GitLab (Settings > CI/CD > Runners > Pause), so no new
    job lands on the VM while you work.
-2. Re-image the VM with `just runner-reimage NAME`. This recipe is planned (it
-   arrives with the Proxmox firewall step) and does not exist yet; until it
-   does, use `tofu apply -replace` on the VM by hand, and confirm the VM is
-   not left without its firewall before unpausing.
+2. Re-image the VM with `just runner-reimage NAME`. It replaces the VM and
+   that runner's firewall ipset, options and rules in one apply, so the new VM
+   is never left without its firewall. Before unpausing, confirm the firewall
+   as described under Firewall > Re-image (`pve-firewall status`, and the
+   `.111` probe from VM 120 must fail).
 3. Delete and recreate the runner in GitLab, or use the ID-based token reset,
    so the old authentication token is dead. A re-imaged VM must not reuse the
    token the compromised one held.

@@ -125,7 +125,17 @@ def test_compromise_body() -> bool:
         "pause the runner": re.search(r"pause\s+the\s+runner", s, re.I) is not None,
         "re-image": re.search(r"re-image", s, re.I) is not None,
         "runner-reimage named": "just runner-reimage" in s,
-        "runner-reimage marked planned": re.search(r"planned", s, re.I) is not None,
+        # Polarity flip (Step 12f): the recipe landed in Step 10d, so the
+        # section must no longer call it planned/missing, nor send the operator
+        # to a by-hand replace, and the recipe it names must exist.
+        "runner-reimage not called planned or missing": re.search(r"planned|does\s+not\s+exist", s, re.I) is None,
+        "no by-hand tofu apply -replace": re.search(r"tofu\s+apply\s+-replace|by\s+hand", s, re.I) is None,
+        "runner-reimage recipe exists in justfile": re.search(
+            r"^runner-reimage\s+NAME\s*:", (REPO_ROOT / "justfile").read_text(), re.M
+        )
+        is not None
+        if (REPO_ROOT / "justfile").is_file()
+        else False,
         "delete and recreate / ID reset": re.search(r"delete\s+and\s+recreate", s, re.I) is not None
         and re.search(r"\bID\b", s) is not None,
         "rotate CI variables": re.search(r"rotate", s, re.I) is not None and "CI variables" in s,
