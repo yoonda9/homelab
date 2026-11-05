@@ -290,6 +290,28 @@ def test_no_empty_sections() -> bool:
     return _report(not empty, f"every required section has a body, filled or marked not yet written (empty: {empty})")
 
 
+def test_references_resolve() -> bool:
+    """Step 12g cross-check: every `just` recipe and repo path the runbook names exists."""
+    body = _body()
+    jf = REPO_ROOT / "justfile"
+    jtxt = jf.read_text() if jf.is_file() else ""
+    recipes = set(re.findall(r"^([a-z][a-z0-9-]*)\b[^:\n]*:(?!=)", jtxt, re.M))
+    named = set(re.findall(r"\bjust ([a-z][a-z0-9-]*)", body))
+    paths = {
+        p.rstrip(".,;:)")
+        for p in re.findall(r"\b(?:docs|scripts|ansible|tofu)/[A-Za-z0-9_./-]*[A-Za-z0-9_]", body)
+    }
+    bad_recipes = sorted(r for r in named if r not in recipes)
+    bad_paths = sorted(p for p in paths if not (REPO_ROOT / p).exists())
+    checks = {
+        "runbook names at least one recipe and one path": bool(named) and bool(paths),
+        f"unknown just recipes {bad_recipes}": not bad_recipes,
+        f"missing repo paths {bad_paths}": not bad_paths,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"every just recipe and repo path in the runbook resolves (failing: {bad})")
+
+
 def main() -> int:
     results = [
         test_headings(),
@@ -309,6 +331,7 @@ def main() -> int:
         test_firewall_body(),
         test_hairpin_body(),
         test_known_limits_body(),
+        test_references_resolve(),
     ]
     total, passed = len(results), sum(results)
     if passed == total:
