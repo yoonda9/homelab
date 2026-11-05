@@ -103,7 +103,7 @@ def test_keys_precondition() -> bool:
 def test_no_firewall_resource_before_stage_gate() -> bool:
     bad = []
     for f in sorted(TOFU.glob("*.tf")):
-        for m in re.finditer(r'resource\s+"(proxmox_virtual_environment_[a-z_]*firewall[a-z_]*)"', f.read_text()):
+        for m in re.finditer(r'resource\s+"(proxmox_(?:virtual_environment_)?[a-z_]*firewall[a-z_]*)"', f.read_text()):
             if f.name != "gitlab_runner_firewall.tf":
                 bad.append(f"{f.name}:{m.group(1)}")
     present = "proxmox_virtual_environment_cluster_firewall" in (TOFU / "gitlab_runner_firewall.tf").read_text()
