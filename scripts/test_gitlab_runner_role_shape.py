@@ -148,6 +148,30 @@ def test_common_lists_ubuntu() -> bool:
     return _report(ok, "common meta platforms list Ubuntu resolute beside Debian")
 
 
+def test_install_yml() -> bool:
+    t = _read("tasks/install.yml")
+    key = re.search(r"get_url:\n(?:\s+\S.*\n)*?\s+url:\s*https://packages\.gitlab\.com/gpgkey/gpg\.key\n(?:\s+\S.*\n)*?\s+dest:\s*/etc/apt/keyrings/gitlab-runner\.asc", t)
+    repo = re.search(r"deb822_repository:\n((?:\s+\S.*\n?)*)", t)
+    r = repo.group(1) if repo else ""
+    repo_ok = (
+        "https://packages.gitlab.com/runner/gitlab-runner/ubuntu" in r
+        and "ansible_facts['distribution_release']" in r
+        and "signed_by: /etc/apt/keyrings/gitlab-runner.asc" in r
+        and "components: main" in r
+    )
+    pkgs = re.search(r"ansible\.builtin\.apt:\n((?:\s+\S.*\n?)*)", t)
+    p = pkgs.group(1) if pkgs else ""
+    pkgs_ok = "gitlab-runner\n" in p and "gitlab-runner-helper-images" in p and "update_cache: true" in p
+    env_ok = bool(re.search(r"environment:\n\s+NO_DOCKER_PRUNE:\s*[\"']?1[\"']?\s*$", t, re.M))
+    return _report(bool(key) and repo_ok and pkgs_ok and env_ok, "install.yml: GitLab key + deb822 source (release suite), both packages with NO_DOCKER_PRUNE=1")
+
+
+def test_main_imports_install_after_docker() -> bool:
+    m = _read("tasks/main.yml")
+    i, d = m.find("install.yml"), m.find("docker.yml")
+    return _report(0 <= d < i, "tasks/main.yml imports install.yml after docker.yml")
+
+
 def main() -> int:
     results = [fn() for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     passed = sum(results)

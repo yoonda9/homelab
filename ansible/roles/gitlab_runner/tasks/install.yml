@@ -1,0 +1,33 @@
+---
+# gitlab-runner from GitLab's official apt repo (R10). Same get_url + deb822
+# pattern as the plex role; no curl-pipe-bash installer script.
+- name: Add the GitLab apt GPG key
+  ansible.builtin.get_url:
+    url: https://packages.gitlab.com/gpgkey/gpg.key
+    dest: /etc/apt/keyrings/gitlab-runner.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the gitlab-runner apt repository
+  ansible.builtin.deb822_repository:
+    name: gitlab-runner
+    types: deb
+    uris: https://packages.gitlab.com/runner/gitlab-runner/ubuntu
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: main
+    signed_by: /etc/apt/keyrings/gitlab-runner.asc
+    state: present
+    enabled: true
+
+# Both packages share a version (R10). NO_DOCKER_PRUNE=1 stops the deb postinst
+# from running clear-docker-cache prune on install.
+- name: Install gitlab-runner and its helper images
+  ansible.builtin.apt:
+    name:
+      - gitlab-runner
+      - gitlab-runner-helper-images
+    state: present
+    update_cache: true
+  environment:
+    NO_DOCKER_PRUNE: "1"
