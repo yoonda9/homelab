@@ -33,3 +33,9 @@ gitlab_runner_drain_timeout_sec: 6000
 # DinD-TLS smoke (D2): default docker image tag for /usr/local/sbin/dind-tls-smoke.
 # `just runner-smoke 27` overrides it per run.
 gitlab_runner_smoke_tag: "29"
+
+# In-VM egress fence (R19, §4.6): LAN is unreachable except DNS on the gateway;
+# the metrics ports (9100, gitlab_runner_listen_port) answer these sources and loopback only.
+gitlab_runner_lan_cidr: 192.168.1.0/24
+gitlab_runner_lan_gateway: 192.168.1.1
+gitlab_runner_metrics_allowed_from: ["192.168.1.111"]

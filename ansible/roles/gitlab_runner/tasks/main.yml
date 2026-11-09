@@ -2,6 +2,9 @@
 - name: Harden the VM
   ansible.builtin.import_tasks: harden.yml
 
+- name: Fence egress
+  ansible.builtin.import_tasks: firewall.yml
+
 - name: Configure Docker
   ansible.builtin.import_tasks: docker.yml
 

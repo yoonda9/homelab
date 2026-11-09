@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=CI egress firewall (nftables table inet ci_egress)
+Before=docker.service network-pre.target
+Wants=network-pre.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/ci-egress.nft
+
+[Install]
+WantedBy=multi-user.target

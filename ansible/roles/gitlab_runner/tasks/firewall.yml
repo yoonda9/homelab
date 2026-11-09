@@ -1,0 +1,51 @@
+---
+# In-VM egress fence (R19, design §4.6): its own nftables table, loaded by
+# ci-egress.service before docker. The stock nftables config is never touched.
+- name: Create /etc/nftables.d
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the ci_egress ruleset
+  ansible.builtin.template:
+    src: ci-egress.nft.j2
+    dest: /etc/nftables.d/ci-egress.nft
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload ci-egress
+
+- name: Install ci-egress.service
+  ansible.builtin.template:
+    src: ci-egress.service.j2
+    dest: /etc/systemd/system/ci-egress.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for ci-egress
+
+- name: Load the unit before enabling it
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start ci-egress
+  ansible.builtin.systemd:
+    name: ci-egress
+    enabled: true
+    state: started
+
+# Plain file + handler: the sysctl module lives in ansible.posix, which this repo does not vendor.
+- name: Turn IPv6 off
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/60-gitlab-runner-ipv6.conf
+    content: |
+      # Managed by Ansible (roles/gitlab_runner). The runner is IPv4-only (R19/R24).
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply sysctl
