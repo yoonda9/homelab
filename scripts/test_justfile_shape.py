@@ -383,6 +383,30 @@ def test_runner_reimage_replaces_vm_and_firewall() -> bool:
     return ok
 
 
+def test_runner_smoke_runs_installed_script() -> bool:
+    """`runner-smoke [TAG]` runs the installed DinD-TLS smoke script on the runner group (Step 6b).
+
+    The script lives on the VM (smoke.yml installs it), so the recipe must reach
+    the gitlab_runner group as root; TAG is optional and forwarded, so an empty
+    TAG falls through to the script's own gitlab_runner_smoke_tag default.
+    """
+    text = _justfile_text()
+    body = _recipe_body("runner-smoke", text)
+    sig = re.search(r"^runner-smoke\s+TAG\s*=\s*(?:''|\"\")\s*:", text, re.MULTILINE)
+    wd = re.search(r"^\[working-directory:\s*'ansible'\]\s*\n\s*runner-smoke\b", text, re.MULTILINE)
+    runs = re.search(
+        r"\bansible\s+gitlab_runner\b(?=[^\n]*(?:\s-b\b|--become))[^\n]*"
+        r"/usr/local/sbin/dind-tls-smoke\s+\{\{\s*TAG\s*\}\}",
+        body,
+    )
+    ok = bool(body) and sig is not None and wd is not None and runs is not None
+    print(
+        f"{'OK' if ok else 'FAIL'}: runner-smoke [TAG=''] runs dind-tls-smoke as root on gitlab_runner "
+        f"from ansible/ (sig={sig is not None}, workdir={wd is not None}, runs={runs is not None})"
+    )
+    return ok
+
+
 TESTS = (
     test_justfile_exists,
     test_leaf_recipes_defined,
@@ -401,6 +425,7 @@ TESTS = (
     test_build_all_sweeps_three,
     test_play_runner_limits_to_gitlab_runner,
     test_runner_reimage_replaces_vm_and_firewall,
+    test_runner_smoke_runs_installed_script,
 )
 
 

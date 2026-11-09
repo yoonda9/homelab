@@ -123,3 +123,13 @@ runner-reimage NAME:
       -replace='proxmox_virtual_environment_firewall_ipset.ipfilter["{{NAME}}"]' \
       -replace='proxmox_virtual_environment_firewall_options.vm["{{NAME}}"]' \
       -replace='proxmox_virtual_environment_firewall_rules.vm["{{NAME}}"]'
+
+# --- gitlab-runner DinD-TLS smoke (Step 6b) ----------------------------------
+
+# Run the installed DinD-TLS smoke on the runner VM(s): `just runner-smoke` uses
+# gitlab_runner_smoke_tag (29); `just runner-smoke 27` pins the docker image tag.
+# Prints `<version> tls-ok` and exercises both negative controls. Needs
+# `just play-runner` first (smoke.yml installs the script; the play never runs it).
+[working-directory: 'ansible']
+runner-smoke TAG='':
+    ansible gitlab_runner -b -m ansible.builtin.command -a "/usr/local/sbin/dind-tls-smoke {{TAG}}"
