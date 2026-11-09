@@ -37,6 +37,7 @@
 
 - Step 4 wave closed (queue.advance, 2026-11-09): 4a 052407f, 4b baac534, 4c ad81994. Step 4 code complete; only operator GATE 00a9 remains, not blocking Steps 5-8. Step 5 wave cut: 5a drain drop-in (task d38e, P1), 5b upgrade.yml (task dd8e, P2, blocked by 5a).
 - Step 5a: drain drop-in — commit 63badab; KillSignal=SIGQUIT, KillMode=mixed, var-driven TimeoutStopSec (templated, not files/) + daemon-reload handler; drain shape test 5/5 re-run incl. hardcoded-timeout mutant; ansible-lint 0 failures; diff scoped to drop-in/handler/import; review.passed. Next: 5b upgrade.yml (task dd8e, P2).
+- Step 5b: upgrade.yml — commit 29ee993; apt-get -s probe (changed_when false) -> ^Inst-gated block drain (async=timeout+300) / upgrade (NO_DOCKER_PRUNE=1) / start; imported between install.yml and config.yml; runbook upgrade section; shape test 8/8 incl. mutant arm; review.passed. Step 5 complete (5a 63badab, 5b 29ee993). Remaining: Steps 6-8, 11, 13 plus operator GATE 00a9.
 
 ## Remaining
 
