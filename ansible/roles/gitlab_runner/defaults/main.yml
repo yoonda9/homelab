@@ -7,3 +7,21 @@ gitlab_runner_needrestart_excluded_units:
   - docker
   - containerd
   - gitlab-runner
+
+# config.toml (§4.4). Runners are declared in group_vars/gitlab_runner/vars.yml;
+# an empty list renders zero [[runners]] (R13).
+gitlab_runner_runners: []
+gitlab_runner_runners_here: "{{ gitlab_runner_runners | selectattr('host', 'equalto', inventory_hostname) | list }}"
+gitlab_runner_url: https://gitlab.com
+gitlab_runner_concurrent: 4
+gitlab_runner_check_interval: 3
+gitlab_runner_listen_port: 9252
+gitlab_runner_default_image: alpine:3.22
+gitlab_runner_shm_size: 2147483648
+gitlab_runner_request_concurrency: 2
+# Named volumes only: a host bind would expose the VM to jobs.
+gitlab_runner_volumes: ["/certs/client", "/cache"]
+# Matched against the service name as the job writes it in .gitlab-ci.yml.
+gitlab_runner_privileged_services: ["docker:*-dind"]
+gitlab_runner_pull_policy: ["if-not-present"]
+gitlab_runner_allowed_pull_policies: ["always", "if-not-present"]

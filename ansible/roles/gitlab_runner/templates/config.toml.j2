@@ -1,0 +1,29 @@
+# {{ ansible_managed }} - rendered by roles/gitlab_runner; do not edit
+concurrent = {{ gitlab_runner_concurrent }}
+check_interval = {{ gitlab_runner_check_interval }}
+listen_address = "{{ ansible_host }}:{{ gitlab_runner_listen_port }}"
+shutdown_timeout = 30
+{% for r in gitlab_runner_runners_here %}
+
+[[runners]]
+  name = "{{ r.name }}"
+  url = "{{ gitlab_runner_url }}"
+  id = {{ r.id }}
+  token = "{{ vault_gitlab_runner_tokens[r.name] }}"
+  executor = "docker"
+  limit = {{ r.limit | default(0) }}
+  request_concurrency = {{ gitlab_runner_request_concurrency }}
+  [runners.feature_flags]
+    FF_NETWORK_PER_BUILD = true
+    FF_ENABLE_JOB_CLEANUP = true
+  [runners.docker]
+    image = "{{ gitlab_runner_default_image }}"
+    privileged = false
+    services_privileged = true
+    allowed_privileged_services = {{ gitlab_runner_privileged_services | to_json }}
+    volumes = {{ gitlab_runner_volumes | to_json }}
+    pull_policy = {{ gitlab_runner_pull_policy | to_json }}
+    allowed_pull_policies = {{ gitlab_runner_allowed_pull_policies | to_json }}
+    shm_size = {{ gitlab_runner_shm_size }}
+    disable_cache = false
+{% endfor %}
