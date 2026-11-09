@@ -25,3 +25,7 @@ gitlab_runner_volumes: ["/certs/client", "/cache"]
 gitlab_runner_privileged_services: ["docker:*-dind"]
 gitlab_runner_pull_policy: ["if-not-present"]
 gitlab_runner_allowed_pull_policies: ["always", "if-not-present"]
+
+# Drain (R16): systemd waits this long for running jobs after SIGQUIT. Must exceed
+# the max job timeout (5400-5700 s) plus after_script and artifact upload.
+gitlab_runner_drain_timeout_sec: 6000

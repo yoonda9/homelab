@@ -4,6 +4,10 @@
     name: ssh
     state: restarted
 
+- name: Reload systemd for gitlab-runner
+  ansible.builtin.systemd:
+    daemon_reload: true
+
 # Drain and restart docker: one notify name, four handlers run in file order.
 # gitlab-runner is stopped (SIGQUIT drain via the Step 5 drop-in) before docker
 # restarts so no job is killed; stop/start are skipped while the unit does not

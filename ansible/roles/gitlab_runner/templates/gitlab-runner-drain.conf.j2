@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# SIGQUIT makes gitlab-runner stop taking jobs and wait for running ones.
+[Service]
+KillSignal=SIGQUIT
+KillMode=mixed
+TimeoutStopSec={{ gitlab_runner_drain_timeout_sec }}

@@ -1,0 +1,23 @@
+---
+# Graceful-stop drop-in (R16): `systemctl stop gitlab-runner` drains running jobs
+# instead of killing them. Survives package reinstalls.
+- name: Create the gitlab-runner drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/gitlab-runner.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the drain drop-in
+  ansible.builtin.template:
+    src: gitlab-runner-drain.conf.j2
+    dest: /etc/systemd/system/gitlab-runner.service.d/drain.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for gitlab-runner
+
+# The drop-in must be loaded before anything stops the unit.
+- name: Apply the drop-in now
+  ansible.builtin.meta: flush_handlers
