@@ -32,6 +32,7 @@
 - Gate f7e5 (Step 2 Demo, 2026-11-09): operator ran `just apply` creating VM 120 (`gitlab-runner-pve`, `192.168.1.120`); `just gen-inventory` rendered `gitlab-runner-pve` from live Tofu output; `ssh user@192.168.1.120` verified (`Ubuntu 26.04.1 LTS`). **Step 2 complete.**
 - Gate 4344 (Step 3 Demo, 2026-11-09): operator ran `just play-runner` twice (`changed=0` on second run); verified on VM 120: `sshd -T` reports `passwordauthentication no`, password SSH login refused (`Permission denied (publickey).`), `user` password locked (`L`), Docker `29.9.3` running with `LoggingDriver=json-file` and `/etc/docker/daemon.json` log-opts `10m` x `3`. **Step 3 complete; "Proof first" satisfied — Step 4+ role code unblocked.**
 - Step 4a: install.yml — commit 052407f (GitLab apt key via get_url .asc, deb822 source on release suite, gitlab-runner + gitlab-runner-helper-images with NO_DOCKER_PRUNE=1, imported after docker.yml); role-shape 16/16 re-run by critic, ansible-lint 0 failures; review.passed. Filed holes: /etc/apt/keyrings not created by role (Ubuntu default has it); drain drop-in belongs to Step 5. Step 4 remainder: 4b config.toml.j2, 4c config.yml, operator GATE 00a9.
+- Step 4b: config.toml.j2 template, defaults and render-shape test — commit baac534; test_gitlab_runner_config_shape 12/12 re-run by critic; zero runners, host filter, named volumes, privilege split, flags, forbidden keys pinned; diff scoped to 3 files; baseline 9 env failures unchanged; review.passed. Step 4 remainder: 4c config.yml (task f36f), operator GATE 00a9.
 
 ## Remaining
 
