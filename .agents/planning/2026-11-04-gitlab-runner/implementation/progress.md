@@ -38,6 +38,7 @@ Reconciled with HEAD 76f536a (Step 12h).
 - Steps 4-8, 11 and 13 and the gated half of Step 9 are not started: "Proof first" holds role code for Step 4+ until gate 4344 passes, and Steps 11 and 13 are gated.
 - Step 12 build is complete (12a-12d, 12f, 12g); only 12e remains.
 - plan.md Checklist: Step 1 checked; Steps 2, 3, 9, 10, 12 carry status annotations; the rest are untouched.
+- PARKED (Finalizer, after review.passed on 927a4d1, Step 12h): `ralph tools task ready` is empty; the only open tasks are operator GATEs f7e5 (tofu apply VM 120), 4344 (play-runner twice, blocked by f7e5) and 2506 (firewall applies A/B, blocked by f7e5), plus 12e (GitLab UI walkthrough). Steps 4-8, 11, 13 are held by "Proof first" until 4344 passes. Resume: operator runs gate f7e5, then 4344, then `ralph run --continue`.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 
