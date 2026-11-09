@@ -15,8 +15,8 @@ There are thirteen steps. Each one is test-driven: offline guards are written wi
 ## Checklist
 
 - [x] **Step 1:** `dev_vm` gains optional keys, static IPv4/DNS, vmid, firewall and cpu_type; the provider pin moves to `>= 0.108.0` — done (1a–1e)
-- [ ] **Step 2:** Root tofu `gitlab_runners` map, inventory group with static fallback, `play-runner`, runbook skeleton; ⛔ `tofu apply` creates VM 120 — build done (2a–2e); open: gate f7e5
-- [ ] **Step 3:** Role slice 1: hardening (R20, R28) and Docker CE with a role-owned `daemon.json` and a drain-safe restart; ⛔ first two plays — build done (3a–3e, d41e); open: gate 4344
+- [x] **Step 2:** Root tofu `gitlab_runners` map, inventory group with static fallback, `play-runner`, runbook skeleton; ⛔ `tofu apply` creates VM 120 — done (2a–2e + operator gate f7e5)
+- [x] **Step 3:** Role slice 1: hardening (R20, R28) and Docker CE with a role-owned `daemon.json` and a drain-safe restart; ⛔ first two plays — done (3a–3e, d41e + operator gate 4344)
 - [ ] **Step 4:** gitlab-runner from its apt repo and a templated `config.toml` with zero runners (R10–R13)
 - [ ] **Step 5:** Drain drop-in and drain-gated upgrades (R16)
 - [ ] **Step 6:** DinD-TLS smoke test and `just runner-smoke` (D2)

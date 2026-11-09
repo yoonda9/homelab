@@ -29,16 +29,18 @@
 - Step 10e: runbook firewall section with shape arm — commit 3c31230; runbook shape 12/12; mutants (delete heading, pve-firewall stop, nft flush, conntrack -C, stage=2) all red; prose matches tofu stage gating and just runner-reimage; review.passed. **Step 10 build complete; only operator GATE 2506 (firewall applies A/B) remains, blocked by f7e5.**
 - Step 9a: runbook register / add-project (both paths) / rotate sections with shape arms — commit 82415ed; shape 15/15 re-run by critic; ID-based reset only, 5400-5700s timeout set, 401 = rotate; docs+test only, gates untouched; review.passed. Caveats: runbook cites gitlab_runner_runners/group_vars/gitlab_runner/vars.yml, which do not exist until Steps 4-8. Step 9b open: Troubleshooting offline/stuck section (still 'Not yet written'), fixture-vault missing-key arm, lumologic-pve vars entry.
 - Step 9b: runbook Troubleshooting section + shape arm; `ansible/group_vars/gitlab_runner/vars.yml` with `gitlab_runner_runners: []` and the lumologic-pve entry prepared as a COMMENT (id 0 placeholder, no vault values) so it stays inert until the operator's same-commit token step (design §5.1). Fixture-vault missing-key arm NOT written: the Step 4 pre-render assert does not exist (no config.yml/template; "Proof first" holds Step 4 until gate 4344), so the arm has nothing to test. Ambiguity recorded; it belongs to Step 4's `test_gitlab_runner_config_shape.py`. Runbook shape 17/17, ansible layout 21/21; mutant (drop journalctl) red.
+- Gate f7e5 (Step 2 Demo, 2026-11-09): operator ran `just apply` creating VM 120 (`gitlab-runner-pve`, `192.168.1.120`); `just gen-inventory` rendered `gitlab-runner-pve` from live Tofu output; `ssh user@192.168.1.120` verified (`Ubuntu 26.04.1 LTS`). **Step 2 complete.**
+- Gate 4344 (Step 3 Demo, 2026-11-09): operator ran `just play-runner` twice (`changed=0` on second run); verified on VM 120: `sshd -T` reports `passwordauthentication no`, password SSH login refused (`Permission denied (publickey).`), `user` password locked (`L`), Docker `29.9.3` running with `LoggingDriver=json-file` and `/etc/docker/daemon.json` log-opts `10m` x `3`. **Step 3 complete; "Proof first" satisfied — Step 4+ role code unblocked.**
 
 ## Remaining
 
-Reconciled with HEAD 76f536a (Step 12h).
+Updated after operator gates f7e5 and 4344 (2026-11-09).
 
-- Operator GATEs, not run from the loop: f7e5 (tofu apply VM 120), 4344 (play-runner twice, blocked by f7e5), 2506 (firewall applies A/B, blocked by f7e5), 12e (GitLab UI walkthrough).
-- Steps 4-8, 11 and 13 and the gated half of Step 9 are not started: "Proof first" holds role code for Step 4+ until gate 4344 passes, and Steps 11 and 13 are gated.
+- Steps 1, 2, 3 complete (including live operator gates f7e5 and 4344). "Proof first" is satisfied; Steps 4–8 role code is now unblocked.
+- Open operator GATEs (not blocking Steps 4–8): 2506 (Step 10 firewall applies A/B), 12e (GitLab UI walkthrough).
+- Steps 4–8 (builder waves), gated half of Step 9 (plus fixture-vault missing-key arm once Step 4 lands), Step 11 (operator hairpin measurement) and Step 13 (monitoring on CT 111) remain.
 - Step 12 build is complete (12a-12d, 12f, 12g); only 12e remains.
-- plan.md Checklist: Step 1 checked; Steps 2, 3, 9, 10, 12 carry status annotations; the rest are untouched.
-- PARKED (Finalizer, after review.passed on 927a4d1, Step 12h): `ralph tools task ready` is empty; the only open tasks are operator GATEs f7e5 (tofu apply VM 120), 4344 (play-runner twice, blocked by f7e5) and 2506 (firewall applies A/B, blocked by f7e5), plus 12e (GitLab UI walkthrough). Steps 4-8, 11, 13 are held by "Proof first" until 4344 passes. Resume: operator runs gate f7e5, then 4344, then `ralph run --continue`.
+- plan.md Checklist: Steps 1, 2, 3 checked; Steps 9, 10, 12 carry status annotations; Steps 4–8, 11, 13 open.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 
