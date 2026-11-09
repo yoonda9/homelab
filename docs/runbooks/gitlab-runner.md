@@ -142,7 +142,19 @@ it by hand to reclaim them sooner.
 
 ## Upgrade
 
-Not yet written.
+`just play-runner` upgrades `gitlab-runner` and `gitlab-runner-helper-images`
+behind a drain. A read-only `apt-get -s` probe looks for pending `Inst` lines;
+with none, the play changes nothing (`changed=0`). With one, it stops the
+service (SIGQUIT: no new jobs, running ones finish), upgrades with
+`NO_DOCKER_PRUNE=1`, then starts it. The stop is `async`, so a long drain does
+not time out SSH.
+
+The invariant: the drain timeout (`gitlab_runner_drain_timeout_sec`, which sets
+`TimeoutStopSec` in the drop-in) must exceed the max job timeout plus
+`after_script` plus artifact upload. Raise it before raising a job timeout.
+
+A slow play is usually the drain waiting on a job. Wait it out; do not
+`kill -9` the runner.
 
 ## Clean disk
 

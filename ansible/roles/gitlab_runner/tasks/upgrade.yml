@@ -1,0 +1,34 @@
+---
+# Drain-gated upgrade (R16, design §4.5). A read-only apt-get -s probe decides;
+# a check-mode apt would report changed whenever an upgrade is pending and break
+# the changed=0 rerun. The block drains (SIGQUIT via the drain drop-in), upgrades
+# with NO_DOCKER_PRUNE=1 (pruning is the timer's job), then starts the runner.
+- name: Probe for pending gitlab-runner upgrades
+  ansible.builtin.command: apt-get -s install --only-upgrade gitlab-runner gitlab-runner-helper-images  # noqa: command-instead-of-module
+  register: gitlab_runner_pending
+  changed_when: false
+
+- name: Drain, upgrade, start
+  when: gitlab_runner_pending.stdout is search('^Inst ', multiline=True)
+  block:
+    # Waits for running jobs up to TimeoutStopSec; async keeps SSH from timing out.
+    - name: Drain gitlab-runner
+      ansible.builtin.systemd:
+        name: gitlab-runner
+        state: stopped
+      async: "{{ gitlab_runner_drain_timeout_sec + 300 }}"
+      poll: 15
+
+    - name: Upgrade gitlab-runner and its helper images
+      ansible.builtin.apt:
+        name:
+          - gitlab-runner
+          - gitlab-runner-helper-images
+        state: latest  # noqa: package-latest
+      environment:
+        NO_DOCKER_PRUNE: "1"
+
+    - name: Start gitlab-runner
+      ansible.builtin.systemd:
+        name: gitlab-runner
+        state: started

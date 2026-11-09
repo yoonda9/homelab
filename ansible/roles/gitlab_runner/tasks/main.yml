@@ -11,5 +11,8 @@
 - name: Install the drain drop-in
   ansible.builtin.import_tasks: drain.yml
 
+- name: Upgrade gitlab-runner behind a drain
+  ansible.builtin.import_tasks: upgrade.yml
+
 - name: Configure gitlab-runner
   ansible.builtin.import_tasks: config.yml
