@@ -32,7 +32,12 @@
 
 ## Remaining
 
-- Operator GATEs f7e5 (tofu apply VM 120) and 4344 (play-runner twice), not run from the loop. Steps 4-13 held by plan "Proof first" until gate 4344 passes. Step 12 remainder (12d full runbook-shape pin, Steps 2-11 cross-check after Step 11) still to cut.
+Reconciled with HEAD 76f536a (Step 12h).
+
+- Operator GATEs, not run from the loop: f7e5 (tofu apply VM 120), 4344 (play-runner twice, blocked by f7e5), 2506 (firewall applies A/B, blocked by f7e5), 12e (GitLab UI walkthrough).
+- Steps 4-8, 11 and 13 and the gated half of Step 9 are not started: "Proof first" holds role code for Step 4+ until gate 4344 passes, and Steps 11 and 13 are gated.
+- Step 12 build is complete (12a-12d, 12f, 12g); only 12e remains.
+- plan.md Checklist: Step 1 checked; Steps 2, 3, 9, 10, 12 carry status annotations; the rest are untouched.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 

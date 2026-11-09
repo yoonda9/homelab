@@ -14,18 +14,18 @@ There are thirteen steps. Each one is test-driven: offline guards are written wi
 
 ## Checklist
 
-- [ ] **Step 1:** `dev_vm` gains optional keys, static IPv4/DNS, vmid, firewall and cpu_type; the provider pin moves to `>= 0.108.0`
-- [ ] **Step 2:** Root tofu `gitlab_runners` map, inventory group with static fallback, `play-runner`, runbook skeleton; ⛔ `tofu apply` creates VM 120
-- [ ] **Step 3:** Role slice 1: hardening (R20, R28) and Docker CE with a role-owned `daemon.json` and a drain-safe restart; ⛔ first two plays
+- [x] **Step 1:** `dev_vm` gains optional keys, static IPv4/DNS, vmid, firewall and cpu_type; the provider pin moves to `>= 0.108.0` — done (1a–1e)
+- [ ] **Step 2:** Root tofu `gitlab_runners` map, inventory group with static fallback, `play-runner`, runbook skeleton; ⛔ `tofu apply` creates VM 120 — build done (2a–2e); open: gate f7e5
+- [ ] **Step 3:** Role slice 1: hardening (R20, R28) and Docker CE with a role-owned `daemon.json` and a drain-safe restart; ⛔ first two plays — build done (3a–3e, d41e); open: gate 4344
 - [ ] **Step 4:** gitlab-runner from its apt repo and a templated `config.toml` with zero runners (R10–R13)
 - [ ] **Step 5:** Drain drop-in and drain-gated upgrades (R16)
 - [ ] **Step 6:** DinD-TLS smoke test and `just runner-smoke` (D2)
 - [ ] **Step 7:** In-VM nftables `ci_egress` and IPv6 off (R19)
 - [ ] **Step 8:** Upkeep: the daily prune timer plus Docuum image LRU (R15)
-- [ ] **Step 9:** ⛔ Register the lumologic runner; runner online and jobs running (D1, D3)
-- [ ] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6)
+- [ ] **Step 9:** ⛔ Register the lumologic runner; runner online and jobs running (D1, D3) — runbook/vars prep done (9a, 9b); open: roles and the gated registration, held by Proof first
+- [ ] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6) — build done (10a–10e); open: gate 2506, blocked by f7e5
 - [ ] **Step 11:** ⛔ WAN-IP hairpin measurement and its fix or explicit acceptance (R25, D6)
-- [ ] **Step 12:** Runbook completion: security model, compromise playbook, re-image, GitLab hygiene (R26, R27, D4)
+- [ ] **Step 12:** Runbook completion: security model, compromise playbook, re-image, GitLab hygiene (R26, R27, D4) — 12a–12d, 12f, 12g done; open: 12e UI walkthrough (operator)
 - [ ] **Step 13:** ⛔ Monitoring on CT 111 (R17); final handoff message (D5)
 
 ---
