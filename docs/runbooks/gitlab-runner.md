@@ -158,7 +158,23 @@ A slow play is usually the drain waiting on a job. Wait it out; do not
 
 ## Clean disk
 
-Not yet written.
+Two things keep the disk bounded: **Docuum** evicts images least-recently-used
+first once image storage passes `gitlab_runner_docuum_threshold`, and
+`ci-docker-prune.timer` clears containers, build cache, networks and volumes
+daily. There is deliberately no `image prune -a`.
+
+1. See where the space is: `docker system df` (add `-v` for per-image and
+   per-volume sizes), and `df -h /` for the filesystem itself.
+2. Prune by hand: `sudo systemctl start ci-docker-prune` (same commands as the
+   timer; running jobs' images and volumes are never removed). Watch it with
+   `journalctl -u ci-docker-prune -n 50`.
+3. Check Docuum is recording image use: `journalctl -u docuum -n 50` and
+   `systemctl is-active docuum`. An empty journal after a job means Docuum is
+   not seeing Docker events; take the disk-gated fallback in the design's
+   alternatives section.
+4. Still full: grow the disk before touching `disk_gb`:
+   `qm resize 120 scsi0 +20G` on the Proxmox host, then grow the partition and
+   filesystem in the VM.
 
 ## Troubleshooting
 

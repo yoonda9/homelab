@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Docker upkeep prune for the CI runner
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ci-docker-prune

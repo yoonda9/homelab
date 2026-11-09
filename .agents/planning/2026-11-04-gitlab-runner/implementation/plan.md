@@ -21,7 +21,7 @@ There are thirteen steps. Each one is test-driven: offline guards are written wi
 - [x] **Step 5:** Drain drop-in and drain-gated upgrades (R16) — done (5a, 5b)
 - [x] **Step 6:** DinD-TLS smoke test and `just runner-smoke` (D2) — code done (6a–6b); open: operator gate e2d0
 - [x] **Step 7:** In-VM nftables `ci_egress` and IPv6 off (R19)
-- [ ] **Step 8:** Upkeep: the daily prune timer plus Docuum image LRU (R15)
+- [x] **Step 8:** Upkeep: the daily prune timer plus Docuum image LRU (R15)
 - [ ] **Step 9:** ⛔ Register the lumologic runner; runner online and jobs running (D1, D3) — runbook/vars prep done (9a, 9b); open: roles and the gated registration, held by Proof first
 - [ ] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6) — build done (10a–10e); open: gate 2506, blocked by f7e5
 - [ ] **Step 11:** ⛔ WAN-IP hairpin measurement and its fix or explicit acceptance (R25, D6)

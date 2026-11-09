@@ -22,3 +22,6 @@
 
 - name: Install the DinD-TLS smoke script
   ansible.builtin.import_tasks: smoke.yml
+
+- name: Install the prune timer and Docuum
+  ansible.builtin.import_tasks: prune.yml

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Docuum: evict least-recently-used Docker images
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/docuum --threshold {{ gitlab_runner_docuum_threshold }} --min-age {{ gitlab_runner_docuum_min_age }}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

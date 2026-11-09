@@ -58,3 +58,13 @@
 - name: Apply sysctl
   ansible.builtin.command: /usr/sbin/sysctl --system  # noqa: command-instead-of-module
   changed_when: true
+
+- name: Reload systemd for prune
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# A restart does not touch jobs, so no drain.
+- name: Restart docuum
+  ansible.builtin.systemd:
+    name: docuum
+    state: restarted

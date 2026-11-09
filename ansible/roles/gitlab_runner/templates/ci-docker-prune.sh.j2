@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Daily Docker upkeep (R15). No `image prune -a`: `until` counts from upstream
+# build date, so image eviction belongs to Docuum (LRU by last use).
+set -euo pipefail
+KEEP="{{ gitlab_runner_prune_keep }}"
+
+docker container prune -f --filter until=$KEEP
+docker image prune -f
+docker builder prune -af --filter until=$KEEP
+docker volume prune -af --filter label=com.gitlab.gitlab-runner.managed=true
+docker volume prune -f
+docker network prune -f --filter until=$KEEP

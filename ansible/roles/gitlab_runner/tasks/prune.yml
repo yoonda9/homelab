@@ -1,0 +1,63 @@
+---
+# Upkeep (R15, design §4.7): daily prune timer plus Docuum image LRU.
+- name: Install ci-docker-prune
+  ansible.builtin.template:
+    src: ci-docker-prune.sh.j2
+    dest: /usr/local/sbin/ci-docker-prune
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install ci-docker-prune.service
+  ansible.builtin.template:
+    src: ci-docker-prune.service.j2
+    dest: /etc/systemd/system/ci-docker-prune.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for prune
+
+- name: Install ci-docker-prune.timer
+  ansible.builtin.template:
+    src: ci-docker-prune.timer.j2
+    dest: /etc/systemd/system/ci-docker-prune.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for prune
+
+- name: Download the Docuum musl binary
+  ansible.builtin.get_url:
+    url: "https://github.com/stepchowfun/docuum/releases/download/v{{ gitlab_runner_docuum_version }}/docuum-x86_64-unknown-linux-musl"
+    dest: /usr/local/bin/docuum
+    checksum: "sha256:{{ gitlab_runner_docuum_sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart docuum
+
+- name: Install docuum.service
+  ansible.builtin.template:
+    src: docuum.service.j2
+    dest: /etc/systemd/system/docuum.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd for prune
+    - Restart docuum
+
+- name: Load the units before enabling them
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the prune timer
+  ansible.builtin.systemd:
+    name: ci-docker-prune.timer
+    enabled: true
+    state: started
+
+- name: Enable and start docuum
+  ansible.builtin.systemd:
+    name: docuum
+    enabled: true
+    state: started

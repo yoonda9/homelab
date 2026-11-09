@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Daily Docker upkeep prune for the CI runner
+
+[Timer]
+OnCalendar={{ gitlab_runner_prune_on_calendar }}
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
