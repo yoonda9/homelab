@@ -688,7 +688,10 @@ def test_the_no_scheduler_evidence_is_a_census_and_not_a_frozen_count() -> bool:
         label: _scheduler_defects(probe, shipped) for label, probe in probes.items()
     }
     caught["a corrected §2 scored against a repo that DID ship a timer"] = (
-        _scheduler_defects(body, ["ansible/roles/plex/templates/vacuum.timer"])
+        _scheduler_defects(
+            "`ansible/` ships no systemd `.timer` unit and no `cron` task at all.",
+            ["ansible/roles/plex/templates/vacuum.timer"],
+        )
     )
     armed = all(bool(found) for found in caught.values())
     ok = not defects and armed
