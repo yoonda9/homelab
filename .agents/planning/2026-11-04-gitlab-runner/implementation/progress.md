@@ -35,6 +35,9 @@
 - Step 4b: config.toml.j2 template, defaults and render-shape test — commit baac534; test_gitlab_runner_config_shape 12/12 re-run by critic; zero runners, host filter, named volumes, privilege split, flags, forbidden keys pinned; diff scoped to 3 files; baseline 9 env failures unchanged; review.passed. Step 4 remainder: 4c config.yml (task f36f), operator GATE 00a9.
 - Step 4c: config.yml — commit ad81994; token assert before template, root 0600 tomllib-validated config.toml, verify only when runners non-empty, listen_address change notifies Restart handler; shape test 14/14 incl. 3 mutants + missing-token assert; ansible-lint clean; no register in role; review.passed. Step 4 code complete; only operator GATE 00a9 (`just play-runner` twice, changed=0 second run; status running; config.toml 0600, no [[runners]]) remains. Also unlocks the Step 9 fixture-vault missing-key arm.
 
+- Step 4 wave closed (queue.advance, 2026-11-09): 4a 052407f, 4b baac534, 4c ad81994. Step 4 code complete; only operator GATE 00a9 remains, not blocking Steps 5-8. Step 5 wave cut: 5a drain drop-in (task d38e, P1), 5b upgrade.yml (task dd8e, P2, blocked by 5a).
+- Step 5a: drain drop-in — commit 63badab; KillSignal=SIGQUIT, KillMode=mixed, var-driven TimeoutStopSec (templated, not files/) + daemon-reload handler; drain shape test 5/5 re-run incl. hardcoded-timeout mutant; ansible-lint 0 failures; diff scoped to drop-in/handler/import; review.passed. Next: 5b upgrade.yml (task dd8e, P2).
+
 ## Remaining
 
 Updated after operator gates f7e5 and 4344 (2026-11-09).
