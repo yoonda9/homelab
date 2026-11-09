@@ -138,6 +138,48 @@ def test_no_register_in_role() -> bool:
     return _report(not offenders, f"no 'gitlab-runner register' anywhere in the role (offenders: {offenders})")
 
 
+def _config_yml() -> str:
+    f = ROLE / "tasks" / "config.yml"
+    return f.read_text() if f.is_file() else ""
+
+
+def test_config_tasks() -> bool:
+    t = _config_yml()
+    main = (ROLE / "tasks" / "main.yml").read_text()
+    h = (ROLE / "handlers" / "main.yml").read_text()
+    checks = {
+        "assert before template": "ansible.builtin.assert" in t and t.find("ansible.builtin.assert") < t.find("ansible.builtin.template"),
+        "assert names vault_gitlab_runner_tokens": "vault_gitlab_runner_tokens" in t.split("ansible.builtin.template")[0],
+        "root 0600": 'mode: "0600"' in t and "owner: root" in t,
+        "tomllib validate": "validate:" in t and "tomllib" in t and "%s" in t,
+        "verify only with runners": "gitlab-runner verify" in t and "gitlab_runner_runners_here | length > 0" in t,
+        "verify changed_when false": t.split("gitlab-runner verify")[-1].count("changed_when: false") >= 1,
+        "notify restart handler": "notify: Restart gitlab-runner" in t and "- name: Restart gitlab-runner" in h,
+        "template itself does not notify": "notify" not in t.split("validate:")[1].split("- name:")[0],
+        "imported after install": main.find("install.yml") < main.find("config.yml") != -1,
+    }
+    bad = [k for k, v in checks.items() if not v]
+    return _report(not bad, f"config.yml shape (failed: {bad})")
+
+
+def test_token_assert_fires() -> bool:
+    """A declared runner with no vault key fails the play, naming the key, before any render."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = pathlib.Path(tmp)
+        (tmp_p / "play.yml").write_text(
+            "- hosts: localhost\n  gather_facts: false\n  connection: local\n  tasks:\n"
+            f"    - ansible.builtin.include_tasks: {ROLE / 'tasks' / 'config.yml'}\n")
+        fixture = tmp_p / "fixture.json"
+        fixture.write_text(json.dumps({"gitlab_runner_runners": [{"name": "no-such-key", "host": "localhost", "id": 1}],
+                                       "vault_gitlab_runner_tokens": {}, "ansible_host": "10.0.0.5"}))
+        cmd = [x for x in _ansible()[:-1]] + ["ansible-playbook", "-C", "-i", "localhost,",
+              str(tmp_p / "play.yml"), "-e", f"@{DEFAULTS}", "-e", f"@{fixture}"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT, check=False)
+    out = proc.stdout + proc.stderr
+    return _report(proc.returncode != 0 and "no-such-key" in out and "Template config.toml" not in out,
+                   "missing vault token fails the assert naming the key, before the template")
+
+
 def _mutant(old: str, new: str) -> pathlib.Path | None:
     text = TEMPLATE.read_text() if TEMPLATE.is_file() else ""
     if old not in text:

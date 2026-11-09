@@ -1,0 +1,41 @@
+---
+# config.toml, fully rendered from the template (R11-R13). No `register`:
+# runners come from group_vars and the vault, never from the host.
+- name: Assert every runner declared for this host has a vault token
+  ansible.builtin.assert:
+    that:
+      - item.name in (vault_gitlab_runner_tokens | default({}))
+    fail_msg: "vault_gitlab_runner_tokens has no key '{{ item.name }}' (runner declared for {{ inventory_hostname }})"
+    quiet: true
+  loop: "{{ gitlab_runner_runners_here }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Only a listen_address change needs a restart; everything else hot-reloads
+# within check_interval. Compare the live line before the template rewrites it.
+- name: Read the live listen_address line
+  ansible.builtin.command: grep -E '^listen_address = ' /etc/gitlab-runner/config.toml
+  register: gitlab_runner_listen_probe
+  changed_when: false
+  failed_when: false
+
+- name: Template config.toml (TOML-validated, root only)
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/gitlab-runner/config.toml
+    owner: root
+    group: root
+    mode: "0600"
+    validate: python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' %s
+
+- name: Restart gitlab-runner when listen_address changed
+  ansible.builtin.command: /bin/true  # noqa: no-changed-when
+  changed_when: >-
+    gitlab_runner_listen_probe.stdout | default('') | trim !=
+    'listen_address = "' ~ ansible_host ~ ':' ~ gitlab_runner_listen_port ~ '"'
+  notify: Restart gitlab-runner
+
+- name: Verify the runners authenticate with GitLab
+  ansible.builtin.command: gitlab-runner verify
+  changed_when: false
+  when: gitlab_runner_runners_here | length > 0

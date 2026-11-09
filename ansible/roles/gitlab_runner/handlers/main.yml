@@ -33,3 +33,9 @@
     state: started
   when: gitlab_runner_unit_probe.rc == 0
   listen: Drain and restart docker
+
+# Drains first once the Step 5 drop-in (KillSignal=SIGQUIT) is in place.
+- name: Restart gitlab-runner
+  ansible.builtin.systemd:
+    name: gitlab-runner
+    state: restarted
