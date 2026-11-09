@@ -1,0 +1,9 @@
+---
+# Installed, never run by the play: the script pulls images. `just runner-smoke` runs it.
+- name: Install the DinD-TLS smoke script
+  ansible.builtin.template:
+    src: dind-tls-smoke.sh.j2
+    dest: /usr/local/sbin/dind-tls-smoke
+    owner: root
+    group: root
+    mode: "0755"

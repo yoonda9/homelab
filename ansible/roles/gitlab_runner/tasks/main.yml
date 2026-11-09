@@ -16,3 +16,6 @@
 
 - name: Configure gitlab-runner
   ansible.builtin.import_tasks: config.yml
+
+- name: Install the DinD-TLS smoke script
+  ansible.builtin.import_tasks: smoke.yml

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Privileged dind + TLS smoke test, mirroring a CI job. Usage: dind-tls-smoke [TAG]
+set -euo pipefail
+TAG="${1:-{{ gitlab_runner_smoke_tag }}}"
+NET=dind-smoke VOL=dind-smoke-certs D=dind-smoke-daemon
+
+cleanup() {
+  docker rm -f "$D" >/dev/null 2>&1 || true
+  docker network rm "$NET" >/dev/null 2>&1 || true
+  docker volume rm "$VOL" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+cleanup
+
+docker network create "$NET" >/dev/null
+docker volume create "$VOL" >/dev/null
+
+# Daemon: privileged, alias "docker", certs under /certs, only client/ shared.
+docker run -d --privileged --name "$D" \
+  --network "$NET" --network-alias docker \
+  -e DOCKER_TLS_CERTDIR=/certs \
+  -v "$VOL":/certs/client \
+  "docker:${TAG}-dind" >/dev/null
+
+client() {
+  docker run --rm --network "$NET" \
+    -e DOCKER_HOST=tcp://docker:2376 -e DOCKER_TLS_VERIFY=1 -e DOCKER_CERT_PATH=/certs/client \
+    -v "$VOL":/certs/client:ro \
+    "docker:${TAG}" "$@"
+}
+
+# Wait for certs and daemon (the same race CI has).
+up=0
+for _ in $(seq 1 60); do
+  if client docker info >/dev/null 2>&1; then up=1; break; fi
+  sleep 1
+done
+if [ "$up" != 1 ]; then echo "FAIL: dind daemon never became ready"; exit 1; fi
+
+# Positive: server version over TLS on 2376.
+client docker info --format '{{ '{{.ServerVersion}}' }} tls-ok'
+client docker version
+client docker run --rm busybox:1.37 true && echo "nested-run-ok"
+
+# Negative 1: no client certs must FAIL (proves verification is on).
+if docker run --rm --network "$NET" -e DOCKER_HOST=tcp://docker:2376 -e DOCKER_TLS_VERIFY=1 \
+     "docker:${TAG}" docker info >/dev/null 2>&1; then
+  echo "FAIL: daemon accepted a client without certs"; exit 1
+fi
+# Negative 2: plaintext 2375 must not be listening.
+if docker run --rm --network "$NET" -e DOCKER_HOST=tcp://docker:2375 "docker:${TAG}" docker info >/dev/null 2>&1; then
+  echo "FAIL: plaintext 2375 reachable"; exit 1
+fi
+echo "dind-tls smoke: PASS"
