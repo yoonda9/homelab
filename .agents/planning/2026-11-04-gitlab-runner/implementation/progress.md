@@ -43,15 +43,14 @@
 
 ## Remaining
 
-Updated 2026-11-10, after the play-runner session (gates 00a9, d3c6, e2d0, 00c3, e7ba passed).
+Updated 2026-11-10, after Step 9 (runner 58867233 registered, the retried pipeline ran on it).
 
-- Live: Steps 1–8. Tofu state: the VM and terraform_data, no firewall resources (stage 0).
+- Live: Steps 1–9. Tofu state: the VM and terraform_data, no firewall resources (stage 0). VM 120 now runs real lumologic jobs, so the Step 10 applies need a quiet window.
 - Open operator GATEs (`ralph tools task ready --all`; 2506 was created under loop primary-20261104-182451, so plain `ready` hides it):
-  - 2506 (Step 10 firewall applies A/B). `:9252` already listens on `.120` with zero runners, so the "curl :9252 from CT 111" check can pass in full now.
-  - f476 (Step 12e GitLab UI walkthrough). Reset token exists only on a runner, so run it after Step 9.
-- Not yet filed: Step 9 token + registration (unblocked now), Step 11 hairpin measurement (after 2506), Step 13 monitoring code + `play-docker-host` gate, the Step 12 Steps 2–11 cross-check (after Step 11), the D5 handoff.
-- The Step 9 fixture-vault missing-key arm landed with 4c (`test_token_assert_fires`).
-- plan.md Checklist: Steps 1–8 checked; Steps 9, 10, 12 carry status annotations; Steps 11, 13 open.
+  - 2506 (Step 10 firewall applies A/B). `:9252` already listens on `.120`, so the "curl :9252 from CT 111" check can pass in full now.
+  - f476 (Step 12e GitLab UI walkthrough). Unblocked: the runner exists now.
+- Not yet filed: Step 11 hairpin measurement (after 2506), Step 13 monitoring code + `play-docker-host` gate, the Step 12 Steps 2–11 cross-check (after Step 11), the D5 handoff (remaining: fork pipelines in the parent project).
+- plan.md Checklist: Steps 1–9 checked; Steps 10, 12 carry status annotations; Steps 11, 13 open.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 
@@ -81,3 +80,12 @@ Chose (a): cut the remaining Step 12 rows now as docs-only work: 12b compromise 
   - e7ba (Step 8): `ci-docker-prune.timer` enabled, Persistent=yes, next 04:00 (+ randomised delay); `systemctl start ci-docker-prune` Result=success and kept all five smoke images. Docuum 0.27.3 (`--threshold 60% --min-age 1d`) state.yml records docker:29/29-dind, docker:27/27-dind and alpine:3.22. Live check passed; no fallback.
   - d3c6 (Step 5): drop-in live (KillSignal=3, KillMode=mixed, TimeoutStopSec 1h40min) and kept across the package reinstall. Downgraded both packages to 19.5.2-1 with NO_DOCKER_PRUNE=1, started `drain-probe` (alpine sleep), ran `just play-runner`: changed=2. Journal: 23:33:03 stop-signal=quit, "Starting graceful shutdown, waiting for builds to finish" builds=0 → stopped; dpkg 23:33:19–49 upgrade to 19.5.3-1; 23:33:50 started (by the package postinst, so the block's Start task reported ok). Docker ActiveEnterTimestamp unchanged (14:53:32); drain-probe kept running, 0 restarts. Limit: builds=0, so the wait on a real job is first observable after Step 9.
   - Final `just play-runner` after the drain test: ok=50 changed=0 failed=0.
+
+- Step 9 (operator token step + Demo, 2026-11-10): the operator created project runner 58867233 in lumologic/lumologic and added `vault_gitlab_runner_tokens.lumologic-pve` with `ansible-vault edit`; the session wrote the live `lumologic-pve` entry and committed both together (bf62502, `test_runner_vars_file` polarity-flipped from the `[]` placeholder to the live entry; it fails on the old file). **Step 9 complete.**
+  - D1: `just play-runner` rendered the runner (changed=1, `verify` task ok); the second run gave changed=0. `gitlab-runner verify`: "is valid", rc 0. config.toml holds one `[[runners]]` (id 58867233) with `privileged = false` and `services_privileged = true`; the config hot-reloaded with no restart and the metrics show 0 errors.
+  - D3, read via the GitLab API: runner `online`, `project_type`, `locked`, `run_untagged`, no tags, `not_protected`, `maximum_timeout` 5400, version 19.5.3, scoped to lumologic/lumologic only. Project `shared_runners_enabled: false`.
+  - The retried pipeline (3048029733, commit e26eaed5 on main). Its first attempt failed all 7 jobs with `ci_quota_exceeded` on instance runners. The retry ran 6 jobs on `lumologic-pve`: static-analysis, recipe-smoke, frontend-lint, frontend-tests and frontend-bundle-size succeeded. django-tests failed with `script_failure` after 1830 s. playwright-e2e was skipped behind it, so it has not yet run on this runner.
+  - The django-tests failure is in the lumologic repo, not the runner. pytest reported 3 failed, 7417 passed, 31 skipped in 27:33. All three are doc-content guards: a broken intra-doc link from `docs/mvp/gap-analysis.md` to `frontend/.../ScenarioComparePage.tsx`, which the API confirms is absent at e26eaed5, plus its ratchet twin, and a README STATUS claim on `design/frontend-design-spec.md`. The compose build, migrations, schema diff and dind networking all worked.
+  - Privileged split, from a watcher polling `docker inspect` on the VM. On django-tests, the dind service `docker:27-dind` (alias `docker`) had `Privileged=true` and the build container `docker:27` had `false`. Every other build, predefined (helper) and wait container had `false`.
+  - D5 so far: done are the token (locked, untagged on, max timeout 5400 s), instance runners off, and the retried pipeline on `lumologic-pve`. Remaining: `ci_allow_fork_pipelines_to_run_in_parent_project` is still `true` (forks_count 0); turn it off (R26).
+  - Still not observed: a drain that waits on a real job (Step 5 limit). No upgrade has run during a build.
