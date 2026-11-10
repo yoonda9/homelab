@@ -86,7 +86,15 @@ def test_hygiene_body() -> bool:
     checks = {
         "runner locked to project": re.search(r"locked to (its|the) project", s) is not None,
         "fork pipelines off": re.search(r"fork pipelines", s, re.I) is not None and re.search(r"\boff\b", s) is not None,
-        "max timeout 5400-5700 s": re.search(r"5400\s*[-–]\s*5700\s*s", s) is not None,
+        # The fork switch has no UI toggle (2026-11-10): the section must name the API field.
+        "fork setting via its API field": "ci_allow_fork_pipelines_to_run_in_parent_project" in s
+        and re.search(r"\bAPI\b", s) is not None,
+        # The 5400-5700 s maximum is the runner's; the project's timeout is a separate field.
+        "runner's max timeout 5400-5700 s, not the project's": re.search(
+            r"runner's maximum job timeout is set to 5400\s*[-–]\s*5700\s*s", s
+        )
+        is not None
+        and re.search(r"project's maximum job timeout", s) is None,
         "job-token allowlist default": "allowlist" in s and re.search(r"default", s) is not None,
     }
     bad = [k for k, v in checks.items() if not v]

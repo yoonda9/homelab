@@ -211,15 +211,29 @@ projects, and treat membership of an attached project as access to the VM.
 
 ## GitLab-side hygiene
 
-Set these in the GitLab UI for each attached project; none are enforced by the
-VM.
+Set these for each attached project; none are enforced by the VM. All but the
+fork setting are in the GitLab UI.
 
 - The runner is locked to its project (Settings > CI/CD > Runners), so it cannot
   be enabled on other projects.
 - Fork pipelines in the parent project are off, so a fork cannot run jobs on the
-  runner.
-- The project's maximum job timeout is set to 5400-5700 s, so a stuck job cannot
-  hold the VM indefinitely.
+  runner. GitLab has no UI switch for this one: set the project field
+  `ci_allow_fork_pipelines_to_run_in_parent_project` to false through the API,
+  then read it back. Pipelines created before the change keep running.
+
+  ```sh
+  glab api --method PUT projects/PROJECT_ID \
+    -F ci_allow_fork_pipelines_to_run_in_parent_project=false
+  glab api projects/PROJECT_ID | grep -o '"ci_allow_fork_pipelines_to_run_in_parent_project": *[a-z]*'
+  ```
+
+  `-F` (not `-f`) sends `false` as a boolean. PROJECT_ID is the numeric id or
+  the URL-encoded path, for example `lumologic%2Flumologic`.
+- The runner's maximum job timeout is set to 5400-5700 s (see Register a
+  runner), so a stuck job cannot hold the VM indefinitely. This is a runner
+  setting, not a project one. The project's own job timeout (Settings > CI/CD >
+  General pipelines > Timeout, default 1 h) applies to jobs without a
+  `timeout:` keyword; the runner's maximum caps any job that sets a longer one.
 - The job-token allowlist stays at its default; do not widen it to other
   projects.
 

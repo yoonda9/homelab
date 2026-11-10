@@ -49,7 +49,7 @@ Updated 2026-11-10, after Step 9 (runner 58867233 registered, the retried pipeli
 - Open operator GATEs (`ralph tools task ready --all`; 2506 was created under loop primary-20261104-182451, so plain `ready` hides it):
   - 2506 (Step 10 firewall applies A/B). `:9252` already listens on `.120`, so the "curl :9252 from CT 111" check can pass in full now.
   - f476 (Step 12e GitLab UI walkthrough). Unblocked: the runner exists now.
-- Not yet filed: Step 11 hairpin measurement (after 2506), Step 13 monitoring code + `play-docker-host` gate, the Step 12 Steps 2–11 cross-check (after Step 11), the D5 handoff (remaining: fork pipelines in the parent project).
+- Not yet filed: Step 11 hairpin measurement (after 2506), Step 13 monitoring code + `play-docker-host` gate, the Step 12 Steps 2–11 cross-check (after Step 11), the D5 handoff message (its GitLab actions are all done, fork pipelines included).
 - plan.md Checklist: Steps 1–9 checked; Steps 10, 12 carry status annotations; Steps 11, 13 open.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
@@ -89,3 +89,5 @@ Chose (a): cut the remaining Step 12 rows now as docs-only work: 12b compromise 
   - Privileged split, from a watcher polling `docker inspect` on the VM. On django-tests, the dind service `docker:27-dind` (alias `docker`) had `Privileged=true` and the build container `docker:27` had `false`. Every other build, predefined (helper) and wait container had `false`.
   - D5 so far: done are the token (locked, untagged on, max timeout 5400 s), instance runners off, and the retried pipeline on `lumologic-pve`. Remaining: `ci_allow_fork_pipelines_to_run_in_parent_project` is still `true` (forks_count 0); turn it off (R26).
   - Still not observed: a drain that waits on a real job (Step 5 limit). No upgrade has run during a build.
+
+- D5 fork setting + runbook hygiene fix (2026-11-10). With the operator's go-ahead, the session set `ci_allow_fork_pipelines_to_run_in_parent_project=false` on lumologic/lumologic through the projects API (`glab api --method PUT`), and a read-back shows `false`. GitLab has no UI switch for it. The runbook's "GitLab-side hygiene" section now gives the API call. It also attributes the 5400-5700 s maximum to the runner, not the project: the project's own job timeout is 3600 s and governs jobs without `timeout:`. `test_hygiene_body` gained the API-field arm and the runner-attribution arm. Shape guard 18/18 on the new runbook. The HEAD runbook reds both arms, and each single mutant reds its own arm. All D5 GitLab actions are now done.
