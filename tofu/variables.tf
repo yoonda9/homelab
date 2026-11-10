@@ -24,18 +24,20 @@ variable "operator_ssh_public_key_file" {
   description = "Path to a single SSH public key file (e.g. ~/.ssh/id_ed25519.pub) whose contents are injected into every service CT's root user_account. Set via TF_VAR_operator_ssh_public_key_file. Empty = use operator_ssh_public_keys only."
 }
 
-# Staged Proxmox firewall for the gitlab-runner VMs (design §4.10, plan Step 10).
-# Every firewall resource is gated on this by count/for_each, so the code can merge
-# before its operator gate and an ordinary `just apply` at 0 touches none of it.
-#   0 = no firewall resources   1 = per-VM objects (inert until the switch)
-#   2 = also the datacenter switch
+# Proxmox firewall for the gitlab-runner VMs (design §4.10, plan Step 10).
+# Every firewall resource is gated on this by count/for_each.
+#   0 = no firewall resources (rollback)   1 = each VM's own ipset, options, rules
+# Default 1 since gate 2506 (2026-11-10). pve's datacenter and node firewalls were
+# already on (policy_in DROP), so the per-VM objects are live once they exist. The
+# old stage 2 (datacenter input ACCEPT, node firewall off) would only have loosened
+# pve's own firewall, so it is retired and 2 fails validation.
 variable "gitlab_runner_firewall_stage" {
   type        = number
-  default     = 0
-  description = "Firewall rollout stage for the gitlab-runner VMs: 0 none, 1 per-VM objects, 2 plus the datacenter switch. Moved only in the operator-gated Step 10 applies."
+  default     = 1
+  description = "Firewall stage for the gitlab-runner VMs: 0 none (rollback), 1 each VM's own firewall (live, since pve's datacenter firewall is on). Stage 2 is retired."
 
   validation {
-    condition     = contains([0, 1, 2], var.gitlab_runner_firewall_stage)
-    error_message = "gitlab_runner_firewall_stage must be 0, 1 or 2."
+    condition     = contains([0, 1], var.gitlab_runner_firewall_stage)
+    error_message = "gitlab_runner_firewall_stage must be 0 or 1. Stage 2 is retired: pve's datacenter and node firewalls are already on, and stage 2 would set the datacenter input policy to ACCEPT and turn the node firewall off (runbook: Firewall)."
   }
 }

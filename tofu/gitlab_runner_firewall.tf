@@ -1,31 +1,18 @@
-# Proxmox firewall for the gitlab-runner VMs (design §4.10, plan Step 10c).
+# Proxmox firewall for the gitlab-runner VMs (design §4.10, plan Step 10c; gate 2506).
 # Every resource here is gated on var.gitlab_runner_firewall_stage by count/for_each:
-#   0 = nothing   1 = per-VM objects (inert until the switch)   2 = also the datacenter switch
-# scripts/test_gitlab_runner_firewall_shape.py guards the gating and the key lines.
+#   0 = nothing (rollback)   1 = each VM's ipset, options and rules (the default)
+# pve's datacenter and node firewalls are NOT managed here. They were already on
+# (cluster.fw enable: 1, policy_in DROP; host.fw enable: 1) before gate 2506, so these
+# per-VM objects are live as soon as they exist. No resource may touch the datacenter
+# or node firewall: the retired stage-2 singletons would have set the datacenter input
+# policy to ACCEPT and turned pve's node firewall off.
+# scripts/test_gitlab_runner_firewall_shape.py guards the gating, the key lines, and
+# the absence of any pve-wide firewall resource.
 
 locals {
-  # Per-VM firewall objects exist from stage 1; the singletons from stage 2.
+  # Per-VM firewall objects exist from stage 1.
   gitlab_runner_fw_vms         = var.gitlab_runner_firewall_stage >= 1 ? local.gitlab_runners : {}
   gitlab_runner_docker_host_ip = split("/", local.net.docker_host_cidr)[0]
-}
-
-# Node firewall OFF so no host rules are generated; applied before the datacenter switch.
-resource "proxmox_node_firewall" "pve" {
-  count     = var.gitlab_runner_firewall_stage >= 2 ? 1 : 0
-  node_name = "pve"
-  enabled   = false
-}
-
-# The datacenter switch. input_policy MUST stay pinned to ACCEPT: it is Optional and
-# non-computed, so deleting the line falls back to bpg's DROP and cuts pve's UI and SSH.
-resource "proxmox_virtual_environment_cluster_firewall" "dc" {
-  count          = var.gitlab_runner_firewall_stage >= 2 ? 1 : 0
-  depends_on     = [proxmox_node_firewall.pve]
-  enabled        = true
-  input_policy   = "ACCEPT"
-  output_policy  = "ACCEPT"
-  forward_policy = "ACCEPT"
-  ebtables       = true
 }
 
 # ipfilter on a VM needs an explicit ipfilter-net0 set holding its address.

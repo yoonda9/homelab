@@ -106,7 +106,8 @@ def test_no_firewall_resource_before_stage_gate() -> bool:
         for m in re.finditer(r'resource\s+"(proxmox_(?:virtual_environment_)?[a-z_]*firewall[a-z_]*)"', f.read_text()):
             if f.name != "gitlab_runner_firewall.tf":
                 bad.append(f"{f.name}:{m.group(1)}")
-    present = "proxmox_virtual_environment_cluster_firewall" in (TOFU / "gitlab_runner_firewall.tf").read_text()
+    # Gate 2506 retired the datacenter switch; the per-VM rules are what the file must hold.
+    present = "proxmox_virtual_environment_firewall_rules" in (TOFU / "gitlab_runner_firewall.tf").read_text()
     return _report(not bad and present, f"Proxmox firewall resources live only in gitlab_runner_firewall.tf, which holds them (stray={bad}); gating is test_gitlab_runner_firewall_shape")
 
 

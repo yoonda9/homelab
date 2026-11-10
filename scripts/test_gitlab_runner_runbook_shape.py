@@ -165,15 +165,30 @@ def test_reimage_body() -> bool:
 
 def test_firewall_body() -> bool:
     s = _section(_body(), "Firewall")
+    # Gate 2506 (2026-11-10) found pve's datacenter and node firewalls already on, so
+    # stage 1 is the end state and Apply B (stage 2) is retired. The arms that pinned
+    # Apply B and its datacenter-switch pre-flight (bridge-nf sysctl, conntrack count,
+    # Plex baseline) are flipped to the claims the stage-1 procedure needs.
     checks = {
-        "stage 1 then stage 2": "gitlab_runner_firewall_stage" in s
-        and re.search(r"stage\s*=\s*1", s) is not None
-        and re.search(r"stage\s*=\s*2", s) is not None,
+        "stage 1 is the default, stage 2 retired": "gitlab_runner_firewall_stage" in s
+        and re.search(r"`1` \(the\s+default\)", s) is not None
+        and re.search(r"Stage 2 is retired", s) is not None
+        and re.search(r"Apply B|stage\s*=\s*2\b", s) is None,
         "root SSH session held open": re.search(r"root\s+SSH\s+session", s) is not None,
         "rollback pve-firewall stop": "pve-firewall stop" in s,
-        "pre-flight bridge-nf sysctl": "net.bridge.bridge-nf-call-iptables" in s,
-        "conntrack count": "conntrack -C" in s,
-        "Plex latency baseline": re.search(r"Plex latency", s) is not None and "baseline" in s,
+        "pre-flight: datacenter and node firewall already on": "cluster.fw" in s
+        and "host.fw" in s
+        and "grep -l '^enable: 1'" in s
+        and re.search(r"lists both files", s) is not None
+        and re.search(r"must list nothing", s) is None,
+        "stop if the datacenter firewall is off": re.search(r"datacenter firewall is off, stop", s) is not None,
+        "wait out pending changes": "pending changes" in s,
+        "rollback targets 120.fw, never cluster.fw": "/etc/pve/firewall/120.fw" in s
+        and re.search(r"Do not edit `cluster\.fw`", s) is not None,
+        "flush control from one session opened before the flush": re.search(
+            r"one SSH session opened before the\s+flush", s
+        )
+        is not None,
         "0 to change/destroy on the VM": re.search(r"0 to change", s) is not None,
         "verification: 9252 from CT 111": ":9252" in s and "CT 111" in s,
         "nft flush negative control": "nft flush ruleset" in s,

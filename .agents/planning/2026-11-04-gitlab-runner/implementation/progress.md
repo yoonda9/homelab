@@ -43,14 +43,16 @@
 
 ## Remaining
 
-Updated 2026-11-10, after Step 9 (runner 58867233 registered, the retried pipeline ran on it).
+Updated 2026-11-10, after gate 2506 (Step 10 live at stage 1; stage 2 retired).
 
-- Live: Steps 1–9. Tofu state: the VM and terraform_data, no firewall resources (stage 0). VM 120 now runs real lumologic jobs, so the Step 10 applies need a quiet window.
-- Open operator GATEs (`ralph tools task ready --all`; 2506 was created under loop primary-20261104-182451, so plain `ready` hides it):
-  - 2506 (Step 10 firewall applies A/B). `:9252` already listens on `.120`, so the "curl :9252 from CT 111" check can pass in full now.
-  - f476 (Step 12e GitLab UI walkthrough). Unblocked: the runner exists now.
-- Not yet filed: Step 11 hairpin measurement (after 2506), Step 13 monitoring code + `play-docker-host` gate, the Step 12 Steps 2–11 cross-check (after Step 11), the D5 handoff message (its GitLab actions are all done, fork pipelines included).
-- plan.md Checklist: Steps 1–9 checked; Steps 10, 12 carry status annotations; Steps 11, 13 open.
+- Live: Steps 1–10. Tofu state (this worktree, serial 36): the VM, terraform_data, and VM 120's ipset, options and rules. The main checkout's state copy is stale (serial 35).
+- Open operator GATE: f476 (Step 12e GitLab UI walkthrough). It is unblocked now that the runner exists.
+- Not yet filed:
+  - Step 11 hairpin measurement, now unblocked. The VM firewall drops 192.168.0.0/16 but not the WAN IP, so the hairpin path is still open to measure.
+  - Step 13 monitoring code and the `play-docker-host` gate. The firewall already admits `:9100`/`:9252` from .111.
+  - The Step 12 cross-check of Steps 2–11, after Step 11.
+  - The D5 handoff message. Its GitLab actions are all done, fork pipelines included.
+- plan.md Checklist: Steps 1–10 checked; Step 12 carries a status annotation; Steps 11 and 13 open.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 
@@ -91,3 +93,17 @@ Chose (a): cut the remaining Step 12 rows now as docs-only work: 12b compromise 
   - Still not observed: a drain that waits on a real job (Step 5 limit). No upgrade has run during a build.
 
 - D5 fork setting + runbook hygiene fix (2026-11-10). With the operator's go-ahead, the session set `ci_allow_fork_pipelines_to_run_in_parent_project=false` on lumologic/lumologic through the projects API (`glab api --method PUT`), and a read-back shows `false`. GitLab has no UI switch for it. The runbook's "GitLab-side hygiene" section now gives the API call. It also attributes the 5400-5700 s maximum to the runner, not the project: the project's own job timeout is 3600 s and governs jobs without `timeout:`. `test_hygiene_body` gained the API-field arm and the runner-attribution arm. Shape guard 18/18 on the new runbook. The HEAD runbook reds both arms, and each single mutant reds its own arm. All D5 GitLab actions are now done.
+
+- Gate 2506 (Step 10 Demo, 2026-11-10, operator present, runner idle): **Step 10 complete at stage 1. Stage 2 is retired.**
+  - Pre-flight premise failure. The runbook required `grep -l '^enable: 1' /etc/pve/firewall/*.fw` to list nothing. It listed `cluster.fw` (`enable: 1`, `policy_in: DROP`, `policy_out: ACCEPT`, `ebtables: 1`, mtime 2026-04-22) and `nodes/pve/host.fw` (`enable: 1`). pve-firewall was enabled/running on the legacy iptables backend. PVEFW-HOST-IN admitted only 8006, 5900-5999, 3128, 22 and 60000-60050 from the management set (localnet 192.168.1.0/24), and dropped everything else. Bridge netfilter was already 1 and conntrack held 236 entries. No rules in either file. NIC `firewall=1` on VMs 100 and 101 (stopped) and 120. No `120.fw`.
+  - Consequence. Stage 1 is live, not inert, the moment it exists. Apply B would set the datacenter `input_policy` DROP→ACCEPT and turn the node firewall off, which opens pve to every port. The old rollback ("`enable: 0` in cluster.fw") would also have disabled pve's own host firewall. The operator chose stage 1 only.
+  - Apply A. `tofu plan` at stage 1: 3 to add, 0 to change, 0 to destroy (ipset `ipfilter-net0` = .120, options, rules). Applied from a saved plan; state went from serial 35 to 36 with 9 resources. `120.fw` matches the HCL, and 24 iptables rules for `tap120i0` loaded after "pending changes" cleared (~10 s). A new SSH session from .60 got in.
+  - Verification. pve UI from the LAN: 200. Plex `/identity`: 200 in 0.6 ms. CT 111 Traefik: 404 (serving). `:9252` from CT 111: 200; from .60: timeout. From VM 120 and from an alpine container: gitlab.com OK, while `.111:443`, `.50:8006` and `.110:32400` time out. DNS via .1 works. `/etc/pve/firewall/` holds only `cluster.fw` and `120.fw`, so VMs 100 and 101 are unfiltered. Not run: the pve UI over the tailnet (pve has no tailnet IPv4; stage 1 does not touch pve's host rules) and the Plex latency A/B (bridge netfilter was already on, so stage 1 changes nothing on CT 110's path). `:9100` is not checked: nothing listens there until Step 13.
+  - Root-proof negative control. Drained (0 jobs, gitlab-runner stopped), then `nft flush ruleset` (0 rules). From the VM, `.111:443`, `.111:80`, `.50:8006` and `.110:32400` all timed out; gitlab.com returned 301. A listener on :18080 answered locally, but timed out from .60 and from .111. Restored with `systemctl restart ci-egress docker gitlab-runner`. After that, `inet ci_egress` and Docker's tables were back, docuum restarted, a container reached gitlab.com but not .111, `:9252` from CT 111 returned 200, and GitLab shows the runner online. Finding: the restore SSH session was opened while the ruleset was empty, so it was untracked and hung once ci-egress reloaded its LAN drop. The restore itself completed. The runbook now says to run the control from one session opened before the flush.
+  - Code. `gitlab_runner_firewall_stage` now defaults to 1 and validates to exactly [0, 1]; `-var …=2` fails with the retirement message. The two singletons (`proxmox_node_firewall.pve`, `proxmox_virtual_environment_cluster_firewall.dc`) were removed; they were never in state, so the removal is a no-op for Tofu. The temporary gitignored `tofu/terraform.tfvars` (stage = 1) was deleted. With the default alone, `tofu plan` shows No changes. (The 10c entry above calls the file `tofu/firewall.tf`; it is `tofu/gitlab_runner_firewall.tf`.)
+  - Guards, flipped and not deleted:
+    - `test_gitlab_runner_firewall_shape.py` (10/10): the variable pins default 1 and [0, 1]. The census flags any pve-wide switch type. Stage 0 means every resource gates on `>= 1`. The cluster-pins and node-off arms became absence checks across all of `tofu/**/*.tf`, modules included. Stage semantics pin a per-VM `for_each` over `local.gitlab_runners`.
+    - `test_gitlab_runner_tofu_shape.py` (6/6): its "file holds them" probe now checks for the firewall rules resource.
+    - The runbook firewall arm (18/18): Apply B, bridge-nf, conntrack and Plex-baseline were flipped to: stage 1 default and stage 2 retired; the pre-flight grep lists both files; stop if the datacenter firewall is off; wait out pending changes; rollback via `120.fw`, never `cluster.fw`; the flush control runs from one session opened before the flush.
+    - Mutants, all red: HEAD firewall.tf (5/10); HEAD variables.tf; validation re-admitting 2; `proxmox_node_firewall` in a module; ungated rules (3/10); HEAD runbook (6 sub-arms); rollback allowed to edit cluster.fw; Apply B reintroduced; "lists neither file".
+  - Hazard. The main checkout's state is still serial 35 with 6 resources. Before any tofu run there, merge this branch and copy this worktree's `tofu/terraform.tfstate` over it (back up first).

@@ -23,7 +23,7 @@ There are thirteen steps. Each one is test-driven: offline guards are written wi
 - [x] **Step 7:** In-VM nftables `ci_egress` and IPv6 off (R19) — done (+ operator gate 00c3)
 - [x] **Step 8:** Upkeep: the daily prune timer plus Docuum image LRU (R15) — done (+ operator gate e7ba; Docuum passed its live check, no fallback)
 - [x] **Step 9:** ⛔ Register the lumologic runner; runner online and jobs running (D1, D3) — done (9a, 9b, missing-token arm with 4c + operator token step bf62502; `verify` valid, online, retried pipeline ran here, privileged split seen on `django-tests`)
-- [ ] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6) — build done (10a–10e); open: gate 2506, unblocked since f7e5 closed (created under an earlier loop: list it with `ralph tools task ready --all`)
+- [x] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6) — done (10a–10e + operator gate 2506 at stage 1 only: pve's datacenter and node firewalls were already on, so stage 2 is retired, its singletons removed, and the default is now 1)
 - [ ] **Step 11:** ⛔ WAN-IP hairpin measurement and its fix or explicit acceptance (R25, D6)
 - [ ] **Step 12:** Runbook completion: security model, compromise playbook, re-image, GitLab hygiene (R26, R27, D4) — 12a–12d, 12f, 12g done; open: operator gate f476 (12e UI walkthrough), and the Steps 2–11 cross-check after Step 11
 - [ ] **Step 13:** ⛔ Monitoring on CT 111 (R17); final handoff message (D5)

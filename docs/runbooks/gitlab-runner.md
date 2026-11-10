@@ -267,54 +267,71 @@ login.
 
 The Proxmox VM firewall drops VM 120's egress to RFC1918, the tailnet range
 (`100.64.0.0/10`), multicast and IPv6 at the hypervisor, and blocks spoofing.
-Root in the guest cannot undo it. It is off until three switches are all on:
-the datacenter `enable`, the NIC's `firewall=1` (set at VM creation), and the
-VM's own options `enable`. Every resource sits behind the root variable
-`gitlab_runner_firewall_stage`: `0` (default) creates none, `1` creates the
-per-VM objects (ipset, options, rules), `2` also flips the datacenter switch.
-An ordinary `just apply` at stage 0 never touches any of it. Both applies are
-operator-run. Do not run them from the loop.
+Inbound, it admits only SSH from `192.168.1.0/24` and `:9100`/`:9252` from
+CT 111. Root in the guest cannot undo it. It needs three switches: the
+datacenter `enable`, the NIC's `firewall=1` (set at VM creation), and the VM's
+own options `enable`.
+
+Tofu owns only the VM's objects (ipset, options, rules), all behind the root
+variable `gitlab_runner_firewall_stage`: `0` creates none (rollback), `1` (the
+default) creates them. pve's datacenter and node firewalls are not managed by
+Tofu. They were already on when gate 2506 ran (2026-11-10): `cluster.fw` had
+`enable: 1` and `policy_in: DROP`, `host.fw` had `enable: 1`, and pve's own input
+admitted only the management ports from `192.168.1.0/24`. So the VM's objects take
+effect as soon as they exist. The original stage 2 would have set the datacenter
+input policy to ACCEPT and turned the node firewall off, which only loosens pve's
+own firewall. Stage 2 is retired: `2` fails validation, and no resource under
+`tofu/` may be a datacenter or node firewall.
 
 ### Enable sequence
 
+Use this when the VM's firewall objects do not exist: a fresh state, or after a
+rollback to stage 0. Applies are operator-run. Do not run them from the loop.
+
 1. Pre-flight, read-only on `pve`:
-   - `pve-firewall status`;
-   - read `/etc/pve/firewall/cluster.fw` and `nodes/pve/host.fw`, and import any
-     existing rules first;
-   - record `sysctl net.bridge.bridge-nf-call-iptables` and `conntrack -C`.
-     The datacenter firewall turns on bridge netfilter and conntrack for all
-     `vmbr0` traffic, CT 110's Plex streams included, which
-     `input_policy = ACCEPT` does not cover;
-   - take a Plex latency baseline with `scripts/measure_plex_latency.py`;
-   - `grep -l '^enable: 1' /etc/pve/firewall/*.fw` must list nothing. Record
-     `grep -l firewall=1 /etc/pve/{qemu-server,lxc}/*.conf` for the re-check
-     in step 5.
-2. Keep a root SSH session to `pve` open, and the console at hand, for the
-   whole sequence.
-3. Apply A: set `gitlab_runner_firewall_stage = 1` and apply. The plan must
-   show only VM 120 firewall objects and **0 to change/destroy** on the VM.
-   Stop otherwise.
-4. Apply B: set `gitlab_runner_firewall_stage = 2` and apply. The node firewall
-   goes off first, then the datacenter on with `input_policy = "ACCEPT"`.
-5. Verify immediately (the verification list):
-   - the PVE UI still answers from the LAN and the tailnet;
-   - CT 110 and CT 111 still serve, and a Plex latency run matches the baseline;
-   - from VM 120, `gitlab.com` is reachable while `.111:443`, `.50:8006` and
-     `.110:32400` time out;
-   - `curl` of `:9252/metrics` from CT 111 works;
-   - SSH from the LAN works, and `:9100` from a non-`.111` host is refused;
-   - the guests recorded in step 1 are still unfiltered.
-6. Root-proof negative control: drain the runner first
-   (`systemctl stop gitlab-runner`), because the flush wipes Docker's NAT and
-   the restore restarts dockerd. In VM 120 run `nft flush ruleset` and repeat
-   the `.111` probe: it must still fail. Restore with
-   `systemctl restart ci-egress docker gitlab-runner`.
+   - `pve-firewall status` reports `enabled/running`;
+   - `grep -l '^enable: 1' /etc/pve/firewall/cluster.fw /etc/pve/nodes/pve/host.fw`
+     lists both files. If the datacenter firewall is off, stop: the VM's objects
+     would be inert, and turning the datacenter switch on is a pve-wide change
+     (bridge netfilter and conntrack for all `vmbr0` traffic) outside this runbook;
+   - record `ls /etc/pve/firewall/` and
+     `grep -l firewall=1 /etc/pve/{qemu-server,lxc}/*.conf` for the re-check in
+     step 4.
+2. Keep a root SSH session to `pve` open for the rollback. Check that the runner
+   is idle (no job containers) and that your SSH vantage to the VM is in
+   `192.168.1.0/24`: the VM admits SSH only from the LAN.
+3. Apply at stage 1, the default. The plan must show only the VM's ipset, options
+   and rules, and **0 to change/destroy**. Stop otherwise. pve-firewall compiles
+   the rules within about 10 s: wait until `pve-firewall status` no longer says
+   `pending changes`.
+4. Verify immediately (the verification list):
+   - a new SSH session from the LAN reaches the VM;
+   - the PVE UI, CT 110 and CT 111 still answer from the LAN;
+   - from VM 120 and from a container on it, `gitlab.com` is reachable while
+     `.111:443`, `.50:8006` and `.110:32400` time out;
+   - `curl` of `:9252/metrics` from CT 111 works, and from another LAN host it
+     times out;
+   - `/etc/pve/firewall/` gained only `120.fw`, so the guests recorded in step 1
+     are still unfiltered.
+5. Root-proof negative control, all from one SSH session opened before the
+   flush. A session opened while the ruleset is empty is not tracked by
+   conntrack, and it hangs once `ci-egress` reloads its LAN drop. Drain the
+   runner first (`systemctl stop gitlab-runner`), because the flush wipes
+   Docker's NAT and the restore restarts dockerd. In VM 120 run
+   `nft flush ruleset` and repeat the `.111` probe: it must still fail. A
+   listener on an unused port must not answer from another LAN host or from
+   CT 111. Restore with `systemctl restart ci-egress docker gitlab-runner`.
 
 ### Rollback
 
-From the open root session on `pve`, or the console: `pve-firewall stop`.
-Persistently, set `enable: 0` in `/etc/pve/firewall/cluster.fw` and set
-`gitlab_runner_firewall_stage` back to `1` or `0` before the next apply.
+For VM 120 only, from the open root session on `pve`: set `enable: 0` in
+`/etc/pve/firewall/120.fw`, and pve-firewall drops the VM's rules within about
+10 s. To make it stick, apply with `gitlab_runner_firewall_stage = 0` (for
+example in a gitignored `terraform.tfvars` next to the root module), which
+removes the objects. Do not edit `cluster.fw`: the datacenter firewall also
+guards pve itself. `pve-firewall stop` works from the console too, but it drops
+every rule on pve, its own host firewall included. Use it only when locked out,
+and run `pve-firewall start` afterwards.
 
 ### Re-image
 
