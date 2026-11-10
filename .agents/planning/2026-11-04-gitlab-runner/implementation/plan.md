@@ -17,15 +17,15 @@ There are thirteen steps. Each one is test-driven: offline guards are written wi
 - [x] **Step 1:** `dev_vm` gains optional keys, static IPv4/DNS, vmid, firewall and cpu_type; the provider pin moves to `>= 0.108.0` — done (1a–1e)
 - [x] **Step 2:** Root tofu `gitlab_runners` map, inventory group with static fallback, `play-runner`, runbook skeleton; ⛔ `tofu apply` creates VM 120 — done (2a–2e + operator gate f7e5)
 - [x] **Step 3:** Role slice 1: hardening (R20, R28) and Docker CE with a role-owned `daemon.json` and a drain-safe restart; ⛔ first two plays — done (3a–3e, d41e + operator gate 4344)
-- [x] **Step 4:** gitlab-runner from its apt repo and a templated `config.toml` with zero runners (R10–R13) — code done (4a–4c); open: operator gate 00a9
-- [x] **Step 5:** Drain drop-in and drain-gated upgrades (R16) — done (5a, 5b)
-- [x] **Step 6:** DinD-TLS smoke test and `just runner-smoke` (D2) — code done (6a–6b); open: operator gate e2d0
-- [x] **Step 7:** In-VM nftables `ci_egress` and IPv6 off (R19)
-- [x] **Step 8:** Upkeep: the daily prune timer plus Docuum image LRU (R15)
-- [ ] **Step 9:** ⛔ Register the lumologic runner; runner online and jobs running (D1, D3) — runbook/vars prep done (9a, 9b); open: roles and the gated registration, held by Proof first
-- [ ] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6) — build done (10a–10e); open: gate 2506, blocked by f7e5
+- [x] **Step 4:** gitlab-runner from its apt repo and a templated `config.toml` with zero runners (R10–R13) — done (4a–4c + operator gate 00a9)
+- [x] **Step 5:** Drain drop-in and drain-gated upgrades (R16) — done (5a, 5b + operator gate d3c6; the live drain ran with builds=0, so a drain that waits on a real job is first seen in Step 9)
+- [x] **Step 6:** DinD-TLS smoke test and `just runner-smoke` (D2) — done (6a–6b + operator gate e2d0)
+- [x] **Step 7:** In-VM nftables `ci_egress` and IPv6 off (R19) — done (+ operator gate 00c3)
+- [x] **Step 8:** Upkeep: the daily prune timer plus Docuum image LRU (R15) — done (+ operator gate e7ba; Docuum passed its live check, no fallback)
+- [ ] **Step 9:** ⛔ Register the lumologic runner; runner online and jobs running (D1, D3) — runbook/vars prep done (9a, 9b); missing-token arm landed with 4c (`test_token_assert_fires`); open: the operator's token step and registration (gitlab-runner 19.5.3 is live on VM 120)
+- [ ] **Step 10:** ⛔ Proxmox VM firewall, staged, through the lockout-safe sequence; `runner-reimage` (R24, D6) — build done (10a–10e); open: gate 2506, unblocked since f7e5 closed (created under an earlier loop: list it with `ralph tools task ready --all`)
 - [ ] **Step 11:** ⛔ WAN-IP hairpin measurement and its fix or explicit acceptance (R25, D6)
-- [ ] **Step 12:** Runbook completion: security model, compromise playbook, re-image, GitLab hygiene (R26, R27, D4) — 12a–12d, 12f, 12g done; open: 12e UI walkthrough (operator)
+- [ ] **Step 12:** Runbook completion: security model, compromise playbook, re-image, GitLab hygiene (R26, R27, D4) — 12a–12d, 12f, 12g done; open: operator gate f476 (12e UI walkthrough), and the Steps 2–11 cross-check after Step 11
 - [ ] **Step 13:** ⛔ Monitoring on CT 111 (R17); final handoff message (D5)
 
 ---

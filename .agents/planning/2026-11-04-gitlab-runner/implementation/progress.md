@@ -43,13 +43,15 @@
 
 ## Remaining
 
-Updated after operator gates f7e5 and 4344 (2026-11-09).
+Updated 2026-11-10, after the play-runner session (gates 00a9, d3c6, e2d0, 00c3, e7ba passed).
 
-- Steps 1, 2, 3 complete (including live operator gates f7e5 and 4344). "Proof first" is satisfied; Steps 4–8 role code is now unblocked.
-- Open operator GATEs (not blocking Steps 4–8): 2506 (Step 10 firewall applies A/B), 12e (GitLab UI walkthrough).
-- Steps 4–8 (builder waves), gated half of Step 9 (plus fixture-vault missing-key arm once Step 4 lands), Step 11 (operator hairpin measurement) and Step 13 (monitoring on CT 111) remain.
-- Step 12 build is complete (12a-12d, 12f, 12g); only 12e remains.
-- plan.md Checklist: Steps 1, 2, 3 checked; Steps 9, 10, 12 carry status annotations; Steps 4–8, 11, 13 open.
+- Live: Steps 1–8. Tofu state: the VM and terraform_data, no firewall resources (stage 0).
+- Open operator GATEs (`ralph tools task ready --all`; 2506 was created under loop primary-20261104-182451, so plain `ready` hides it):
+  - 2506 (Step 10 firewall applies A/B). `:9252` already listens on `.120` with zero runners, so the "curl :9252 from CT 111" check can pass in full now.
+  - f476 (Step 12e GitLab UI walkthrough). Reset token exists only on a runner, so run it after Step 9.
+- Not yet filed: Step 9 token + registration (unblocked now), Step 11 hairpin measurement (after 2506), Step 13 monitoring code + `play-docker-host` gate, the Step 12 Steps 2–11 cross-check (after Step 11), the D5 handoff.
+- The Step 9 fixture-vault missing-key arm landed with 4c (`test_token_assert_fires`).
+- plan.md Checklist: Steps 1–8 checked; Steps 9, 10, 12 carry status annotations; Steps 11, 13 open.
 
 ## Decision: Step 12 ordering (2026-11-04, task 9405)
 
@@ -69,3 +71,13 @@ Chose (a): cut the remaining Step 12 rows now as docs-only work: 12b compromise 
 - Step 8: prune timer + Docuum — commit 30bfaac; prune shape 5/5 (6 mutants killed), ansible-lint 0 failures; review.passed. Task 8a9c closed. Finalizer follow-up: plex-sqlite-maintenance §2 no longer claims "no timer/cron in ansible/"; it names the gitlab_runner `ci-docker-prune` timer as the only scheduler and says it never touches Plex. The runbook shape guard's third probe now scores a literal denial sentence (the corrected body can no longer be the probe). Guard now green, including with the untracked .ansible cache. Step 8 code complete; only operator GATE e7ba remains. All builder steps (1-8, 10, 12 build) done; remaining work is operator gates (00a9, e2d0, 00c3, e7ba, 2506, 12e) and gated Steps 9, 11, 13.
 
 - PARKED (finalizer, 2026-11-09): every ready task is an operator GATE (00a9, e2d0, 00c3, e7ba: `just play-runner` + checks on VM 120). Blocked on the operator running them. Resume: `ralph run --continue` after the gates are reported; then Steps 9/11/13 unlock per "Proof first".
+
+- Reconcile (operator session, 2026-11-10): plan.md Checklist unticked Steps 4–8. The code is done but no live gate has run; the PARKED probe of VM 120 confirms it. Step 9's "held by Proof first" corrected to held by 00a9. Step 10's "blocked by f7e5" corrected to unblocked. Filed two missing gates: d3c6 (Step 5 Demo: play twice + live drain, the only live proof of R16) and f476 (Step 12e). The PARKED entry above listed four gates; the ready set is seven (2506 shows only with `--all`). Repo .venv gained PyYAML (it was absent, uv venv from mise), which clears the seven `ModuleNotFoundError: yaml` reds the earlier entries counted as the environmental baseline.
+
+- Gates 00a9, d3c6, e2d0, 00c3, e7ba (Steps 4–8 Demo, 2026-11-10): the operator ran `just play-runner` twice; the session then ran the checks against VM 120. **Steps 4–8 complete.**
+  - 00a9 (Step 4): gitlab-runner 19.5.3-1 (+ helper-images) running; config.toml root:root 600, tomllib parses, 0 `[[runners]]`.
+  - 00c3 (Step 7): from a container, .111:80 and .1:80 time out while gitlab.com:443 and DNS via .1:53 pass; the VM host likewise (.111 rc=28, gitlab.com 301). Control: the dev box reaches .111:80 (404). `:9252` from the dev box is dropped (rc=28) and from CT 111 answers 200. `nft list tables` shows Docker's tables + `inet ci_egress`; IPv6 disabled (all/default = 1, no global inet6). After `systemctl restart ci-egress`, Docker's tables survive, .111 still drops, and `just runner-smoke` passes. Deviation from the plan's note: gitlab-runner listens on 192.168.1.120:9252 with zero runners.
+  - e2d0 (Step 6): `just runner-smoke` printed `29.9.3 tls-ok`, `just runner-smoke 27` printed `27.5.1 tls-ok`, both with nested-run-ok and `dind-tls smoke: PASS` (both negative controls hold). No containers, smoke networks or smoke volumes left. Minor: each run leaves the dind daemon's anonymous volume (cleanup is `docker rm -f` without `-v`); the timer's `docker volume prune -f` reclaimed 3 (19 MB).
+  - e7ba (Step 8): `ci-docker-prune.timer` enabled, Persistent=yes, next 04:00 (+ randomised delay); `systemctl start ci-docker-prune` Result=success and kept all five smoke images. Docuum 0.27.3 (`--threshold 60% --min-age 1d`) state.yml records docker:29/29-dind, docker:27/27-dind and alpine:3.22. Live check passed; no fallback.
+  - d3c6 (Step 5): drop-in live (KillSignal=3, KillMode=mixed, TimeoutStopSec 1h40min) and kept across the package reinstall. Downgraded both packages to 19.5.2-1 with NO_DOCKER_PRUNE=1, started `drain-probe` (alpine sleep), ran `just play-runner`: changed=2. Journal: 23:33:03 stop-signal=quit, "Starting graceful shutdown, waiting for builds to finish" builds=0 → stopped; dpkg 23:33:19–49 upgrade to 19.5.3-1; 23:33:50 started (by the package postinst, so the block's Start task reported ok). Docker ActiveEnterTimestamp unchanged (14:53:32); drain-probe kept running, 0 restarts. Limit: builds=0, so the wait on a real job is first observable after Step 9.
+  - Final `just play-runner` after the drain test: ok=50 changed=0 failed=0.
