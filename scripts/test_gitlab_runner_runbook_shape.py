@@ -259,14 +259,22 @@ def test_runner_vars_file() -> bool:
     f = REPO_ROOT / "ansible" / "group_vars" / "gitlab_runner" / "vars.yml"
     txt = f.read_text() if f.is_file() else ""
     live = [l for l in txt.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    live_txt = "\n".join(l.split(" #", 1)[0].rstrip() for l in live)
+    # Step 9 token step done (2026-11-10): the list is live, so pin each field of the
+    # lumologic-pve entry instead of the [] placeholder.
     checks = {
         "file exists": bool(txt),
-        "list is [] until the token step": "gitlab_runner_runners: []" in live,
-        "lumologic-pve entry prepared": "name: lumologic-pve" in txt and "project: lumologic/lumologic" in txt,
+        "list is live, not the [] placeholder": "gitlab_runner_runners: []" not in live
+        and re.search(r"^gitlab_runner_runners:$", live_txt, re.M) is not None,
+        "live entry name: lumologic-pve": re.search(r"^  - name: lumologic-pve$", live_txt, re.M) is not None,
+        "live entry host: gitlab-runner-pve": re.search(r"^    host: gitlab-runner-pve$", live_txt, re.M) is not None,
+        "live entry project: lumologic/lumologic": re.search(r"^    project: lumologic/lumologic$", live_txt, re.M)
+        is not None,
+        "live entry id is a real runner id, not 0": re.search(r"^    id: [1-9][0-9]*$", live_txt, re.M) is not None,
         "no token value": re.search(r"glrt-|token\s*:", txt) is None,
     }
     bad = [k for k, v in checks.items() if not v]
-    return _report(not bad, f"runner vars file carries the prepared entry, no secret (missing: {bad})")
+    return _report(not bad, f"runner vars file declares the live lumologic-pve entry, no secret (missing: {bad})")
 
 
 def test_heading_order_and_uniqueness() -> bool:

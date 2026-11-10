@@ -1,14 +1,12 @@
 ---
 # Runner declarations for the gitlab_runner group (design §5.1).
 #
-# The list stays [] until the token-gated step: an entry whose name has no key
-# in vault_gitlab_runner_tokens fails the role's pre-render assert. The operator
-# creates the project runner, adds the vault key, fills in `id`, and uncomments
-# the entry in the SAME commit. No token value belongs in this file.
-gitlab_runner_runners: []
-# gitlab_runner_runners:
-#   - name: lumologic-pve          # local name, and the key into vault_gitlab_runner_tokens
-#     host: gitlab-runner-pve      # inventory host that runs it
-#     project: lumologic/lumologic # documentation; the GitLab side owns the scope
-#     id: 0                        # GitLab runner id from the creation response/UI URL
-#     limit: 0                     # optional, 0 = share `concurrent`
+# Each entry needs a key named after it in vault_gitlab_runner_tokens; a missing
+# key fails the role's pre-render assert. Add the vault key and the entry in the
+# SAME commit (runbook: Register a runner). No token value belongs in this file.
+gitlab_runner_runners:
+  - name: lumologic-pve          # local name, and the key into vault_gitlab_runner_tokens
+    host: gitlab-runner-pve      # inventory host that runs it
+    project: lumologic/lumologic # documentation; the GitLab side owns the scope
+    id: 58867233                 # GitLab runner id from the UI URL
+    limit: 0                     # 0 = share `concurrent`
